@@ -11,7 +11,8 @@ A 3D first/third-person survival roguelite prototype built with Three.js. Explor
 - **2nd floors** — Thick floor slabs with full wall-to-wall coverage and stairwell gaps
 - **Water** — Semi-transparent blue water plane with underwater effects (blue tint, slow movement)
 - **Vegetation** — Randomized fir/pine trees, boulders, and flowers; small rocks are jumpable, large rocks are climbable
-- **Interior torches** — Wall-mounted point lights inside buildings (skip doors, windows, and stairs)
+- **Wood house floors** — Ground floors use wood plank texture, wall-to-wall coverage sealing all light paths
+- **Interior torches** — Angled wall-mounted point lights inside buildings (30° tilt, skip doors/windows/stairs)
 - **Door torches** — Exterior torches beside every door; off during day, light up at dusk
 - **Fog** — Distance fog (near=10/far=55 day, near=5/far=30 night)
 
@@ -40,8 +41,9 @@ A 3D first/third-person survival roguelite prototype built with Three.js. Explor
 - Flowers respawn at random positions far from player, outside camera view
 
 ### Camera
-- **First-person** — Eye-height view with full pitch/yaw
-- **Third-person** — Over-the-shoulder with pitch orbit, wall collision raycast, smooth 1-second toggle
+- **First-person** — Eye-height view with full pitch/yaw; player model hidden via layers (shadow still casts)
+- **Third-person** — Over-the-shoulder with pitch orbit, 3-ray wall collision probe, smooth 1-second toggle
+- **Seamless transitions** — Crosshair raycast convergence keeps aim locked on the exact world point during V toggle; mouse look works throughout; mid-transition re-toggle reverses smoothly
 - **Game start** — Cinematic transition from 3rd to 1st person
 - **Player model** — Blue-tinted soldier with idle/walk/run animations (visible in 3rd person)
 
@@ -67,6 +69,7 @@ A 3D first/third-person survival roguelite prototype built with Three.js. Explor
 - FPS counter, camera mode label, time display
 - Minimap — flowers shown in cyan, 2-story buildings in lighter brown
 - 5-slot hotbar with item icons and count badges
+- **In-game help overlay** — Shift+? opens a themed survival guide with 5 sections; freezes game while open
 
 ## Getting Started
 
@@ -89,6 +92,7 @@ Open http://localhost:3000 in your browser and click to play.
 | E | Interact (doors, soldiers, flowers) |
 | Right-click (hold) | Zoom (3x) |
 | Q (hold) | Fast-forward (3x game speed) |
+| Shift+? | Help overlay (survival guide) |
 | ESC | Pause / release mouse |
 
 ## Tech Stack

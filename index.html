@@ -40,6 +40,7 @@
     <div class="control-item"><span class="key">ESC</span> Pause</div>
     <div class="control-item"><span class="key">RMB</span> Zoom</div>
     <div class="control-item"><span class="key">Q</span> Fast-forward</div>
+    <div class="control-item"><span class="key">SHIFT+?</span> Help</div>
   </div>
 
   <div id="menu-pause" style="display:none">
@@ -64,7 +65,7 @@
 
 <div id="interact-hint" style="display:none"></div>
 <div id="npc-speech" style="display:none"></div>
-<div id="hud-bottom">WASD move | SHIFT sprint | SPACE jump | V toggle camera | E interact | RMB zoom | Q fast-forward | ESC pause</div>
+<div id="hud-bottom">WASD move | SHIFT sprint | SPACE jump | V toggle camera | E interact | RMB zoom | Q fast-forward | ESC pause | SHIFT+? help</div>
 
 <div id="hotbar">
   <div class="hotbar-slot" data-slot="0"></div>
@@ -76,6 +77,106 @@
 
 <div id="minimap-wrap">
   <canvas id="minimap" width="160" height="160"></canvas>
+</div>
+
+<div id="help-overlay" style="display:none">
+  <div id="help-panel">
+    <div id="help-header">
+      <h2 id="help-title">SURVIVAL GUIDE</h2>
+      <span id="help-close">SHIFT+? to close</span>
+    </div>
+    <div id="help-content">
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x2694;</span> Movement &amp; Combat</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Walk &amp; Sprint</div>
+            <div class="help-card-body">Use <b>WASD</b> to move freely. Hold <b>SHIFT</b> to sprint at double speed -- but beware, stamina is limited.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Jump</div>
+            <div class="help-card-body">Press <b>SPACE</b> to leap over obstacles, scale boulders, and reach second-story staircases.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Zoom</div>
+            <div class="help-card-body">Hold <b>Right-click</b> for 3x zoom. Scout distant threats and landmarks before approaching.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x1F3E0;</span> Exploration</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Buildings</div>
+            <div class="help-card-body">Discover stone structures with doorways, glass windows, and torchlit interiors. Some rise two stories with climbable staircases.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Terrain &amp; Water</div>
+            <div class="help-card-body">Rolling hills shape the landscape. Walk into water for an underwater view -- movement slows to 40% and gravity gets floaty.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Snow Biome</div>
+            <div class="help-card-body">Toggle from the main menu for a frozen landscape. Water turns to walkable ice and trees take on a wintry look.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x1F4AC;</span> Interaction</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Doors</div>
+            <div class="help-card-body">Approach a door and press <b>E</b> to swing it open or shut. Watch for the <b>[E]</b> prompt floating in the world.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Soldiers</div>
+            <div class="help-card-body">Green-tinted warriors wander the land. Get close and press <b>E</b> to hear their stories -- some wise, some strange.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Flowers</div>
+            <div class="help-card-body">Glowing blooms dot the terrain. Press <b>E</b> to collect them into your hotbar. They respawn elsewhere after a short time.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Foxes</div>
+            <div class="help-card-body">Skittish foxes roam the wilderness. They'll flee if you get too close -- try sneaking up on them.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x2600;</span> Day &amp; Night</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Time Cycle</div>
+            <div class="help-card-body">Enable from the main menu. The sun arcs across the sky, torches ignite at dusk, and stars emerge at night. Snow biome has shorter days.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Fast-Forward</div>
+            <div class="help-card-body">Hold <b>Q</b> to run the entire world at 3x speed -- time, movement, and animations all accelerate.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x1F3AF;</span> Camera &amp; HUD</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Camera Modes</div>
+            <div class="help-card-body">Press <b>V</b> to switch between first-person and over-the-shoulder third-person view with a smooth cinematic transition.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Minimap</div>
+            <div class="help-card-body">Top-right corner shows your position (yellow dot), buildings (brown), and flowers (cyan). Use it to navigate the world.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Hotbar</div>
+            <div class="help-card-body">Your 5-slot inventory bar sits at screen bottom. Collected flowers appear in the first slot with a running count.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script type="importmap">

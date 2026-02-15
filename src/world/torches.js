@@ -25,7 +25,8 @@ export function placeTorches(scene) {
   const flameMat = new THREE.MeshBasicMaterial({ color: 0xff7722 });
   const stickMat = new THREE.MeshStandardMaterial({ color: 0x4a3020 });
 
-  const wallOffset = 0.85; // distance from cell center toward adjacent wall
+  // Position torch flush with wall inner face (cell center → wall face = CELL - WALL_T/2)
+  const wallOffset = CFG.CELL - CFG.WALL_T / 2 - 0.1;
 
   for (const b of getBuildings()) {
     // Collect all valid wall-adjacent interior positions
@@ -68,6 +69,11 @@ export function placeTorches(scene) {
     // Place 1-2 torches per building
     const count = Math.min(candidates.length, rngInt(1, 2));
 
+    const tiltAngle = Math.PI / 6; // 30 degrees from wall
+    const stickLen = 0.6;
+    const tipOut = Math.sin(tiltAngle) * stickLen / 2;  // how far tip extends from wall
+    const tipUp = Math.cos(tiltAngle) * stickLen / 2;   // vertical offset of tip
+
     for (let i = 0; i < count; i++) {
       const tp = candidates[i];
       const p = g2w(tp.gx, tp.gz);
@@ -75,17 +81,37 @@ export function placeTorches(scene) {
       const wz = p.z + tp.oz;
       const torchY = 2.2;
 
+      // Direction away from wall (into room)
+      const awayX = -tp.ox / wallOffset;
+      const awayZ = -tp.oz / wallOffset;
+
+      // Tip position (end of angled stick, toward room)
+      const tipX = wx + awayX * tipOut;
+      const tipZ = wz + awayZ * tipOut;
+      const tipY = torchY + tipUp;
+
       const light = new THREE.PointLight(0xff8833, 2, 12, 1.5);
-      light.position.set(wx, torchY + 0.4, wz);
+      light.position.set(tipX, tipY + 0.12, tipZ);
       scene.add(light);
       torchLights.push(light);
 
       const flame = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 5), flameMat);
-      flame.position.set(wx, torchY + 0.35, wz);
+      flame.position.set(tipX, tipY + 0.08, tipZ);
       scene.add(flame);
 
-      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.6, 4), stickMat);
-      stick.position.set(wx, torchY, wz);
+      // Stick center is midpoint between wall mount and tip
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, stickLen, 4), stickMat);
+      stick.position.set(
+        wx + awayX * tipOut / 2,
+        torchY + tipUp / 2,
+        wz + awayZ * tipOut / 2
+      );
+      // Rotate stick to tilt away from wall
+      if (Math.abs(awayX) > 0.5) {
+        stick.rotation.z = awayX > 0 ? -tiltAngle : tiltAngle;
+      } else {
+        stick.rotation.x = awayZ > 0 ? tiltAngle : -tiltAngle;
+      }
       stick.castShadow = true;
       scene.add(stick);
     }

@@ -35,9 +35,8 @@ export function placeDoors(scene) {
   for (const b of getBuildings()) {
     for (const d of b.doors) {
       const p = g2w(d.gx, d.gz);
-      const ty = getTerrainHeight(p.x, p.z);
       const group = new THREE.Group();
-      group.position.set(p.x, ty, p.z);
+      group.position.set(p.x, 0, p.z);
 
       const isNS = d.wall === 'south' || d.wall === 'north';
       const mesh = new THREE.Mesh(isNS ? doorGeoNS : doorGeoEW, doorMat);

@@ -8,6 +8,31 @@ const keys = {};
 let pointerLocked = false;
 let rightMouseDown = false;
 let pendingLockEl = null;
+let helpVisible = false;
+
+// Silently swallow SecurityError when browser blocks pointer lock
+function tryLock(el) {
+  const p = el.requestPointerLock();
+  if (p && p.catch) p.catch(() => {});
+}
+
+function toggleHelp() {
+  const el = document.getElementById('help-overlay');
+  if (!el) return;
+  helpVisible = !helpVisible;
+  el.style.display = helpVisible ? 'flex' : 'none';
+  if (helpVisible) {
+    // Release pointer lock so the cursor is visible
+    document.exitPointerLock();
+  } else {
+    // Re-lock pointer to resume gameplay
+    const renderer = getRenderer();
+    pendingLockEl = renderer.domElement;
+    tryLock(renderer.domElement);
+  }
+}
+
+export function isHelpVisible() { return helpVisible; }
 
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
@@ -25,13 +50,13 @@ export function initControls() {
     if (e.target.closest('#menu-panel')) return;
     if (e.target.closest('#menu-loading')) return;
     pendingLockEl = renderer.domElement;
-    renderer.domElement.requestPointerLock();
+    tryLock(renderer.domElement);
   });
 
   renderer.domElement.addEventListener('mousedown', () => {
     if (!pointerLocked) {
       pendingLockEl = renderer.domElement;
-      renderer.domElement.requestPointerLock();
+      tryLock(renderer.domElement);
     }
   });
 
@@ -39,7 +64,7 @@ export function initControls() {
   // (browser may enforce a brief cooldown after ESC; real user gestures
   //  like mousedown/keydown can re-lock once the cooldown expires)
   document.addEventListener('mousedown', () => {
-    if (pendingLockEl && !pointerLocked) pendingLockEl.requestPointerLock();
+    if (pendingLockEl && !pointerLocked) tryLock(pendingLockEl);
   });
 
   document.addEventListener('pointerlockchange', () => {
@@ -48,6 +73,9 @@ export function initControls() {
       pendingLockEl = null;
       blocker.style.display = 'none';
     } else {
+      // Help overlay released pointer lock — don't show pause screen
+      if (helpVisible) return;
+
       blocker.style.display = 'flex';
       if (blocker.dataset.mode === 'game') {
         pendingLockEl = renderer.domElement;
@@ -73,9 +101,28 @@ export function initControls() {
 
   document.addEventListener('keydown', (e) => {
     keys[e.code] = true;
+
+    // SHIFT+? (Shift+Slash) toggles help overlay
+    if (e.key === '?' && e.shiftKey) {
+      toggleHelp();
+      return;
+    }
+
+    // ESC closes help — browser blocks requestPointerLock from ESC,
+    // so just close the overlay and let next click/key re-enter the game
+    if (e.code === 'Escape' && helpVisible) {
+      e.preventDefault();
+      helpVisible = false;
+      const helpEl = document.getElementById('help-overlay');
+      if (helpEl) helpEl.style.display = 'none';
+      pendingLockEl = renderer.domElement;
+      return;
+    }
+
     // Any key while paused → try to resume (keydown is a user gesture)
-    if (pendingLockEl && !pointerLocked) {
-      pendingLockEl.requestPointerLock();
+    // Skip ESC — browsers block requestPointerLock from Escape key
+    if (pendingLockEl && !pointerLocked && e.code !== 'Escape') {
+      tryLock(pendingLockEl);
       return;
     }
     if (e.code === 'KeyV') toggleCamera();

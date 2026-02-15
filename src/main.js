@@ -205,7 +205,8 @@ function setupPlayButton() {
     // World ready — request pointer lock
     if (loadText) loadText.textContent = 'Entering world...';
     await yieldFrame();
-    getRenderer().domElement.requestPointerLock();
+    const p = getRenderer().domElement.requestPointerLock();
+    if (p && p.catch) p.catch(() => {});
   });
 }
 

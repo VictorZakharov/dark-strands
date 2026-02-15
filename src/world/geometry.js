@@ -53,29 +53,36 @@ export function buildGround(scene) {
 }
 
 export function buildFloors(scene) {
-  const stoneTex = loadTex('./assets/textures/stone_wall.jpg', 4, 4);
+  const woodTex = loadTex('./assets/textures/wood_planks.jpg', 3, 3);
   const floorMat = new THREE.MeshStandardMaterial({
-    map: stoneTex,
-    roughness: 0.85,
+    map: woodTex,
+    roughness: 0.75,
     side: THREE.DoubleSide,
   });
 
-  const woodTex = loadTex('./assets/textures/wood_planks.jpg', 1, 2);
+  const stairWoodTex = loadTex('./assets/textures/wood_planks.jpg', 1, 2);
   const stairMat = new THREE.MeshStandardMaterial({
-    map: woodTex,
+    map: stairWoodTex,
     roughness: 0.75,
   });
 
+  const stoneTex = loadTex('./assets/textures/stone_wall.jpg', 4, 4);
+  const midFloorMat = new THREE.MeshStandardMaterial({
+    map: stoneTex,
+    roughness: 0.85,
+  });
+
   for (const b of getBuildings()) {
-    const fw = (b.w - 2) * CFG.CELL;
-    const fh = (b.h - 2) * CFG.CELL;
     const c = getBuildingCenter(b);
 
-    // Ground floor
-    const fg = new THREE.PlaneGeometry(fw, fh);
+    // Ground floor — solid slab covering full building footprint (including under walls)
+    // Seals all light paths: extends past wall edges and below ground
+    const fw = b.w * CFG.CELL;
+    const fh = b.h * CFG.CELL;
+    const GROUND_SLAB = 0.6;
+    const fg = new THREE.BoxGeometry(fw, GROUND_SLAB, fh);
     const fm = new THREE.Mesh(fg, floorMat);
-    fm.position.set(c.x, 0.02, c.z);
-    fm.rotation.x = -Math.PI / 2;
+    fm.position.set(c.x, 0.02 - GROUND_SLAB / 2, c.z);
     fm.receiveShadow = true;
     scene.add(fm);
 
@@ -238,7 +245,6 @@ export function buildWalls(scene) {
       if (!grid[x][z] && !isDoorCell(x, z) && !isWindowCell(x, z) && !isStairCell(x, z)) {
         const p = g2w(x, z);
         const h = wallH[x][z];
-        const ty = getTerrainHeight(p.x, p.z);
 
         // Determine wall orientation from neighbors
         const openN = z > 0 && grid[x][z - 1];
@@ -259,8 +265,11 @@ export function buildWalls(scene) {
           sx = CFG.CELL; sz = CFG.CELL;
         }
 
-        dummy.position.set(p.x, ty + h / 2, p.z);
-        dummy.scale.set(sx, h, sz);
+        // Ignore terrain (buildings on flat zones ≈ 0); fixed baseline seals all gaps
+        const bottom = -0.5;
+        const totalH = h - bottom;
+        dummy.position.set(p.x, bottom + totalH / 2, p.z);
+        dummy.scale.set(sx, totalH, sz);
         dummy.updateMatrix();
         walls.setMatrixAt(idx++, dummy.matrix);
       }
@@ -272,11 +281,10 @@ export function buildWalls(scene) {
     if (b.stories === 2) {
       for (const d of b.doors) {
         const p = g2w(d.gx, d.gz);
-        const ty = getTerrainHeight(p.x, p.z);
         const isNS = d.wall === 'south' || d.wall === 'north';
         const sx = isNS ? CFG.CELL : CFG.WALL_T;
         const sz = isNS ? CFG.WALL_T : CFG.CELL;
-        dummy.position.set(p.x, ty + CFG.WALL_H + CFG.WALL_H / 2, p.z);
+        dummy.position.set(p.x, CFG.WALL_H + CFG.WALL_H / 2, p.z);
         dummy.scale.set(sx, CFG.WALL_H, sz);
         dummy.updateMatrix();
         walls.setMatrixAt(idx++, dummy.matrix);
@@ -345,13 +353,13 @@ export function buildWindows(scene) {
 
   for (const [, cw] of cellWindows) {
     const p = g2w(cw.gx, cw.gz);
-    const ty = getTerrainHeight(p.x, p.z);
+    const ty = 0; // buildings on flat zones — use fixed baseline
     const isNS = cw.wall === 'south' || cw.wall === 'north';
 
-    // Build wall shape with window holes
+    // Build wall shape with window holes (extend below ground to match regular walls)
     const shape = new THREE.Shape();
-    shape.moveTo(-CFG.CELL / 2, 0);
-    shape.lineTo(CFG.CELL / 2, 0);
+    shape.moveTo(-CFG.CELL / 2, -0.5);
+    shape.lineTo(CFG.CELL / 2, -0.5);
     shape.lineTo(CFG.CELL / 2, cw.wallH);
     shape.lineTo(-CFG.CELL / 2, cw.wallH);
     shape.closePath();

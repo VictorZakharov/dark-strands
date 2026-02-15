@@ -21,6 +21,12 @@ let camBlend = 1;          // Start at 3rd person
 let camBlendTarget = 0;    // Animate to 1st person on game start
 let camTransT = 0;         // Transition elapsed time
 const CAM_TRANS_DUR = 1.0; // 1 second transition
+let convergenceDist = 30;  // crosshair convergence distance (set on V toggle)
+
+// 3→1 world-space crosshair tracking
+const _crosshairTarget = new THREE.Vector3();
+const _targetLocal = new THREE.Vector3(); // target in player-local coords (right, up, fwd)
+let _trackWorldTarget = false; // true during 3→1 transition
 
 // Zoom state
 const BASE_FOV = 75;
@@ -30,10 +36,15 @@ let zoomT = 0; // 0 = no zoom, 1 = fully zoomed
 
 // Pre-allocated temporaries for camera blending
 const _fpPos = new THREE.Vector3();
-const _fpLookAt = new THREE.Vector3();
 const _tpPos = new THREE.Vector3();
-const _tpLookAt = new THREE.Vector3();
 const _blendedLookAt = new THREE.Vector3();
+const _probeTarget = new THREE.Vector3();
+const _probeDir = new THREE.Vector3();
+const _camRight = new THREE.Vector3();
+const _lastCamPos = new THREE.Vector3();
+const _lastCamFwd = new THREE.Vector3(0, 0, -1);
+const _toHit = new THREE.Vector3();
+
 
 const state = {
   x: 0,
@@ -76,6 +87,10 @@ export function initPlayer(scene) {
 
     playerModel.add(model);
 
+    // Put player model on layer 1 only — camera toggles layer 1 for FP/TP visibility
+    // Shadow map still renders it regardless of camera layers
+    playerModel.traverse(obj => obj.layers.set(1));
+
     // Set up animations
     mixer = new THREE.AnimationMixer(model);
     const clips = gltf.animations;
@@ -107,14 +122,94 @@ function crossfade(from, to, duration = 0.2) {
 }
 
 export function toggleCamera() {
-  state.firstPerson = !state.firstPerson;
-  if (state.firstPerson) {
-    // Look horizontal, facing same direction as model
-    state.pitch = 0;
-    state.yaw = facingAngle + Math.PI;
+  // If toggling mid-3→1 transition, preserve current camera direction
+  if (_trackWorldTarget) {
+    state.yaw = Math.atan2(-_lastCamFwd.x, -_lastCamFwd.z);
+    state.pitch = Math.asin(Math.max(-1, Math.min(1, _lastCamFwd.y)));
+    _trackWorldTarget = false;
   }
+
+  state.firstPerson = !state.firstPerson;
   camBlendTarget = state.firstPerson ? 0 : 1;
-  camTransT = 0;
+  // Start transition from current blend position (no jerk on rapid toggle)
+  const progress = camBlendTarget === 1 ? camBlend : 1 - camBlend;
+  camTransT = inverseSmoothstep(progress) * CAM_TRANS_DUR;
+
+  const fpEye = new THREE.Vector3(state.x, state.y + CFG.PLAYER_H, state.z);
+  const fpFwd = new THREE.Vector3(
+    -Math.sin(state.yaw) * Math.cos(state.pitch),
+    Math.sin(state.pitch),
+    -Math.cos(state.yaw) * Math.cos(state.pitch)
+  ).normalize();
+
+  if (state.firstPerson) {
+    // 3→1: raycast from TP camera to find what crosshair is actually on
+    camRay.set(_lastCamPos, _lastCamFwd);
+    camRay.far = 200;
+    camRay.near = 0;
+    const scene = getScene();
+    const hits = camRay.intersectObjects(scene.children, true);
+
+    let found = false;
+    for (const hit of hits) {
+      let isPlayer = false;
+      let obj = hit.object;
+      while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
+      if (isPlayer) continue;
+      _crosshairTarget.copy(hit.point);
+      found = true;
+      break;
+    }
+    if (!found) {
+      // No geometry hit — use far point along camera direction
+      _crosshairTarget.copy(_lastCamPos).addScaledVector(_lastCamFwd, 100);
+    }
+    _trackWorldTarget = true;
+
+    // convergenceDist for after the transition ends
+    _toHit.subVectors(_crosshairTarget, fpEye);
+    convergenceDist = Math.max(3, _toHit.dot(fpFwd));
+
+    // Decompose target offset into player-local (right, up, fwd) coords
+    // so mouse rotation during transition moves the target naturally.
+    const localRight = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+    const localUp = new THREE.Vector3().crossVectors(localRight, fpFwd).normalize();
+    _targetLocal.set(_toHit.dot(localRight), _toHit.dot(localUp), _toHit.dot(fpFwd));
+  } else {
+    // 1→3: raycast from actual camera to find convergence distance
+    _trackWorldTarget = false;
+    camRay.set(_lastCamPos, _lastCamFwd);
+    camRay.far = 200;
+    camRay.near = 0;
+    const scene = getScene();
+    const hits = camRay.intersectObjects(scene.children, true);
+
+    convergenceDist = 30;
+    for (const hit of hits) {
+      let isPlayer = false;
+      let obj = hit.object;
+      while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
+      if (isPlayer) continue;
+      _toHit.subVectors(hit.point, fpEye);
+      convergenceDist = Math.max(3, _toHit.dot(fpFwd));
+      break;
+    }
+  }
+}
+
+function inverseSmoothstep(y) {
+  // Solve 3x² - 2x³ = y for x ∈ [0,1] via Newton-Raphson
+  if (y <= 0) return 0;
+  if (y >= 1) return 1;
+  let x = y;
+  for (let i = 0; i < 5; i++) {
+    const f = x * x * (3 - 2 * x) - y;
+    const fp = 6 * x * (1 - x);
+    if (Math.abs(fp) < 1e-10) break;
+    x -= f / fp;
+    x = Math.max(0, Math.min(1, x));
+  }
+  return x;
 }
 
 export function updatePlayer(dt, camera, sunLight, dayTime, keys) {
@@ -213,8 +308,6 @@ export function updatePlayer(dt, camera, sunLight, dayTime, keys) {
     Math.sin(state.pitch),
     -Math.cos(state.yaw) * Math.cos(state.pitch)
   ).normalize();
-  _fpLookAt.copy(_fpPos).addScaledVector(fpFwd, 10);
-
   // Third-person: over-the-shoulder behind player, pitch-aware orbit
   const tpDist = 3;
   const tpBaseHeight = 2.2;
@@ -232,45 +325,101 @@ export function updatePlayer(dt, camera, sunLight, dayTime, keys) {
     Math.cos(state.yaw) * hDist + rightVec.z * tpRight
   );
 
-  _tpLookAt.set(
-    state.x + rightVec.x * tpRight, state.y + 1.0, state.z + rightVec.z * tpRight
-  );
   const desiredCamY = Math.max(state.y + 0.5, state.y + tpOff.y);
   const desiredCam = new THREE.Vector3(state.x + tpOff.x, desiredCamY, state.z + tpOff.z);
 
-  // Raycast from look target toward desired camera to prevent clipping through walls
-  const toCamera = new THREE.Vector3().subVectors(desiredCam, _tpLookAt);
+  // Raycast from player eye toward desired camera to prevent clipping through walls
+  // Cast center ray + lateral probes to catch corner clipping
+  const toCamera = new THREE.Vector3().subVectors(desiredCam, _fpPos);
   const maxDist = toCamera.length();
   toCamera.normalize();
 
-  camRay.set(_tpLookAt, toCamera);
-  camRay.far = maxDist;
-  camRay.near = 0;
+  _camRight.crossVectors(toCamera, new THREE.Vector3(0, 1, 0)).normalize();
 
   const scene = getScene();
-  const hits = camRay.intersectObjects(scene.children, true);
   let finalDist = maxDist;
+  const PULL_BACK = 0.4;
+  const PROBE_W = 0.6;
 
-  for (const hit of hits) {
-    let isPlayer = false;
-    let obj = hit.object;
-    while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
-    if (isPlayer) continue;
-    finalDist = Math.max(0.5, hit.distance - 0.25);
-    break;
+  // Probe offsets: center, left, right (catches walls at corners)
+  const offsets = [0, -PROBE_W, PROBE_W];
+  for (const off of offsets) {
+    _probeTarget.copy(desiredCam).addScaledVector(_camRight, off);
+    _probeDir.subVectors(_probeTarget, _fpPos);
+    const probeDist = _probeDir.length();
+    _probeDir.normalize();
+
+    camRay.set(_fpPos, _probeDir);
+    camRay.far = probeDist;
+    camRay.near = 0;
+
+    const hits = camRay.intersectObjects(scene.children, true);
+    for (const hit of hits) {
+      let isPlayer = false;
+      let obj = hit.object;
+      while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
+      if (isPlayer) continue;
+      // Project hit distance onto main ray direction
+      const projDist = Math.max(0.5, hit.distance * _probeDir.dot(toCamera) - PULL_BACK);
+      if (projDist < finalDist) finalDist = projDist;
+      break;
+    }
   }
 
-  _tpPos.copy(_tpLookAt).addScaledVector(toCamera, finalDist);
+  _tpPos.copy(_fpPos).addScaledVector(toCamera, finalDist);
 
-  // Blend position and look-at target (no quaternion flip)
+  // Blend camera position
   camera.position.lerpVectors(_fpPos, _tpPos, camBlend);
-  _blendedLookAt.lerpVectors(_fpLookAt, _tpLookAt, camBlend);
+
+  // Camera look-at during 3→1: reconstruct world target from player-local coords
+  // using current yaw/pitch each frame. This lets mouse rotation work during the
+  // transition while still absorbing shoulder-offset parallax smoothly.
+  if (_trackWorldTarget) {
+    if (camBlend > 0) {
+      // Reconstruct target from local coords using current orientation
+      _toHit.crossVectors(rightVec, fpFwd); // local up (already unit length)
+      _crosshairTarget.copy(_fpPos)
+        .addScaledVector(rightVec, _targetLocal.x)
+        .addScaledVector(_toHit, _targetLocal.y)
+        .addScaledVector(fpFwd, _targetLocal.z);
+
+      _blendedLookAt.copy(_crosshairTarget);
+    } else {
+      // Transition complete: set yaw/pitch so fpFwd exactly matches direction to target
+      const dir = _toHit.subVectors(_crosshairTarget, _fpPos).normalize();
+      state.yaw = Math.atan2(-dir.x, -dir.z);
+      state.pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
+
+      const newFwd = new THREE.Vector3(
+        -Math.sin(state.yaw) * Math.cos(state.pitch),
+        Math.sin(state.pitch),
+        -Math.cos(state.yaw) * Math.cos(state.pitch)
+      ).normalize();
+      _toHit.subVectors(_crosshairTarget, _fpPos);
+      convergenceDist = Math.max(3, _toHit.dot(newFwd));
+
+      _blendedLookAt.copy(_fpPos).addScaledVector(newFwd, convergenceDist);
+      _trackWorldTarget = false;
+    }
+  } else {
+    _blendedLookAt.copy(_fpPos).addScaledVector(fpFwd, convergenceDist);
+  }
   camera.lookAt(_blendedLookAt);
 
-  // Player model visible whenever not fully in first person
-  playerModel.visible = camBlend > 0.15;
+  // Player model always exists for shadows; layer 1 controls camera visibility
+  playerModel.visible = true;
   playerModel.position.set(state.x, state.y, state.z);
   playerModel.rotation.y = facingAngle + Math.PI;
+
+  // FP: hide model from camera (layer 1 off) — shadows still cast
+  // TP: show model in camera (layer 1 on)
+  if (camBlend > 0.15) {
+    camera.layers.enable(1);
+  } else {
+    camera.layers.disable(1);
+  }
+  // Shadow camera always renders the model
+  sunLight.shadow.camera.layers.enable(1);
 
   // Crosshair always visible during gameplay
   const crosshair = document.getElementById('crosshair');
@@ -292,6 +441,10 @@ export function updatePlayer(dt, camera, sunLight, dayTime, keys) {
     camera.fov = BASE_FOV + (ZOOM_FOV - BASE_FOV) * smooth;
     camera.updateProjectionMatrix();
   }
+
+  // Store actual camera state for next toggle's convergence raycast
+  _lastCamPos.copy(camera.position);
+  camera.getWorldDirection(_lastCamFwd);
 
   // Shadow camera follows player
   const sunAngle = dayTime * Math.PI * 2;
