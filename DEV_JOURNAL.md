@@ -158,3 +158,27 @@
 - Fixed indoor fog: removed `indoorFogBlend` system that pushed fog distances to infinity when inside buildings (caused infinite view distance when looking outside from indoors). Linear fog with near=20 is sufficient to avoid noticeable indoor fog.
 - Fixed third-person camera ground sliding: clamped desired camera Y to at least `state.y + 0.5` so camera can't go below player feet when looking up.
 - Improved soldier obstacle avoidance: soldiers now stop and briefly idle (0.5-1.5s) when blocked instead of continuously trying to slide. Direct position updates instead of double-checking via `moveNpc` for consistent collision.
+
+### Session 11 — Flower pickup, hotbar, minimap, NPC/stair polish
+- Soldier dialogue expanded from 20 to 100 lines across 5 categories: atmospheric/lore, guard duty, casual/humorous, philosophical, warnings.
+- Soldier `[E] Talk` hint font reduced to 21px (half of door hint 42px). Speech bubble now projects from `pos.y + 1.8` (above head, not mid-body). Speech bubble `white-space: nowrap` removed so long messages wrap within 300px background.
+- Player model blue tint strengthened (`0.5, 0.55, 1.0`). NPC soldiers get green tint (`0.7, 1.0, 0.75`). Menu soldiers get random hue tint each load. Foxes untinted.
+- Stronger fog: day near=10/far=55, night near=5/far=30 (was 20/90 and 10/50).
+- Torch placement skips stair cells (`isStairCell` check) — no more torches floating above staircases.
+- Stairs flush against wall: shifted stair X position so right edge meets wall inner face (was centered with gap).
+- Fixed model frustum culling: disabled `frustumCulled` on all model clones (soldiers, foxes, flowers). `SkeletonUtils.clone()` doesn't preserve the property from base model.
+- Right-click zoom: increased to 3x (FOV 75→25), 2x faster (0.5s instead of 1s).
+- Pause/unpause responsiveness: switched blocker from `click` to `mousedown` event for faster pointer lock re-acquisition.
+- **Flower pickup system** (`src/world/flowers.js`): E key picks nearby flowers (priority: doors > soldiers > flowers). Picked flowers disappear, increment inventory counter. Respawn after 15-30s at random position far from player (>40 units) and outside camera frustum (NDC check). Total flower count stays constant.
+- Flower count doubled from 25 to 50 for easier discovery.
+- **Hotbar HUD**: 5-slot hotbar at bottom center of screen. Slot 0 shows flower icon + count when flowers are picked. Empty slots rendered as dark translucent squares with subtle borders.
+- Flowers shown as cyan dots on minimap. 2-story buildings shown in lighter brown (`#4a3a2a`) vs 1-story (`#3a2a1a`).
+
+### Session 12 — Day/night cycle overhaul, door torches, pause fix
+- **Day/night cycle fixed**: checkbox initial value was never read — only a `change` listener was set up. Added `setCycleEnabled(dnCheckbox.checked)` on world build.
+- **Realistic 24-hour cycle**: replaced raw sine curve with biome-aware `calcSunH()` function. Summer (normal): sunrise 05:00, sunset 21:00 (16h day, 8h night). Winter (snow biome): sunrise 08:00, sunset 16:00 (8h day, 16h night). Game starts at 08:00.
+- **Sun orbit**: sun now arcs across the sky during daytime using directional light position updates. Moves below horizon at night.
+- **Door torches** (`placeDoorTorches` in `torches.js`): exterior torch placed beside every door on the wall outside. Position uses building exterior face (not cell center offset) to avoid spawning inside corner walls. Automatically picks the adjacent solid wall side. Flame/light gradually fade in at dusk, off during day.
+- **Gradual dusk/dawn**: widened sky color transition band (sunH 0.4 → -0.2) with smoothstep interpolation. Fog, stars, and door torches all transition gradually instead of hard-switching at sunrise/sunset.
+- **Q key fast-forward**: hold Q to run game at 3× speed — affects movement, animations, NPC AI, day/night cycle, timers, everything.
+- **Pause/unpause improved**: removed broken `setInterval` retry (timer callbacks aren't user gestures). Added `pendingLockEl` that auto-sets when pointer lock is lost during game. Any mousedown or any key press while paused retries pointer lock. Pause text: "Click or press any key to resume".

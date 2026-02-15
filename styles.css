@@ -323,6 +323,46 @@ canvas#game {
   display: none;
 }
 
+/* ---- Hotbar ---- */
+#hotbar {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  flex-direction: row;
+  gap: 4px;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.hotbar-slot {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 4px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hotbar-slot .slot-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.hotbar-slot .slot-count {
+  position: absolute;
+  bottom: 2px;
+  right: 4px;
+  font-size: 11px;
+  color: #e8d8a0;
+  font-family: 'Courier New', monospace;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
 /* ---- Minimap ---- */
 #minimap-wrap {
   position: fixed;

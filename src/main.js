@@ -6,13 +6,14 @@ import { initGrid } from './world/grid.js';
 import { generateBuildings } from './world/generator.js';
 import { buildGround, buildFloors, buildWalls, buildWindows, buildRoofs, buildWater } from './world/geometry.js';
 import { placeTrees, placeRocks } from './world/vegetation.js';
-import { placeTorches } from './world/torches.js';
+import { placeTorches, placeDoorTorches } from './world/torches.js';
 import { placeDoors, updateDoors, updateDoorHint } from './world/doors.js';
 import { loadAllModels, getAnimMixers } from './entities/modelLoader.js';
 import { initPlayer, updatePlayer, getPlayerState } from './entities/player.js';
 import { initControls, isPointerLocked, getKeys } from './systems/controls.js';
 import { updateDayNight, getDayTime, setCycleEnabled } from './systems/daynight.js';
-import { updateFPS, updateCameraMode, updateMinimap } from './systems/hud.js';
+import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
+import { updateFlowers, updateFlowerHint } from './world/flowers.js';
 import { getSunLight } from './core/lighting.js';
 import { updateNpcs, updateSoldierHint } from './systems/npcAI.js';
 import { initMenuScene, renderMenu, disposeMenu } from './systems/menu.js';
@@ -41,25 +42,35 @@ function gameLoop(time) {
         const el = document.getElementById(id);
         if (el) el.style.display = 'block';
       }
+      const hotbar = document.getElementById('hotbar');
+      if (hotbar) hotbar.style.display = 'flex';
     }
 
     const scene = getScene();
     const camera = getCamera();
+    const keys = getKeys();
 
-    updatePlayer(dt, camera, getSunLight(), getDayTime(), getKeys());
-    updateDayNight(dt, scene);
+    // Q key = 3× game speed (time, movement, animations)
+    const speed = keys['KeyQ'] ? 3 : 1;
+    const gdt = dt * speed;
+
+    updatePlayer(gdt, camera, getSunLight(), getDayTime(), keys);
+    updateDayNight(gdt, scene);
 
     updateDoorHint();
     updateSoldierHint();
+    updateFlowerHint();
 
-    updateDoors(dt);
-    updateNpcs(dt);
-    for (const m of getAnimMixers()) m.update(dt);
+    updateDoors(gdt);
+    updateNpcs(gdt);
+    updateFlowers(gdt, camera);
+    for (const m of getAnimMixers()) m.update(gdt);
 
     renderer.render(scene, camera);
 
     updateFPS(time);
     updateCameraMode();
+    updateInventory();
 
     minimapTick++;
     if (minimapTick % 10 === 0) updateMinimap();
@@ -123,6 +134,7 @@ async function buildWorld() {
 
   await yieldFrame();
   placeTorches(scene);
+  placeDoorTorches(scene);
   setLoadProgress(62);
 
   await yieldFrame();
@@ -148,6 +160,7 @@ async function buildWorld() {
   // Wire up day/night toggle
   const dnCheckbox = document.getElementById('daynight-checkbox');
   if (dnCheckbox) {
+    setCycleEnabled(dnCheckbox.checked);
     dnCheckbox.addEventListener('change', () => setCycleEnabled(dnCheckbox.checked));
   }
 

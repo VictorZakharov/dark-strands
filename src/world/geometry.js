@@ -141,8 +141,9 @@ function buildStairSteps(scene, b, mat) {
   const stairP1 = g2w(s.gx, s.gzStart);
   const stairP2 = g2w(s.gx, s.gzEnd);
 
-  const stairX = stairP1.x;
   const stairWidth = CFG.CELL * 0.95;
+  // Flush against the right wall (shift right so right edge meets wall inner face)
+  const stairX = stairP1.x + (CFG.CELL - stairWidth) / 2;
   const zMin = stairP1.z - CFG.CELL / 2;
   const zMax = stairP2.z + CFG.CELL / 2;
   const totalDepth = zMax - zMin;

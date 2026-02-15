@@ -22,7 +22,7 @@ export const MODEL_REGISTRY = [
     name: 'Flower',
     url: './assets/models/Flower.glb',
     targetHeight: 0.4,
-    count: 25,
+    count: 50,
     animated: false,
     license: 'MIT (Three.js examples)',
   },

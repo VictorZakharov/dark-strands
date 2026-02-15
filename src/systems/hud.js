@@ -1,4 +1,5 @@
 import { CFG } from '../config.js';
+import { getInventory, getFlowers } from '../world/flowers.js';
 import { getGrid } from '../world/grid.js';
 import { getBuildings } from '../world/generator.js';
 import { getPlayerState } from '../entities/player.js';
@@ -14,6 +15,17 @@ export function updateFPS(time) {
     if (el) el.textContent = `FPS: ${frameCount}`;
     frameCount = 0;
     fpsTime = time;
+  }
+}
+
+export function updateInventory() {
+  const inv = getInventory();
+  const slot = document.querySelector('.hotbar-slot[data-slot="0"]');
+  if (!slot) return;
+  if (inv.flowers > 0) {
+    slot.innerHTML = '<span class="slot-icon">\uD83C\uDF38</span><span class="slot-count">' + inv.flowers + '</span>';
+  } else {
+    slot.innerHTML = '';
   }
 }
 
@@ -43,9 +55,17 @@ export function updateMinimap() {
   }
 
   // Building interiors
-  ctx.fillStyle = '#3a2a1a';
   for (const b of buildings) {
+    ctx.fillStyle = b.stories === 2 ? '#4a3a2a' : '#3a2a1a';
     ctx.fillRect((b.x + 1) * s, (b.z + 1) * s, (b.w - 2) * s, (b.h - 2) * s);
+  }
+
+  // Flowers (cyan dots)
+  ctx.fillStyle = '#0ff';
+  for (const f of getFlowers()) {
+    if (!f.active) continue;
+    const fg = w2g(f.wx, f.wz);
+    ctx.fillRect(fg.x * s, fg.z * s, Math.ceil(s), Math.ceil(s));
   }
 
   // Player dot

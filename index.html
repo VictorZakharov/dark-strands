@@ -38,11 +38,13 @@
     <div class="control-item"><span class="key">V</span> Camera</div>
     <div class="control-item"><span class="key">E</span> Interact</div>
     <div class="control-item"><span class="key">ESC</span> Pause</div>
+    <div class="control-item"><span class="key">RMB</span> Zoom</div>
+    <div class="control-item"><span class="key">Q</span> Fast-forward</div>
   </div>
 
   <div id="menu-pause" style="display:none">
     <p id="pause-text">Click to Resume</p>
-    <p id="pause-hint">ESC to pause</p>
+    <p id="pause-hint">Click or press any key to resume</p>
   </div>
 </div>
 
@@ -62,7 +64,15 @@
 
 <div id="interact-hint" style="display:none"></div>
 <div id="npc-speech" style="display:none"></div>
-<div id="hud-bottom">WASD move | SHIFT sprint | SPACE jump | V toggle camera | E interact | ESC release mouse</div>
+<div id="hud-bottom">WASD move | SHIFT sprint | SPACE jump | V toggle camera | E interact | RMB zoom | Q fast-forward | ESC pause</div>
+
+<div id="hotbar">
+  <div class="hotbar-slot" data-slot="0"></div>
+  <div class="hotbar-slot" data-slot="1"></div>
+  <div class="hotbar-slot" data-slot="2"></div>
+  <div class="hotbar-slot" data-slot="3"></div>
+  <div class="hotbar-slot" data-slot="4"></div>
+</div>
 
 <div id="minimap-wrap">
   <canvas id="minimap" width="160" height="160"></canvas>

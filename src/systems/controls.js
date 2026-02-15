@@ -2,10 +2,12 @@ import { getRenderer } from '../core/scene.js';
 import { getPlayerState, toggleCamera } from '../entities/player.js';
 import { toggleNearestDoor, getNearestDoor } from '../world/doors.js';
 import { talkToNearestSoldier } from '../systems/npcAI.js';
+import { pickNearestFlower } from '../world/flowers.js';
 
 const keys = {};
 let pointerLocked = false;
 let rightMouseDown = false;
+let pendingLockEl = null;
 
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
@@ -17,26 +19,38 @@ export function initControls() {
   const player = getPlayerState();
 
   // When paused (ESC), clicking blocker re-enters game
-  blocker.addEventListener('click', (e) => {
-    if (blocker.dataset.mode !== 'game') return; // only works after entering game
+  blocker.addEventListener('mousedown', (e) => {
+    if (blocker.dataset.mode !== 'game') return;
     if (e.target.closest('#daynight-toggle')) return;
     if (e.target.closest('#menu-panel')) return;
     if (e.target.closest('#menu-loading')) return;
+    pendingLockEl = renderer.domElement;
     renderer.domElement.requestPointerLock();
   });
 
-  renderer.domElement.addEventListener('click', () => {
-    if (!pointerLocked) renderer.domElement.requestPointerLock();
+  renderer.domElement.addEventListener('mousedown', () => {
+    if (!pointerLocked) {
+      pendingLockEl = renderer.domElement;
+      renderer.domElement.requestPointerLock();
+    }
+  });
+
+  // Retry pointer lock on any user gesture while paused
+  // (browser may enforce a brief cooldown after ESC; real user gestures
+  //  like mousedown/keydown can re-lock once the cooldown expires)
+  document.addEventListener('mousedown', () => {
+    if (pendingLockEl && !pointerLocked) pendingLockEl.requestPointerLock();
   });
 
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === renderer.domElement;
     if (pointerLocked) {
+      pendingLockEl = null;
       blocker.style.display = 'none';
     } else {
       blocker.style.display = 'flex';
-      // If game was playing (not menu mode), show pause overlay
       if (blocker.dataset.mode === 'game') {
+        pendingLockEl = renderer.domElement;
         const panel = document.getElementById('menu-panel');
         const loading = document.getElementById('menu-loading');
         const keys = document.getElementById('menu-keys');
@@ -59,10 +73,15 @@ export function initControls() {
 
   document.addEventListener('keydown', (e) => {
     keys[e.code] = true;
+    // Any key while paused → try to resume (keydown is a user gesture)
+    if (pendingLockEl && !pointerLocked) {
+      pendingLockEl.requestPointerLock();
+      return;
+    }
     if (e.code === 'KeyV') toggleCamera();
     if (e.code === 'KeyE' && pointerLocked) {
       if (getNearestDoor()) toggleNearestDoor();
-      else talkToNearestSoldier();
+      else if (!talkToNearestSoldier()) pickNearestFlower();
     }
   });
 

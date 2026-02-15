@@ -24,8 +24,8 @@ const CAM_TRANS_DUR = 1.0; // 1 second transition
 
 // Zoom state
 const BASE_FOV = 75;
-const ZOOM_FOV = 37.5; // 2x zoom
-const ZOOM_DUR = 1.0;
+const ZOOM_FOV = 25; // 3x zoom
+const ZOOM_DUR = 0.5;
 let zoomT = 0; // 0 = no zoom, 1 = fully zoomed
 
 // Pre-allocated temporaries for camera blending
@@ -68,6 +68,7 @@ export function initPlayer(scene) {
       if (c.isMesh) {
         c.castShadow = true;
         c.receiveShadow = true;
+        c.frustumCulled = false;
         c.material = c.material.clone();
         c.material.color.multiply(new THREE.Color(0.5, 0.55, 1.0));
       }

@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { MODEL_REGISTRY } from './models.js';
 import { randomWalkablePos } from '../world/grid.js';
+import { registerFlower } from '../world/flowers.js';
 import { registerSoldier, registerFox } from '../systems/npcAI.js';
 import { getTerrainHeight } from '../world/terrain.js';
 
@@ -30,6 +31,7 @@ function enableShadows(model) {
     if (child.isMesh) {
       child.castShadow = true;
       child.receiveShadow = true;
+      child.frustumCulled = false;
     }
   });
 }
@@ -49,6 +51,7 @@ function placeSoldier(scene, model, gltf) {
 
   clone.traverse(c => {
     if (c.isMesh) {
+      c.frustumCulled = false;
       c.material = c.material.clone();
       c.material.color.multiply(new THREE.Color(0.7, 1.0, 0.75));
     }
@@ -76,6 +79,8 @@ function placeFox(scene, model, gltf) {
   mixer.setTime(Math.random() * idleClip.duration);
   animMixers.push(mixer);
 
+  clone.traverse(c => { if (c.isMesh) c.frustumCulled = false; });
+
   clone.position.set(pos.x, getTerrainHeight(pos.x, pos.z), pos.z);
   clone.rotation.y = Math.random() * Math.PI * 2;
   scene.add(clone);
@@ -99,9 +104,13 @@ function placeClone(scene, model, gltf, def) {
     clone = model.clone();
   }
 
+  clone.traverse(c => { if (c.isMesh) c.frustumCulled = false; });
+
   clone.position.set(pos.x, getTerrainHeight(pos.x, pos.z), pos.z);
   clone.rotation.y = Math.random() * Math.PI * 2;
   scene.add(clone);
+
+  if (def.id === 'flower') registerFlower(clone, pos.x, pos.z);
 }
 
 export async function loadAllModels(scene) {
