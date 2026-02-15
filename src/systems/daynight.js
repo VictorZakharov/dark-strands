@@ -4,13 +4,23 @@ import { getSunLight, getHemiLight, getStars } from '../core/lighting.js';
 import { getTorchLights, getDoorTorchLights, getDoorTorchFlames } from '../world/torches.js';
 import { padTime } from '../utils/helpers.js';
 
-let dayTime = 8 / 24; // Start at 08:00
+let dayTime = 8 / 24; // Start at 08:00 (overridden to 10:00 for snow biome)
 let cycleEnabled = false;
+let _sunH = 1; // current sun height (-1 to +1)
+
+// Sun offset from target — used by player.js shadow follow
+let _sunOff = { x: 40, y: 50, z: 20 };
 
 export function getDayTime() { return dayTime; }
+export function getSunOffset() { return _sunOff; }
+export function getSunH() { return _sunH; }
 
 export function setCycleEnabled(enabled) {
   cycleEnabled = enabled;
+}
+
+export function setStartTime(t) {
+  dayTime = t;
 }
 
 /**
@@ -35,23 +45,24 @@ export function updateDayNight(dt, scene) {
   const rise = CFG.SNOW_MODE ? 8 / 24 : 5 / 24;
   const set  = CFG.SNOW_MODE ? 16 / 24 : 21 / 24;
   const sunH = calcSunH(dayTime, rise, set);
+  _sunH = sunH;
 
   const sunLight = getSunLight();
   const hemiLight = getHemiLight();
   const stars = getStars();
   const torchLights = getTorchLights();
 
-  // Sun orbit — arc across sky during daytime
+  // Sun direction offset — player.js positions the light for shadow follow
   if (sunH > 0) {
     const dayFrac = (dayTime - rise) / (set - rise);
     const arcAngle = dayFrac * Math.PI;
-    sunLight.position.set(
-      Math.cos(arcAngle) * 80,
-      sunH * 70 + 10,
-      Math.sin(arcAngle) * 30
-    );
+    _sunOff = {
+      x: Math.cos(arcAngle) * 80,
+      y: sunH * 70 + 10,
+      z: Math.sin(arcAngle) * 30,
+    };
   } else {
-    sunLight.position.set(0, -50, 0);
+    _sunOff = { x: 0, y: -50, z: 0 };
   }
 
   // Sun intensity & color
@@ -98,7 +109,10 @@ export function updateDayNight(dt, scene) {
 
   // Interior torches (always on, brighter at night)
   const torchIntensity = 1.0 + Math.max(0, -sunH) * 2.5;
-  for (const t of torchLights) t.intensity = torchIntensity;
+  for (const t of torchLights) {
+    if (t.userData.picked) continue;
+    t.intensity = torchIntensity;
+  }
 
   // Door torches — on 1h before sunset, off 1h after sunrise, 30min fade
   const doorLights = getDoorTorchLights();
@@ -121,7 +135,10 @@ export function updateDayNight(dt, scene) {
     else doorFade = 1;
   }
   const doorIntensity = doorFade * (1.5 + Math.max(0, -sunH) * 2.0);
-  for (const dl of doorLights) dl.intensity = doorIntensity;
+  for (const dl of doorLights) {
+    if (dl.userData.picked) continue;
+    dl.intensity = doorIntensity;
+  }
   for (const df of doorFlames) df.visible = doorFade > 0.01;
 
   // HUD time display (24-hour clock)

@@ -5,6 +5,7 @@
 ## Running
 
 ```
+npm install
 npm start
 # or: npx serve . -p 3000
 ```
@@ -18,9 +19,9 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 - ESC - Release mouse
 
 ## Tech Stack
-- **Three.js 0.162.0** loaded via importmap from CDN (`cdn.jsdelivr.net`)
+- **Three.js 0.162.0** installed locally via npm, loaded via importmap from `node_modules/`
 - Pure ES modules, no bundler — `<script type="module" src="src/main.js">`
-- No npm dependencies (only `npx serve` for local HTTP server)
+- `npm install` required (installs three.js); `npx serve` for local HTTP server
 
 ## Architecture
 

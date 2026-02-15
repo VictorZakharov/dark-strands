@@ -1,8 +1,12 @@
-import { getRenderer } from '../core/scene.js';
+import { getRenderer, getScene, getCamera } from '../core/scene.js';
 import { getPlayerState, toggleCamera } from '../entities/player.js';
 import { toggleNearestDoor, getNearestDoor } from '../world/doors.js';
 import { talkToNearestSoldier } from '../systems/npcAI.js';
-import { pickNearestFlower } from '../world/flowers.js';
+import { pickNearestFlower, getInventory, plantFlower, isPreviewValid, hideFlowerPreview } from '../world/flowers.js';
+import { pickNearestRock } from '../world/vegetation.js';
+import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacementMode, isAltMode, enterAltMode, exitAltMode, addItemToSlot, clearItemSlot } from '../systems/hotbar.js';
+import { spawnProjectile } from '../systems/projectiles.js';
+import { pickNearestTorch, hideHeldTorch, isTorchPreviewValid, placeTorchAtPreview } from '../world/torches.js';
 
 const keys = {};
 let pointerLocked = false;
@@ -67,14 +71,20 @@ export function initControls() {
     if (pendingLockEl && !pointerLocked) tryLock(pendingLockEl);
   });
 
+  let skipNextMove = false;
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === renderer.domElement;
     if (pointerLocked) {
       pendingLockEl = null;
       blocker.style.display = 'none';
+      skipNextMove = true; // ignore first mousemove after re-lock (has junk delta)
     } else {
-      // Help overlay released pointer lock — don't show pause screen
-      if (helpVisible) return;
+      hideFlowerPreview();
+      hideHeldTorch();
+      setPlacementMode(false);
+
+      // Help overlay or ALT mode released pointer lock — don't show pause screen
+      if (helpVisible || isAltMode()) return;
 
       blocker.style.display = 'flex';
       if (blocker.dataset.mode === 'game') {
@@ -94,6 +104,7 @@ export function initControls() {
 
   document.addEventListener('mousemove', (e) => {
     if (!pointerLocked) return;
+    if (skipNextMove) { skipNextMove = false; return; }
     player.yaw -= e.movementX * 0.002;
     player.pitch -= e.movementY * 0.002;
     player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
@@ -119,21 +130,63 @@ export function initControls() {
       return;
     }
 
+    // ALT key — show cursor for hotbar drag-and-drop
+    if ((e.code === 'AltLeft' || e.code === 'AltRight') && pointerLocked) {
+      e.preventDefault();
+      enterAltMode();
+      document.exitPointerLock();
+      return;
+    }
+
     // Any key while paused → try to resume (keydown is a user gesture)
-    // Skip ESC — browsers block requestPointerLock from Escape key
-    if (pendingLockEl && !pointerLocked && e.code !== 'Escape') {
+    // Skip ESC and ALT — browsers block requestPointerLock from Escape key
+    if (pendingLockEl && !pointerLocked && e.code !== 'Escape'
+        && e.code !== 'AltLeft' && e.code !== 'AltRight') {
       tryLock(pendingLockEl);
       return;
     }
     if (e.code === 'KeyV') toggleCamera();
+
+    // Number keys 1-5 select hotbar slots
+    if (pointerLocked && e.code >= 'Digit1' && e.code <= 'Digit5') {
+      selectSlot(parseInt(e.code.charAt(5)) - 1);
+    }
+
     if (e.code === 'KeyE' && pointerLocked) {
-      if (getNearestDoor()) toggleNearestDoor();
-      else if (!talkToNearestSoldier()) pickNearestFlower();
+      // Act on whatever the crosshair-based hint is showing
+      const hintEl = document.getElementById('interact-hint');
+      const source = hintEl ? hintEl.dataset.source : '';
+      if (source === 'door') {
+        toggleNearestDoor();
+      } else if (source === 'soldier') {
+        talkToNearestSoldier();
+      } else if (source === 'flower') {
+        if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
+      } else if (source === 'rock') {
+        if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
+      } else if (source === 'torch') {
+        if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
+      } else {
+        // No hint visible — try fallback chain for cases where hint hasn't updated yet
+        if (getNearestDoor()) toggleNearestDoor();
+        else if (!talkToNearestSoldier()) {
+          if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
+          else if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
+          else if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
+        }
+      }
     }
   });
 
   document.addEventListener('keyup', (e) => {
     keys[e.code] = false;
+
+    // ALT released — re-lock pointer
+    if ((e.code === 'AltLeft' || e.code === 'AltRight') && isAltMode()) {
+      exitAltMode();
+      pendingLockEl = renderer.domElement;
+      tryLock(renderer.domElement);
+    }
   });
 
   // Right-click zoom
@@ -144,4 +197,40 @@ export function initControls() {
     if (e.button === 2) rightMouseDown = false;
   });
   document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Left-click item action
+  document.addEventListener('mousedown', (e) => {
+    if (e.button !== 0 || !pointerLocked) return;
+
+    const slot = getSelectedSlot();
+    const item = getSlotItem(slot);
+    const inv = getInventory();
+
+    if (item === 'flower') {
+      if (inv.flowers <= 0) return;
+      if (isPlacementMode()) {
+        if (isPreviewValid()) {
+          plantFlower(getScene());
+          if (inv.flowers <= 0) clearItemSlot('flower');
+        }
+      } else {
+        setPlacementMode(true);
+      }
+    } else if (item === 'stone') {
+      if (inv.stones <= 0) return;
+      spawnProjectile(getCamera(), getScene());
+      inv.stones--;
+      if (inv.stones <= 0) clearItemSlot('stone');
+    } else if (item === 'torch') {
+      if (inv.torches <= 0) return;
+      if (isPlacementMode()) {
+        if (isTorchPreviewValid()) {
+          placeTorchAtPreview(getScene());
+          if (inv.torches <= 0) { clearItemSlot('torch'); setPlacementMode(false); }
+        }
+      } else {
+        setPlacementMode(true);
+      }
+    }
+  });
 }

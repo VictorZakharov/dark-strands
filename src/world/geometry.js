@@ -324,6 +324,19 @@ export function buildWindows(scene) {
     );
   };
 
+  // Wooden frame material (bark texture, same as doors)
+  const frameTex = loadTex('./assets/textures/bark.jpg', 2, 2);
+  const frameMat = new THREE.MeshStandardMaterial({
+    map: frameTex,
+    color: 0x8b5a2b,
+    roughness: 0.85,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+  const FRAME_T = 0.07;  // frame bar cross-section thickness
+  const FRAME_D = CFG.WALL_T + 0.1; // extends slightly past wall on both sides
+
   const glassMat = new THREE.MeshStandardMaterial({
     color: 0x88ccee,
     transparent: true,
@@ -402,7 +415,7 @@ export function buildWindows(scene) {
 
     scene.add(wallMesh);
 
-    // Glass panes in each window opening
+    // Glass panes + wooden frames in each window opening
     for (const win of uniqueWins) {
       const winW = CFG.CELL * win.wFrac;
       const winH = CFG.WALL_H * win.hFrac;
@@ -418,6 +431,48 @@ export function buildWindows(scene) {
       }
 
       scene.add(pane);
+
+      // Wooden frame — 4 bars around window opening
+      const outerW = winW + FRAME_T * 2;
+      const outerH = winH + FRAME_T * 2;
+
+      // Top bar
+      const topGeo = isNS
+        ? new THREE.BoxGeometry(outerW, FRAME_T, FRAME_D)
+        : new THREE.BoxGeometry(FRAME_D, FRAME_T, outerW);
+      const topBar = new THREE.Mesh(topGeo, frameMat);
+      topBar.position.set(p.x, ty + baseY + winH / 2 + FRAME_T / 2, p.z);
+      topBar.castShadow = true;
+      scene.add(topBar);
+
+      // Bottom bar
+      const botBar = new THREE.Mesh(topGeo, frameMat);
+      botBar.position.set(p.x, ty + baseY - winH / 2 - FRAME_T / 2, p.z);
+      botBar.castShadow = true;
+      scene.add(botBar);
+
+      // Left bar
+      const sideGeo = isNS
+        ? new THREE.BoxGeometry(FRAME_T, outerH, FRAME_D)
+        : new THREE.BoxGeometry(FRAME_D, outerH, FRAME_T);
+      const leftBar = new THREE.Mesh(sideGeo, frameMat);
+      if (isNS) {
+        leftBar.position.set(p.x - winW / 2 - FRAME_T / 2, ty + baseY, p.z);
+      } else {
+        leftBar.position.set(p.x, ty + baseY, p.z - winW / 2 - FRAME_T / 2);
+      }
+      leftBar.castShadow = true;
+      scene.add(leftBar);
+
+      // Right bar
+      const rightBar = new THREE.Mesh(sideGeo, frameMat);
+      if (isNS) {
+        rightBar.position.set(p.x + winW / 2 + FRAME_T / 2, ty + baseY, p.z);
+      } else {
+        rightBar.position.set(p.x, ty + baseY, p.z + winW / 2 + FRAME_T / 2);
+      }
+      rightBar.castShadow = true;
+      scene.add(rightBar);
     }
   }
 }

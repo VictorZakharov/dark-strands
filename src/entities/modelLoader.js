@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { MODEL_REGISTRY } from './models.js';
 import { randomWalkablePos } from '../world/grid.js';
-import { registerFlower } from '../world/flowers.js';
+import { registerFlower, setFlowerTemplate } from '../world/flowers.js';
 import { registerSoldier, registerFox } from '../systems/npcAI.js';
 import { getTerrainHeight } from '../world/terrain.js';
 
@@ -125,6 +125,8 @@ export async function loadAllModels(scene) {
 
       normalizeScale(model, def.targetHeight);
       enableShadows(model);
+
+      if (def.id === 'flower') setFlowerTemplate(model);
 
       for (let i = 0; i < def.count; i++) {
         if (def.id === 'soldier') {

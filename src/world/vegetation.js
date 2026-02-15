@@ -4,6 +4,8 @@ import { getGrid, setCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w, rng, rngInt } from '../utils/helpers.js';
 import { getTerrainHeight } from './terrain.js';
+import { getPlayerState } from '../entities/player.js';
+import { getCamera } from '../core/scene.js';
 
 const texLoader = new THREE.TextureLoader();
 let barkTex, leafTex, rockTex;
@@ -62,7 +64,7 @@ function getLeafTexture() {
   return leafTex;
 }
 
-function getRockTexture() {
+export function getRockTexture() {
   if (!rockTex) {
     rockTex = texLoader.load('./assets/textures/stone_wall.jpg');
     rockTex.wrapS = THREE.RepeatWrapping;
@@ -80,6 +82,7 @@ function getRockTexture() {
  */
 export function collidesWithRock(wx, wz, entityR, entityY) {
   for (const rc of rockColliders) {
+    if (!rc.active) continue;
     if (entityY !== undefined && entityY >= rc.top - rc.height * 0.3) continue;
     const dx = wx - rc.x;
     const dz = wz - rc.z;
@@ -98,6 +101,7 @@ export function getRockPushback(wx, wz, entityR, entityY) {
   let pushX = 0, pushZ = 0;
 
   for (const rc of rockColliders) {
+    if (!rc.active) continue;
     if (entityY !== undefined && entityY >= rc.top - rc.height * 0.3) continue;
     const dx = wx - rc.x;
     const dz = wz - rc.z;
@@ -120,6 +124,7 @@ export function getRockPushback(wx, wz, entityR, entityY) {
 export function getRockSurfaceHeight(wx, wz, currentY) {
   let bestTop = null;
   for (const rc of rockColliders) {
+    if (!rc.active) continue;
     const dx = wx - rc.x;
     const dz = wz - rc.z;
     const standR = rc.r * 0.6;
@@ -268,8 +273,6 @@ export function placeRocks(scene) {
 
     // Register circle collider matching actual rock radius
     // top = approximate world Y of the rock's top surface
-    rockColliders.push({ x: p0.x + ox, z: p0.z + oz, r: s * 0.85, top: ty + s * 0.8, height: s * 0.8 });
-
     const geo = new THREE.DodecahedronGeometry(s, 1);
     const rock = new THREE.Mesh(geo, rockMat);
     rock.position.set(p0.x + ox, ty + s * 0.4, p0.z + oz);
@@ -277,6 +280,79 @@ export function placeRocks(scene) {
     rock.castShadow = true;
     rock.receiveShadow = true;
     scene.add(rock);
+
+    rockColliders.push({
+      x: p0.x + ox, z: p0.z + oz,
+      r: s * 0.85, top: ty + s * 0.8, height: s * 0.8,
+      mesh: rock, size: s, active: true,
+    });
     placed++;
   }
+}
+
+export function registerPickableRock(mesh, x, z, size) {
+  const top = mesh.position.y + size * 0.4;
+  rockColliders.push({
+    x, z,
+    r: size * 0.85, top, height: size * 0.8,
+    mesh, size, active: true,
+  });
+}
+
+export function getNearestPickableRock() {
+  const p = getPlayerState();
+  let best = null;
+  let bestDist = CFG.ROCK_PICK_DIST;
+  for (const rc of rockColliders) {
+    if (!rc.active || rc.size > CFG.ROCK_PICK_MAX_SIZE) continue;
+    const dx = p.x - rc.x;
+    const dz = p.z - rc.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = rc;
+    }
+  }
+  return best;
+}
+
+export function pickNearestRock(inventory) {
+  const rc = getNearestPickableRock();
+  if (!rc) return false;
+  rc.active = false;
+  rc.mesh.visible = false;
+  inventory.stones++;
+  return true;
+}
+
+const _projRock = new THREE.Vector3();
+
+export function updateRockHint() {
+  const el = document.getElementById('interact-hint');
+  if (!el) return;
+  if (el.style.display === 'block' &&
+      (el.dataset.source === 'door' || el.dataset.source === 'soldier' || el.dataset.source === 'flower')) return;
+
+  const rock = getNearestPickableRock();
+  if (!rock) {
+    if (el.dataset.source === 'rock') { el.style.display = 'none'; el.dataset.source = ''; }
+    return;
+  }
+
+  const camera = getCamera();
+  _projRock.set(rock.x, rock.top + 0.3, rock.z);
+  _projRock.project(camera);
+  if (_projRock.z > 1) {
+    if (el.dataset.source === 'rock') el.style.display = 'none';
+    return;
+  }
+
+  const hw = window.innerWidth / 2;
+  const hh = window.innerHeight / 2;
+  el.textContent = '[E] Pick up';
+  el.style.fontSize = '21px';
+  el.style.left = (_projRock.x * hw + hw) + 'px';
+  el.style.top = (-_projRock.y * hh + hh) + 'px';
+  el.style.display = 'block';
+  el.dataset.source = 'rock';
 }

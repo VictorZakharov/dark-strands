@@ -8,6 +8,7 @@ import { collidesWithRock, getRockPushback, getRockSurfaceHeight } from '../worl
 import { collidesWithDoorPanel, getDoorPanelPushback } from '../world/doors.js';
 import { getScene } from '../core/scene.js';
 import { isRightMouseDown } from '../systems/controls.js';
+import { getSunOffset } from '../systems/daynight.js';
 
 let playerModel;
 let mixer, idleAction, walkAction, runAction;
@@ -15,6 +16,7 @@ let currentAction;
 let modelReady = false;
 let facingAngle = Math.PI;
 const camRay = new THREE.Raycaster();
+camRay.layers.set(0); // Only test layer 0 (skip sky objects on layer 2)
 
 // Camera blend: 0 = first person, 1 = third person
 let camBlend = 1;          // Start at 3rd person
@@ -212,7 +214,7 @@ function inverseSmoothstep(y) {
   return x;
 }
 
-export function updatePlayer(dt, camera, sunLight, dayTime, keys) {
+export function updatePlayer(dt, camera, sunLight, keys) {
   const fwd = new THREE.Vector3(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
   const right = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
   const sprinting = keys['ShiftLeft'] || keys['ShiftRight'];
@@ -418,6 +420,8 @@ export function updatePlayer(dt, camera, sunLight, dayTime, keys) {
   } else {
     camera.layers.disable(1);
   }
+  // Layer 2: sky objects (sun, lensflare) — always visible, never raycasted
+  camera.layers.enable(2);
   // Shadow camera always renders the model
   sunLight.shadow.camera.layers.enable(1);
 
@@ -446,11 +450,9 @@ export function updatePlayer(dt, camera, sunLight, dayTime, keys) {
   _lastCamPos.copy(camera.position);
   camera.getWorldDirection(_lastCamFwd);
 
-  // Shadow camera follows player
-  const sunAngle = dayTime * Math.PI * 2;
-  const sx = Math.cos(sunAngle) * 40;
-  const sy = Math.sin(sunAngle) * 40;
-  sunLight.position.set(state.x + sx, Math.max(sy, 2), state.z + 20);
+  // Shadow camera follows player — direction from daynight.js, position relative to player
+  const off = getSunOffset();
   sunLight.target.position.set(state.x, 0, state.z);
+  sunLight.position.set(state.x + off.x, off.y, state.z + off.z);
   sunLight.target.updateMatrixWorld();
 }

@@ -4,6 +4,7 @@ import { getGrid } from '../world/grid.js';
 import { getBuildings } from '../world/generator.js';
 import { getPlayerState } from '../entities/player.js';
 import { w2g } from '../utils/helpers.js';
+import { getSlotItem, ITEM_META } from '../systems/hotbar.js';
 
 let frameCount = 0;
 let fpsTime = 0;
@@ -20,12 +21,22 @@ export function updateFPS(time) {
 
 export function updateInventory() {
   const inv = getInventory();
-  const slot = document.querySelector('.hotbar-slot[data-slot="0"]');
-  if (!slot) return;
-  if (inv.flowers > 0) {
-    slot.innerHTML = '<span class="slot-icon">\uD83C\uDF38</span><span class="slot-count">' + inv.flowers + '</span>';
-  } else {
-    slot.innerHTML = '';
+
+  for (let i = 0; i < 5; i++) {
+    const sl = document.querySelector('.hotbar-slot[data-slot="' + i + '"]');
+    if (!sl) continue;
+
+    const item = getSlotItem(i);
+    const meta = item ? ITEM_META[item] : null;
+    const count = meta ? inv[meta.invKey] : 0;
+
+    if (meta && count > 0) {
+      sl.innerHTML = '<span class="slot-label">' + (i + 1) + '</span>'
+        + '<span class="slot-icon">' + meta.icon + '</span>'
+        + '<span class="slot-count">' + count + '</span>';
+    } else {
+      sl.innerHTML = '<span class="slot-label">' + (i + 1) + '</span>';
+    }
   }
 }
 

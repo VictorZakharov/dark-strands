@@ -500,6 +500,80 @@ function templateRockyDay(scene) {
   };
 }
 
+// --- Campfire animation state ---
+let campfireFlames = [];   // { mesh, baseY, phase, speed, baseScale }
+let campfireEmbers = [];   // { mesh, vel, life, maxLife }
+let campfireLight = null;
+let campfireLightBase = 0;
+
+function createFireTexture() {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 64;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,220,100,1)');
+  grad.addColorStop(0.3, 'rgba(255,140,20,0.8)');
+  grad.addColorStop(0.6, 'rgba(255,60,0,0.4)');
+  grad.addColorStop(1, 'rgba(100,10,0,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+
+function createEmberTexture() {
+  const c = document.createElement('canvas');
+  c.width = 16; c.height = 16;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createRadialGradient(8, 8, 0, 8, 8, 8);
+  grad.addColorStop(0, 'rgba(255,200,50,1)');
+  grad.addColorStop(0.5, 'rgba(255,100,0,0.6)');
+  grad.addColorStop(1, 'rgba(255,50,0,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 16, 16);
+  return new THREE.CanvasTexture(c);
+}
+
+function updateCampfire(dt) {
+  if (!campfireFlames.length) return;
+  const t = performance.now() * 0.001;
+
+  // Animate flame sprites — flicker, sway, pulse
+  for (const f of campfireFlames) {
+    const wave = Math.sin(t * f.speed + f.phase);
+    const wave2 = Math.cos(t * f.speed * 1.3 + f.phase * 0.7);
+    f.mesh.position.y = f.baseY + wave * 0.04;
+    f.mesh.position.x = f.baseX + wave2 * 0.03;
+    const sc = f.baseScale * (0.85 + 0.3 * Math.sin(t * f.speed * 0.8 + f.phase));
+    f.mesh.scale.set(sc, sc * (1.0 + wave * 0.2), sc);
+    f.mesh.material.opacity = 0.5 + 0.4 * Math.sin(t * f.speed * 1.2 + f.phase * 2);
+  }
+
+  // Animate embers — float upward, fade
+  for (const e of campfireEmbers) {
+    e.life -= dt;
+    if (e.life <= 0) {
+      // Reset ember
+      e.mesh.position.set(rnd(-0.15, 0.15), rnd(0.2, 0.4), rnd(-0.15, 0.15));
+      e.vel.set(rnd(-0.2, 0.2), rnd(0.8, 1.8), rnd(-0.2, 0.2));
+      e.life = e.maxLife = rnd(1.0, 2.5);
+    }
+    e.mesh.position.x += e.vel.x * dt;
+    e.mesh.position.y += e.vel.y * dt;
+    e.mesh.position.z += e.vel.z * dt;
+    e.vel.x += rnd(-2, 2) * dt; // wind wobble
+    const frac = e.life / e.maxLife;
+    e.mesh.material.opacity = frac * 0.9;
+    const sc = 0.04 + 0.06 * frac;
+    e.mesh.scale.set(sc, sc, sc);
+  }
+
+  // Flicker the light
+  if (campfireLight) {
+    campfireLight.intensity = campfireLightBase + Math.sin(t * 8) * 0.5 + Math.sin(t * 13) * 0.3 + Math.sin(t * 21) * 0.15;
+  }
+}
+
 function templateCampfire(scene) {
   scene.background = new THREE.Color(0x050508);
   scene.fog = new THREE.FogExp2(0x050508, 0.06);
@@ -508,31 +582,120 @@ function templateCampfire(scene) {
 
   addGround(scene);
 
-  // Campfire
   const fx = 0, fz = 0;
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + rnd(-0.2, 0.2);
-    scene.add(createRock(fx + Math.cos(a) * 0.35, fz + Math.sin(a) * 0.35, rnd(0.06, 0.1)));
-  }
-  // Campfire ring collider (prevent walking into fire)
-  menuColliders.push({ x: fx, z: fz, r: 0.6 });
 
-  const flame = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 6, 4),
-    new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff4400, emissiveIntensity: 3 })
-  );
-  flame.position.set(fx, 0.15, fz);
-  scene.add(flame);
-  const fl = new THREE.PointLight(0xff8833, 5, 12, 1.5);
-  fl.position.set(fx, 0.5, fz);
-  scene.add(fl);
+  // --- Rock ring (10 rocks, varied sizes, tighter circle) ---
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2 + rnd(-0.15, 0.15);
+    const rd = rnd(0.42, 0.52);
+    scene.add(createRock(fx + Math.cos(a) * rd, fz + Math.sin(a) * rd, rnd(0.08, 0.14)));
+  }
+  menuColliders.push({ x: fx, z: fz, r: 0.7 });
+
+  // --- Crossed logs (3 logs with bark texture) ---
+  const logMat = new THREE.MeshStandardMaterial({
+    map: loadTex('./assets/textures/bark.jpg', 1, 1), roughness: 0.9,
+    emissive: 0x331100, emissiveIntensity: 0.3,
+  });
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI + rnd(-0.2, 0.2);
+    const log = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.55, 5), logMat);
+    log.position.set(fx, 0.06, fz);
+    log.rotation.z = rnd(0.15, 0.35);
+    log.rotation.y = a;
+    log.castShadow = true;
+    scene.add(log);
+  }
+
+  // --- Charred base (dark disc under fire) ---
+  const charMat = new THREE.MeshStandardMaterial({
+    color: 0x111111, emissive: 0x220800, emissiveIntensity: 0.5, roughness: 1,
+  });
+  const charBase = new THREE.Mesh(new THREE.CircleGeometry(0.3, 8), charMat);
+  charBase.rotation.x = -Math.PI / 2;
+  charBase.position.set(fx, 0.005, fz);
+  scene.add(charBase);
+
+  // --- Fire sprites (layered, animated) ---
+  const fireTex = createFireTexture();
+  campfireFlames = [];
+  const flameConfigs = [
+    { y: 0.28, scale: 0.4, speed: 4.5 },   // core
+    { y: 0.38, scale: 0.32, speed: 5.5 },   // mid
+    { y: 0.48, scale: 0.22, speed: 6.5 },   // tip
+    { y: 0.22, scale: 0.35, speed: 3.8 },   // side flame 1
+    { y: 0.32, scale: 0.28, speed: 5.0 },   // side flame 2
+  ];
+  for (const fc of flameConfigs) {
+    const mat = new THREE.SpriteMaterial({
+      map: fireTex, blending: THREE.AdditiveBlending,
+      transparent: true, opacity: 0.7, depthWrite: false,
+      color: new THREE.Color().setHSL(rnd(0.04, 0.1), 1, 0.6),
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(fc.scale, fc.scale * 1.4, fc.scale);
+    sprite.position.set(fx + rnd(-0.05, 0.05), fc.y, fz + rnd(-0.05, 0.05));
+    scene.add(sprite);
+    campfireFlames.push({
+      mesh: sprite, baseY: fc.y, baseX: sprite.position.x,
+      phase: rnd(0, Math.PI * 2), speed: fc.speed, baseScale: fc.scale,
+    });
+  }
+
+  // --- Glowing ember core (small bright mesh in center) ---
+  const coreMat = new THREE.MeshStandardMaterial({
+    color: 0xff4400, emissive: 0xff6600, emissiveIntensity: 4, roughness: 1,
+  });
+  const core = new THREE.Mesh(new THREE.DodecahedronGeometry(0.08, 0), coreMat);
+  core.position.set(fx, 0.12, fz);
+  scene.add(core);
+
+  // --- Floating ember particles ---
+  const emberTex = createEmberTexture();
+  campfireEmbers = [];
+  for (let i = 0; i < 12; i++) {
+    const mat = new THREE.SpriteMaterial({
+      map: emberTex, blending: THREE.AdditiveBlending,
+      transparent: true, opacity: 0.8, depthWrite: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    const sc = rnd(0.03, 0.08);
+    sprite.scale.set(sc, sc, sc);
+    sprite.position.set(fx + rnd(-0.15, 0.15), rnd(0.2, 1.0), fz + rnd(-0.15, 0.15));
+    scene.add(sprite);
+    campfireEmbers.push({
+      mesh: sprite,
+      vel: new THREE.Vector3(rnd(-0.2, 0.2), rnd(0.8, 1.8), rnd(-0.2, 0.2)),
+      life: rnd(0.3, 2.5),
+      maxLife: rnd(1.0, 2.5),
+    });
+  }
+
+  // --- Warm ground glow (subtle disc below fire) ---
+  const glowMat = new THREE.MeshStandardMaterial({
+    color: 0x000000, emissive: 0xff6622, emissiveIntensity: 0.6,
+    transparent: true, opacity: 0.3, roughness: 1,
+  });
+  const glowDisc = new THREE.Mesh(new THREE.CircleGeometry(1.5, 16), glowMat);
+  glowDisc.rotation.x = -Math.PI / 2;
+  glowDisc.position.set(fx, 0.01, fz);
+  scene.add(glowDisc);
+
+  // --- Lights ---
+  campfireLightBase = 5;
+  campfireLight = new THREE.PointLight(0xff8833, campfireLightBase, 14, 1.5);
+  campfireLight.position.set(fx, 0.6, fz);
+  scene.add(campfireLight);
+  // Secondary fill (warm uplight for character illumination)
+  const fillLight = new THREE.PointLight(0xff6622, 2, 8, 2);
+  fillLight.position.set(fx, 0.15, fz);
+  scene.add(fillLight);
 
   // Place character at a fixed distance from fire, facing it directly
-  const charAngle = rnd(-0.6, 0.6); // angle from camera side
+  const charAngle = rnd(-0.6, 0.6);
   const charDist = rnd(1.5, 2.0);
   const charX = fx + Math.sin(charAngle) * charDist;
   const charZ = fz - Math.cos(charAngle) * charDist;
-  // Face the fire: atan2 gives direction toward fire
   const dirToFire = Math.atan2(fx - charX, fz - charZ);
 
   const cam = { x: 3, y: 1.2, z: 4 };
@@ -548,7 +711,6 @@ function templateCampfire(scene) {
   }
 
   const useFox = Math.random() < 0.3;
-  // Soldier faces -Z (+PI offset), Fox faces +Z (no offset)
   const faceRot = useFox ? dirToFire : dirToFire + Math.PI;
   return {
     baseCam: cam, lookAt: look,
@@ -704,6 +866,7 @@ export function renderMenu(renderer, dt) {
   if (!menuScene || !menuCamera) return;
   if (menuMixer && dt) menuMixer.update(dt);
   updateMenuCharacter(dt);
+  if (dt) updateCampfire(dt);
   renderer.render(menuScene, menuCamera);
 }
 
@@ -735,4 +898,7 @@ export function disposeMenu() {
   menuKeys = {};
   menuColliders = [];
   menuBoxColliders = [];
+  campfireFlames = [];
+  campfireEmbers = [];
+  campfireLight = null;
 }

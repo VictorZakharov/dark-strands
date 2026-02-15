@@ -351,6 +351,34 @@ canvas#game {
 .hotbar-slot .slot-icon {
   font-size: 24px;
   line-height: 1;
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
+  color: #c0a878;
+}
+
+.hotbar-slot.selected {
+  border-color: rgba(232, 216, 160, 0.7);
+  background: rgba(232, 216, 160, 0.15);
+  box-shadow: 0 0 8px rgba(232, 216, 160, 0.3);
+}
+
+.hotbar-slot.dragging {
+  opacity: 0.5;
+  border-color: rgba(232, 216, 160, 0.9);
+}
+
+.hotbar-slot.drag-target {
+  border-color: rgba(100, 200, 255, 0.8);
+  background: rgba(100, 200, 255, 0.2);
+  box-shadow: 0 0 10px rgba(100, 200, 255, 0.4);
+}
+
+.hotbar-slot .slot-label {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.3);
+  font-family: 'Courier New', monospace;
 }
 
 .hotbar-slot .slot-count {

@@ -118,7 +118,7 @@ export function updateDoors(dt) {
 /**
  * Get the current world-space center of a door panel based on its rotation.
  */
-function getDoorPanelCenter(door) {
+export function getDoorPanelCenter(door) {
   const doorW = CFG.CELL;
   const rot = door.currentRotY;
   if (door.isNS) {
