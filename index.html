@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dark Strands - Prototype</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="loading">
+  <div>Loading assets...</div>
+  <div id="load-bar"><div id="load-fill"></div></div>
+</div>
+
+<div id="blocker">
+  <div id="menu-panel">
+    <h1 id="menu-title"><span>DARK</span><span>STRANDS</span></h1>
+    <p id="menu-subtitle">Survival Roguelite</p>
+
+    <label id="daynight-toggle">
+      <input type="checkbox" id="daynight-checkbox">
+      <span>Day/Night Cycle</span>
+    </label>
+
+    <label id="snow-toggle">
+      <input type="checkbox" id="snow-checkbox">
+      <span>Snow Biome</span>
+    </label>
+
+    <button id="menu-play">Enter World</button>
+  </div>
+
+  <div id="menu-keys">
+    <div class="control-item"><span class="key">WASD</span> Move</div>
+    <div class="control-item"><span class="key">SHIFT</span> Sprint</div>
+    <div class="control-item"><span class="key">SPACE</span> Jump</div>
+    <div class="control-item"><span class="key">V</span> Camera</div>
+    <div class="control-item"><span class="key">E</span> Interact</div>
+    <div class="control-item"><span class="key">ESC</span> Pause</div>
+  </div>
+
+  <div id="menu-pause" style="display:none">
+    <p id="pause-text">Click to Resume</p>
+    <p id="pause-hint">ESC to pause</p>
+  </div>
+</div>
+
+<div id="menu-loading" style="display:none">
+  <div id="menu-load-text">Preparing world...</div>
+  <div id="menu-load-bar"><div id="menu-load-fill"></div></div>
+</div>
+
+<div id="underwater-overlay"></div>
+<div id="crosshair">+</div>
+
+<div id="hud-top-left">
+  <div id="time-display"></div>
+  <div id="camera-mode"></div>
+  <div id="fps-display"></div>
+</div>
+
+<div id="interact-hint" style="display:none"></div>
+<div id="npc-speech" style="display:none"></div>
+<div id="hud-bottom">WASD move | SHIFT sprint | SPACE jump | V toggle camera | E interact | ESC release mouse</div>
+
+<div id="minimap-wrap">
+  <canvas id="minimap" width="160" height="160"></canvas>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

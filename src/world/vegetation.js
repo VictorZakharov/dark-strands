@@ -1,0 +1,282 @@
+import * as THREE from 'three';
+import { CFG } from '../config.js';
+import { getGrid, setCell } from './grid.js';
+import { getBuildings } from './generator.js';
+import { g2w, rng, rngInt } from '../utils/helpers.js';
+import { getTerrainHeight } from './terrain.js';
+
+const texLoader = new THREE.TextureLoader();
+let barkTex, leafTex, rockTex;
+
+const rockColliders = [];
+
+// Shared depth material for leaf shadow rendering — discards ~45% of fragments
+// via world-position hash to create dappled/lighter shadows
+const leafShadowDepth = new THREE.MeshDepthMaterial({
+  depthPacking: THREE.RGBADepthPacking,
+});
+leafShadowDepth.onBeforeCompile = (shader) => {
+  shader.vertexShader = shader.vertexShader.replace(
+    'varying vec2 vHighPrecisionZW;',
+    `varying vec2 vHighPrecisionZW;
+    varying vec3 vWPos;`
+  );
+  shader.vertexShader = shader.vertexShader.replace(
+    'vHighPrecisionZW = gl_Position.zw;',
+    `vHighPrecisionZW = gl_Position.zw;
+    vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+  );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    'varying vec2 vHighPrecisionZW;',
+    `varying vec2 vHighPrecisionZW;
+    varying vec3 vWPos;`
+  );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <clipping_planes_fragment>',
+    `#include <clipping_planes_fragment>
+    vec2 snapped = floor(vWPos.xz * 3.0);
+    float lh = fract(sin(dot(snapped, vec2(12.9898, 78.233))) * 43758.5453);
+    if (lh > 0.55) discard;`
+  );
+};
+
+function getBarkTexture() {
+  if (!barkTex) {
+    barkTex = texLoader.load('./assets/textures/bark.jpg');
+    barkTex.wrapS = THREE.RepeatWrapping;
+    barkTex.wrapT = THREE.RepeatWrapping;
+    barkTex.repeat.set(1, 2);
+    barkTex.colorSpace = THREE.SRGBColorSpace;
+  }
+  return barkTex;
+}
+
+function getLeafTexture() {
+  if (!leafTex) {
+    leafTex = texLoader.load('./assets/textures/grass.jpg');
+    leafTex.wrapS = THREE.RepeatWrapping;
+    leafTex.wrapT = THREE.RepeatWrapping;
+    leafTex.repeat.set(2, 2);
+    leafTex.colorSpace = THREE.SRGBColorSpace;
+  }
+  return leafTex;
+}
+
+function getRockTexture() {
+  if (!rockTex) {
+    rockTex = texLoader.load('./assets/textures/stone_wall.jpg');
+    rockTex.wrapS = THREE.RepeatWrapping;
+    rockTex.wrapT = THREE.RepeatWrapping;
+    rockTex.repeat.set(1, 1);
+    rockTex.colorSpace = THREE.SRGBColorSpace;
+  }
+  return rockTex;
+}
+
+/**
+ * Circle-based collision check against all rocks.
+ * Returns true if the circle (wx, wz, entityR) overlaps any rock.
+ * If entityY is provided, skip rocks whose top is below entityY (jumpable).
+ */
+export function collidesWithRock(wx, wz, entityR, entityY) {
+  for (const rc of rockColliders) {
+    if (entityY !== undefined && entityY >= rc.top - rc.height * 0.3) continue;
+    const dx = wx - rc.x;
+    const dz = wz - rc.z;
+    const minDist = entityR + rc.r;
+    if (dx * dx + dz * dz < minDist * minDist) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns a push-back vector to resolve the deepest rock overlap, or null.
+ * If entityY is provided, skip rocks whose top is below entityY (jumpable).
+ */
+export function getRockPushback(wx, wz, entityR, entityY) {
+  let worstPen = 0;
+  let pushX = 0, pushZ = 0;
+
+  for (const rc of rockColliders) {
+    if (entityY !== undefined && entityY >= rc.top - rc.height * 0.3) continue;
+    const dx = wx - rc.x;
+    const dz = wz - rc.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const minDist = entityR + rc.r;
+    const pen = minDist - dist;
+    if (pen > worstPen && dist > 0) {
+      worstPen = pen;
+      pushX = (dx / dist) * pen;
+      pushZ = (dz / dist) * pen;
+    }
+  }
+
+  return worstPen > 0 ? { x: pushX, z: pushZ } : null;
+}
+
+/**
+ * Returns the top Y of the highest rock the point is standing on, or null.
+ */
+export function getRockSurfaceHeight(wx, wz, currentY) {
+  let bestTop = null;
+  for (const rc of rockColliders) {
+    const dx = wx - rc.x;
+    const dz = wz - rc.z;
+    const standR = rc.r * 0.6;
+    if (dx * dx + dz * dz < standR * standR) {
+      const threshold = rc.top - rc.height * 0.3;
+      if (currentY >= threshold) {
+        if (bestTop === null || rc.top > bestTop) {
+          bestTop = rc.top;
+        }
+      }
+    }
+  }
+  return bestTop;
+}
+
+function createTree(wx, wz) {
+  const group = new THREE.Group();
+
+  const trunkMat = new THREE.MeshStandardMaterial({
+    map: getBarkTexture(),
+    roughness: 0.95,
+  });
+  const leafMat = new THREE.MeshStandardMaterial({
+    color: CFG.SNOW_MODE ? 0xc8cdd0 : 0x3a8a3a,
+    roughness: 0.9,
+    flatShading: true,
+  });
+
+  // Randomize tree shape
+  const trunkH = rng(1.4, 2.4);
+  const trunkRadBot = rng(0.14, 0.22);
+  const trunkRadTop = trunkRadBot * rng(0.5, 0.75);
+  const numCones = rngInt(3, 5);
+
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(trunkRadTop, trunkRadBot, trunkH, 6),
+    trunkMat
+  );
+  trunk.position.y = trunkH / 2;
+  trunk.castShadow = true;
+  group.add(trunk);
+
+  for (let i = 0; i < numCones; i++) {
+    // Wider at bottom, narrower at top (fir/pine shape)
+    const frac = 1 - i / numCones;
+    const coneR = rng(1.0, 1.5) * (0.25 + 0.75 * frac);
+    const coneH = rng(0.9, 1.4);
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(Math.max(coneR, 0.25), coneH, 6),
+      leafMat
+    );
+    cone.position.y = trunkH + i * rng(0.5, 0.7);
+    cone.castShadow = true;
+    cone.receiveShadow = true;
+    cone.customDepthMaterial = leafShadowDepth;
+    group.add(cone);
+  }
+
+  const ty = getTerrainHeight(wx, wz);
+  group.position.set(wx, ty, wz);
+
+  // 2x bigger base, with random variation
+  const s = rng(1.6, 3.2);
+  group.scale.set(s, s, s);
+  return group;
+}
+
+export function placeTrees(scene) {
+  const grid = getGrid();
+  const buildings = getBuildings();
+  let placed = 0;
+
+  for (let i = 0; i < CFG.TREES * 3 && placed < CFG.TREES; i++) {
+    const gx = rngInt(1, CFG.GRID - 2);
+    const gz = rngInt(1, CFG.GRID - 2);
+
+    if (!grid[gx][gz]) continue;
+    if (Math.abs(gx - CFG.GRID / 2) < 5 && Math.abs(gz - CFG.GRID / 2) < 5) continue;
+
+    let tooClose = false;
+    for (const b of buildings) {
+      if (gx >= b.x - 2 && gx < b.x + b.w + 2 && gz >= b.z - 2 && gz < b.z + b.h + 2) {
+        tooClose = true;
+        break;
+      }
+    }
+    if (tooClose) continue;
+
+    const p = g2w(gx, gz);
+    // Skip below water level
+    if (getTerrainHeight(p.x, p.z) < CFG.WATER_Y) continue;
+
+    setCell(gx, gz, false);
+    scene.add(createTree(p.x, p.z));
+    placed++;
+  }
+}
+
+export function placeRocks(scene) {
+  const rockMat = new THREE.MeshStandardMaterial({
+    map: getRockTexture(),
+    roughness: 0.95,
+    flatShading: true,
+  });
+
+  const grid = getGrid();
+  const buildings = getBuildings();
+  let placed = 0;
+
+  for (let i = 0; i < CFG.ROCKS * 3 && placed < CFG.ROCKS; i++) {
+    const gx = rngInt(1, CFG.GRID - 2);
+    const gz = rngInt(1, CFG.GRID - 2);
+
+    if (!grid[gx][gz]) continue;
+    if (Math.abs(gx - CFG.GRID / 2) < 5 && Math.abs(gz - CFG.GRID / 2) < 5) continue;
+
+    let inside = false;
+    for (const b of buildings) {
+      if (gx >= b.x && gx < b.x + b.w && gz >= b.z && gz < b.z + b.h) {
+        inside = true;
+        break;
+      }
+    }
+    if (inside) continue;
+
+    const p0 = g2w(gx, gz);
+    if (getTerrainHeight(p0.x, p0.z) < CFG.WATER_Y) continue;
+
+    // Random size — some small, some very big
+    const r = Math.random();
+    let s;
+    if (r < 0.15) {
+      s = rng(1.5, 2.5); // big rocks (15% chance)
+    } else if (r < 0.4) {
+      s = rng(0.7, 1.5); // medium rocks
+    } else {
+      s = rng(0.2, 0.7); // small rocks
+    }
+
+    // Only block grid cell for large rocks (small/medium use circle collision only)
+    if (s > 1.2) setCell(gx, gz, false);
+
+    const ox = rng(-0.3, 0.3);
+    const oz = rng(-0.3, 0.3);
+    const ty = getTerrainHeight(p0.x + ox, p0.z + oz);
+
+    // Register circle collider matching actual rock radius
+    // top = approximate world Y of the rock's top surface
+    rockColliders.push({ x: p0.x + ox, z: p0.z + oz, r: s * 0.85, top: ty + s * 0.8, height: s * 0.8 });
+
+    const geo = new THREE.DodecahedronGeometry(s, 1);
+    const rock = new THREE.Mesh(geo, rockMat);
+    rock.position.set(p0.x + ox, ty + s * 0.4, p0.z + oz);
+    rock.rotation.set(rng(0, Math.PI), rng(0, Math.PI), 0);
+    rock.castShadow = true;
+    rock.receiveShadow = true;
+    scene.add(rock);
+    placed++;
+  }
+}

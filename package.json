@@ -1,0 +1,9 @@
+{
+  "name": "dark-strands-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "npx serve . -p 3000 --no-clipboard",
+    "dev": "npx serve . -p 3000 --no-clipboard"
+  }
+}
