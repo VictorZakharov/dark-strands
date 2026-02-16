@@ -28,6 +28,26 @@ function copyDir(src, dest) {
   }
 }
 
+function hashAssetsInDir(dir, baseDir, manifest) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      hashAssetsInDir(fullPath, baseDir, manifest);
+      continue;
+    }
+    const hash = contentHash(fullPath);
+    const ext = path.extname(entry.name);
+    const base = path.basename(entry.name, ext);
+    const hashedName = `${base}.${hash}${ext}`;
+    const relFromDist = path.relative(baseDir, fullPath).replace(/\\/g, '/');
+    const relHashed = path.relative(baseDir, path.join(dir, hashedName)).replace(/\\/g, '/');
+    const origRef = `./assets/${relFromDist}`;
+    const hashedRef = `./assets/${relHashed}`;
+    fs.renameSync(fullPath, path.join(dir, hashedName));
+    manifest[origRef] = hashedRef;
+  }
+}
+
 async function build() {
   // Clean dist
   fs.rmSync('dist', { recursive: true, force: true });
@@ -56,8 +76,17 @@ async function build() {
   const cssFile = `styles.${cssHash}.css`;
   fs.renameSync('dist/_styles.css', `dist/${cssFile}`);
 
-  // Copy static assets (models, textures — keep original names for loader URLs)
+  // Copy static assets and content-hash filenames
   copyDir('assets', 'dist/assets');
+  const assetMap = {};
+  hashAssetsInDir('dist/assets', 'dist/assets', assetMap);
+
+  // Rewrite asset paths in bundled JS
+  let jsContent = fs.readFileSync(`dist/${jsFile}`, 'utf8');
+  for (const [orig, hashed] of Object.entries(assetMap)) {
+    jsContent = jsContent.replaceAll(orig, hashed);
+  }
+  fs.writeFileSync(`dist/${jsFile}`, jsContent);
 
   // Generate production index.html with hashed references
   const srcHtml = fs.readFileSync('index.html', 'utf8');
@@ -82,6 +111,10 @@ ${bodyContent}
   console.log(`Build complete → dist/`);
   console.log(`  JS:  ${jsFile} (${(fs.statSync(`dist/${jsFile}`).size / 1024).toFixed(0)}KB)`);
   console.log(`  CSS: ${cssFile} (${(fs.statSync(`dist/${cssFile}`).size / 1024).toFixed(0)}KB)`);
+  console.log(`  Assets hashed:`);
+  for (const [orig, hashed] of Object.entries(assetMap)) {
+    console.log(`    ${orig} → ${hashed}`);
+  }
 }
 
 build().catch(e => { console.error(e); process.exit(1); });
