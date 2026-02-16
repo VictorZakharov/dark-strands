@@ -1,5 +1,5 @@
 import { CFG } from '../config.js';
-import { getGrid, setCell, addStairZone, markUpperFloor, markUpperWall, markStairCell, addDoor, addWindowCell } from './grid.js';
+import { getGrid, setCell, addStairZone, markUpperFloor, markUpperWall, markStairCell, addDoor, addWindowCell, markIndoor } from './grid.js';
 import { rngInt } from '../utils/helpers.js';
 import { g2w } from '../utils/helpers.js';
 import { addFlatZone } from './terrain.js';
@@ -73,6 +73,13 @@ export function generateBuildings() {
     for (let gz = bz; gz < bz + h; gz++) {
       setCell(bx, gz, false);
       setCell(bx + w - 1, gz, false);
+    }
+
+    // Mark interior cells as indoor (so flowers/rocks don't spawn inside)
+    for (let gx = bx; gx < bx + w; gx++) {
+      for (let gz = bz; gz < bz + h; gz++) {
+        markIndoor(gx, gz);
+      }
     }
 
     // Stairs for 2-story buildings (computed early so doors can avoid stairwell)

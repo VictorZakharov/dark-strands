@@ -10,12 +10,13 @@ import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch,
 import { placeDoors, updateDoors, getNearestDoor, getDoorPanelCenter } from './world/doors.js';
 import { loadAllModels, getAnimMixers } from './entities/modelLoader.js';
 import { initPlayer, updatePlayer, getPlayerState } from './entities/player.js';
-import { initControls, isPointerLocked, getKeys } from './systems/controls.js';
+import { initControls, isGameActive, getKeys, doInteract, doUseItem } from './systems/controls.js';
+import { isTouchDevice, getTouchMove, consumeTouchLook, consumeJump, consumeInteract, consumeUse, consumeSlotTap, setMobileGameActive, updateTouchProgress } from './systems/touch.js';
 import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH } from './systems/daynight.js';
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
 import { updateFlowers, getNearestFlower, initFlowerPreview, updateFlowerPreview } from './world/flowers.js';
 import { getTerrainHeight } from './world/terrain.js';
-import { initHotbar, getSelectedSlot, getSlotItem, isPlacementMode, isAltMode } from './systems/hotbar.js';
+import { initHotbar, getSelectedSlot, getSlotItem, isPlacementMode, isAltMode, selectSlot } from './systems/hotbar.js';
 import { updateProjectiles } from './systems/projectiles.js';
 import { getSunLight, getSunGroup, getSunLensflare } from './core/lighting.js';
 import { updateNpcs, updateSoldierHint, getNearestSoldier } from './systems/npcAI.js';
@@ -65,34 +66,37 @@ function updateInteractHint(camera) {
     }
   }
 
+  const pre = isTouchDevice ? 'Hold to ' : '[E] ';
+
   const door = getNearestDoor();
   if (door) {
     const pc = getDoorPanelCenter(door);
     const doorY = door.group.position.y + CFG.WALL_H * 0.5;
-    tryCandidate(pc.x, doorY, pc.z, door.open ? '[E] Close' : '[E] Open', '', 'door');
+    const action = door.open ? 'Close' : 'Open';
+    tryCandidate(pc.x, doorY, pc.z, pre + action, '', 'door');
   }
 
   const soldier = getNearestSoldier();
   if (soldier) {
     const pos = soldier.model.position;
-    tryCandidate(pos.x, pos.y + 1.0, pos.z, '[E] Talk', '21px', 'soldier');
+    tryCandidate(pos.x, pos.y + 1.0, pos.z, pre + 'Talk', '21px', 'soldier');
   }
 
   const flower = getNearestFlower();
   if (flower) {
     const ty = getTerrainHeight(flower.wx, flower.wz);
-    tryCandidate(flower.wx, ty + 0.3, flower.wz, '[E] Pick', '21px', 'flower');
+    tryCandidate(flower.wx, ty + 0.3, flower.wz, pre + 'Pick', '21px', 'flower');
   }
 
   const rock = getNearestPickableRock();
   if (rock) {
-    tryCandidate(rock.x, rock.top + 0.3, rock.z, '[E] Pick up', '21px', 'rock');
+    tryCandidate(rock.x, rock.top + 0.3, rock.z, pre + 'Pick up', '21px', 'rock');
   }
 
   const torch = getNearestPickableTorch();
   if (torch) {
     const torchHintY = torch.flame.position.y + 0.35;
-    tryCandidate(torch.wx, torchHintY, torch.wz, '[E] Take torch', '21px', 'torch');
+    tryCandidate(torch.wx, torchHintY, torch.wz, pre + 'Take', '21px', 'torch');
   }
 
   if (bestSource) {
@@ -136,17 +140,20 @@ function gameLoop(time) {
 
   const renderer = getRenderer();
 
-  if (isPointerLocked()) {
-    // First time locking — leave menu mode
+  if (isGameActive()) {
+    // First time entering game — leave menu mode
     if (menuMode) {
       menuMode = false;
       disposeMenu();
       const blocker = document.getElementById('blocker');
-      if (blocker) blocker.dataset.mode = 'game';
+      if (blocker) { blocker.dataset.mode = 'game'; blocker.style.display = 'none'; }
       const loadingBar = document.getElementById('menu-loading');
       if (loadingBar) loadingBar.style.display = 'none';
-      // Show all HUD elements (override CSS display:none)
-      for (const id of ['hud-bottom', 'minimap-wrap', 'crosshair', 'hud-top-left']) {
+      // Show HUD elements (hide keyboard hints on touch)
+      const hudIds = isTouchDevice
+        ? ['minimap-wrap', 'crosshair', 'hud-top-left']
+        : ['hud-bottom', 'minimap-wrap', 'crosshair', 'hud-top-left'];
+      for (const id of hudIds) {
         const el = document.getElementById(id);
         if (el) el.style.display = 'block';
       }
@@ -157,6 +164,29 @@ function gameLoop(time) {
     const scene = getScene();
     const camera = getCamera();
     const keys = getKeys();
+    const player = getPlayerState();
+
+    // Touch input processing
+    if (isTouchDevice) {
+      const tm = getTouchMove();
+      const DZ = 0.15;
+      keys['KeyW'] = tm.z < -DZ;
+      keys['KeyS'] = tm.z > DZ;
+      keys['KeyA'] = tm.x < -DZ;
+      keys['KeyD'] = tm.x > DZ;
+      keys['Space'] = consumeJump();
+
+      const tl = consumeTouchLook();
+      player.yaw -= tl.dx;
+      player.pitch -= tl.dy;
+      player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
+
+      if (consumeInteract()) doInteract();
+      if (consumeUse()) doUseItem();
+      const tappedSlot = consumeSlotTap();
+      if (tappedSlot >= 0) selectSlot(tappedSlot);
+      updateTouchProgress();
+    }
 
     // Q key = 3× game speed (time, movement, animations)
     const alt = isAltMode();
@@ -375,11 +405,15 @@ function setupPlayButton() {
     // Build the world (progress bar updates during build via yieldFrame)
     await buildWorld();
 
-    // World ready — request pointer lock
+    // World ready — enter game
     if (loadText) loadText.textContent = 'Entering world...';
     await yieldFrame();
-    const p = getRenderer().domElement.requestPointerLock();
-    if (p && p.catch) p.catch(() => {});
+    if (isTouchDevice) {
+      setMobileGameActive(true);
+    } else {
+      const p = getRenderer().domElement.requestPointerLock();
+      if (p && p.catch) p.catch(() => {});
+    }
   });
 }
 

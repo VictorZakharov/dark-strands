@@ -7,6 +7,7 @@ import { pickNearestRock } from '../world/vegetation.js';
 import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacementMode, isAltMode, enterAltMode, exitAltMode, moveCursor, cursorDown, cursorUp, addItemToSlot, clearItemSlot } from '../systems/hotbar.js';
 import { spawnProjectile } from '../systems/projectiles.js';
 import { pickNearestTorch, hideHeldTorch, isTorchPreviewValid, placeTorchAtPreview } from '../world/torches.js';
+import { isTouchDevice, initTouch, setMobileGameActive, isMobileGameActive } from './touch.js';
 
 const keys = {};
 let pointerLocked = false;
@@ -40,7 +41,63 @@ export function isHelpVisible() { return helpVisible; }
 
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
+export function isGameActive() { return pointerLocked || isMobileGameActive(); }
 export function isRightMouseDown() { return rightMouseDown; }
+
+export function doInteract() {
+  const hintEl = document.getElementById('interact-hint');
+  const source = hintEl ? hintEl.dataset.source : '';
+  if (source === 'door') {
+    toggleNearestDoor();
+  } else if (source === 'soldier') {
+    talkToNearestSoldier();
+  } else if (source === 'flower') {
+    if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
+  } else if (source === 'rock') {
+    if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
+  } else if (source === 'torch') {
+    if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
+  } else {
+    if (getNearestDoor()) toggleNearestDoor();
+    else if (!talkToNearestSoldier()) {
+      if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
+      else if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
+      else if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
+    }
+  }
+}
+
+export function doUseItem() {
+  const slot = getSelectedSlot();
+  const item = getSlotItem(slot);
+  const inv = getInventory();
+  if (item === 'flower') {
+    if (inv.flowers <= 0) return;
+    if (isPlacementMode()) {
+      if (isPreviewValid()) {
+        plantFlower(getScene());
+        if (inv.flowers <= 0) clearItemSlot('flower');
+      }
+    } else {
+      setPlacementMode(true);
+    }
+  } else if (item === 'stone') {
+    if (inv.stones <= 0) return;
+    spawnProjectile(getCamera(), getScene());
+    inv.stones--;
+    if (inv.stones <= 0) clearItemSlot('stone');
+  } else if (item === 'torch') {
+    if (inv.torches <= 0) return;
+    if (isPlacementMode()) {
+      if (isTorchPreviewValid()) {
+        placeTorchAtPreview(getScene());
+        if (inv.torches <= 0) { clearItemSlot('torch'); setPlacementMode(false); }
+      }
+    } else {
+      setPlacementMode(true);
+    }
+  }
+}
 
 export function initControls() {
   const renderer = getRenderer();
@@ -160,28 +217,7 @@ export function initControls() {
     }
 
     if (e.code === 'KeyE' && pointerLocked) {
-      // Act on whatever the crosshair-based hint is showing
-      const hintEl = document.getElementById('interact-hint');
-      const source = hintEl ? hintEl.dataset.source : '';
-      if (source === 'door') {
-        toggleNearestDoor();
-      } else if (source === 'soldier') {
-        talkToNearestSoldier();
-      } else if (source === 'flower') {
-        if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
-      } else if (source === 'rock') {
-        if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
-      } else if (source === 'torch') {
-        if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
-      } else {
-        // No hint visible — try fallback chain for cases where hint hasn't updated yet
-        if (getNearestDoor()) toggleNearestDoor();
-        else if (!talkToNearestSoldier()) {
-          if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
-          else if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
-          else if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
-        }
-      }
+      doInteract();
     }
   });
 
@@ -208,36 +244,20 @@ export function initControls() {
   document.addEventListener('mousedown', (e) => {
     if (e.button !== 0 || !pointerLocked) return;
     if (isAltMode()) { cursorDown(); return; }
-
-    const slot = getSelectedSlot();
-    const item = getSlotItem(slot);
-    const inv = getInventory();
-
-    if (item === 'flower') {
-      if (inv.flowers <= 0) return;
-      if (isPlacementMode()) {
-        if (isPreviewValid()) {
-          plantFlower(getScene());
-          if (inv.flowers <= 0) clearItemSlot('flower');
-        }
-      } else {
-        setPlacementMode(true);
-      }
-    } else if (item === 'stone') {
-      if (inv.stones <= 0) return;
-      spawnProjectile(getCamera(), getScene());
-      inv.stones--;
-      if (inv.stones <= 0) clearItemSlot('stone');
-    } else if (item === 'torch') {
-      if (inv.torches <= 0) return;
-      if (isPlacementMode()) {
-        if (isTorchPreviewValid()) {
-          placeTorchAtPreview(getScene());
-          if (inv.torches <= 0) { clearItemSlot('torch'); setPlacementMode(false); }
-        }
-      } else {
-        setPlacementMode(true);
-      }
-    }
+    doUseItem();
   });
+
+  // Mobile: tap blocker to resume from pause
+  if (isTouchDevice) {
+    blocker.addEventListener('touchstart', (e) => {
+      if (blocker.dataset.mode !== 'game') return;
+      if (e.target.closest('#menu-panel')) return;
+      if (e.target.closest('#menu-loading')) return;
+      e.preventDefault();
+      setMobileGameActive(true);
+      blocker.style.display = 'none';
+    });
+  }
+
+  initTouch();
 }

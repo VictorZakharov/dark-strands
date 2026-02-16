@@ -498,7 +498,8 @@ canvas#game {
     0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
-#help-close {
+#help-close,
+#help-close-mobile {
   font-size: 10px;
   color: rgba(200, 200, 200, 0.35);
   letter-spacing: 2px;
@@ -509,7 +510,12 @@ canvas#game {
   border-radius: 3px;
 }
 
-#help-content {
+/* Desktop/mobile help toggle */
+.help-mobile { display: none; }
+.help-desktop { display: block; }
+
+#help-content,
+#help-content-mobile {
   padding: 20px 28px 24px;
   overflow-y: auto;
   display: flex;
@@ -517,15 +523,18 @@ canvas#game {
   gap: 24px;
 }
 
-#help-content::-webkit-scrollbar {
+#help-content::-webkit-scrollbar,
+#help-content-mobile::-webkit-scrollbar {
   width: 6px;
 }
 
-#help-content::-webkit-scrollbar-track {
+#help-content::-webkit-scrollbar-track,
+#help-content-mobile::-webkit-scrollbar-track {
   background: transparent;
 }
 
-#help-content::-webkit-scrollbar-thumb {
+#help-content::-webkit-scrollbar-thumb,
+#help-content-mobile::-webkit-scrollbar-thumb {
   background: rgba(232, 216, 160, 0.15);
   border-radius: 3px;
 }
@@ -588,4 +597,367 @@ canvas#game {
   border-radius: 2px;
   font-size: 10px;
   font-family: 'Courier New', monospace;
+}
+
+/* ---- Touch controls (mobile) ---- */
+#touch-controls {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+#touch-joystick {
+  position: fixed;
+  width: 120px;
+  height: 120px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.2);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+#joystick-knob {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  background: rgba(255, 255, 255, 0.3);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-radius: 50%;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+#touch-top-buttons {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+#touch-top-buttons button {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.7);
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  font-weight: bold;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+#touch-top-buttons button:active {
+  background: rgba(232, 216, 160, 0.25);
+  border-color: rgba(232, 216, 160, 0.5);
+}
+
+#touch-buttons {
+  position: fixed;
+  bottom: 110px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+#touch-buttons button {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.8);
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+#touch-buttons button:active {
+  background: rgba(232, 216, 160, 0.3);
+  border-color: rgba(232, 216, 160, 0.6);
+}
+
+/* ---- Touch long-press progress ---- */
+#touch-progress {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 80px;
+  height: 80px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 15;
+  pointer-events: none;
+}
+
+#touch-progress svg {
+  position: absolute;
+  inset: 0;
+}
+
+#progress-arc {
+  transition: stroke-dashoffset 0.05s linear;
+}
+
+#progress-label {
+  position: relative;
+  z-index: 1;
+  color: #e8d8a0;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+
+/* ---- Mobile-specific overrides ---- */
+@media (hover: none) and (pointer: coarse) {
+  body {
+    touch-action: none;
+  }
+
+  /* Hide desktop-only UI */
+  #menu-keys { display: none !important; }
+  #hud-bottom { display: none !important; }
+  #crosshair { display: none !important; }
+
+  /* Center menu panel on mobile */
+  #blocker {
+    padding-left: 0;
+    justify-content: center;
+    align-items: center;
+    padding: 16px;
+  }
+
+  /* Menu panel — tighter on mobile */
+  #menu-panel {
+    padding: 24px 28px 20px;
+    gap: 14px;
+    align-items: stretch;
+    max-width: 340px;
+    width: 100%;
+  }
+
+  #menu-title {
+    font-size: 32px;
+    letter-spacing: 6px;
+    align-self: flex-start;
+  }
+
+  #menu-subtitle {
+    font-size: 10px;
+    letter-spacing: 4px;
+  }
+
+  /* Bigger tap targets */
+  #menu-play {
+    padding: 14px 24px;
+    font-size: 14px;
+    min-height: 48px;
+    width: 100%;
+    text-align: center;
+    margin-top: 4px;
+  }
+
+  #daynight-toggle,
+  #snow-toggle {
+    font-size: 14px;
+    gap: 10px;
+    padding: 6px 0;
+  }
+
+  #daynight-toggle input[type="checkbox"],
+  #snow-toggle input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+  }
+
+  /* Pause screen — mobile text */
+  #menu-pause {
+    padding: 24px 28px;
+    max-width: 300px;
+    width: 90vw;
+  }
+
+  #pause-text {
+    font-size: 16px;
+    letter-spacing: 3px;
+  }
+
+  #pause-hint {
+    font-size: 11px;
+  }
+
+  /* Interact hint — smaller on mobile */
+  #interact-hint {
+    font-size: 24px;
+    padding: 6px 14px;
+  }
+
+  /* Minimap — shrink on mobile */
+  #minimap-wrap {
+    top: 8px;
+    right: 8px;
+  }
+
+  #minimap {
+    width: 100px;
+    height: 100px;
+    border-width: 1px;
+  }
+
+  /* Hotbar — enable touch, position above touch buttons */
+  #hotbar {
+    pointer-events: auto;
+    bottom: 16px;
+    gap: 3px;
+  }
+
+  .hotbar-slot {
+    width: 46px;
+    height: 46px;
+  }
+
+  .hotbar-slot .slot-icon {
+    font-size: 20px;
+  }
+
+  .hotbar-slot .slot-label {
+    font-size: 8px;
+  }
+
+  .hotbar-slot .slot-count {
+    font-size: 10px;
+  }
+
+  /* HUD top-left — smaller */
+  #hud-top-left {
+    font-size: 11px;
+    top: 58px;
+    left: 8px;
+  }
+
+  /* Swap desktop/mobile help content */
+  .help-desktop { display: none !important; }
+  .help-mobile { display: block !important; }
+
+  /* Help overlay — full screen on mobile */
+  #help-overlay {
+    padding: 0;
+  }
+
+  #help-panel {
+    width: 100%;
+    max-height: 100vh;
+    height: 100%;
+    border-radius: 0;
+    border: none;
+  }
+
+  #help-header {
+    padding: 14px 16px 12px;
+  }
+
+  #help-title {
+    font-size: 16px;
+    letter-spacing: 4px;
+  }
+
+  #help-close {
+    font-size: 9px;
+    padding: 4px 10px;
+  }
+
+  #help-close-mobile {
+    font-size: 11px;
+    padding: 8px 16px;
+    border-color: rgba(232, 216, 160, 0.25);
+    color: rgba(232, 216, 160, 0.7);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #help-content,
+  #help-content-mobile {
+    padding: 12px 16px 20px;
+    gap: 16px;
+    touch-action: pan-y;
+  }
+
+  .help-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .help-section-title {
+    font-size: 11px;
+    letter-spacing: 3px;
+  }
+
+  .help-card {
+    padding: 10px 12px;
+  }
+
+  .help-card-head {
+    font-size: 12px;
+  }
+
+  .help-card-body {
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  /* NPC speech — constrain */
+  #npc-speech {
+    max-width: 240px;
+    font-size: 14px;
+  }
+
+  /* Loading screen */
+  #loading {
+    font-size: 14px;
+  }
+
+  #load-bar {
+    width: 260px;
+  }
+
+  #menu-load-text {
+    font-size: 10px;
+  }
+}
+
+/* Extra-small screens (phones in portrait) */
+@media (max-width: 400px) {
+  #menu-panel {
+    padding: 18px 20px 16px;
+    max-width: 100%;
+  }
+
+  #menu-title {
+    font-size: 26px;
+    letter-spacing: 4px;
+  }
+
+  .hotbar-slot {
+    width: 42px;
+    height: 42px;
+  }
 }

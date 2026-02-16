@@ -6,6 +6,7 @@ const grid = [];
 const stairZones = [];
 const upperFloorCells = new Set();
 const upperWallCells = new Set(); // Cells blocked on upper floor (perimeter of 2-story buildings)
+const indoorCells = new Set();    // Ground-floor interior cells (inside building bounds)
 
 export function getGrid() {
   return grid;
@@ -118,6 +119,14 @@ export function markUpperWall(gx, gz) {
   upperWallCells.add(`${gx},${gz}`);
 }
 
+export function markIndoor(gx, gz) {
+  indoorCells.add(`${gx},${gz}`);
+}
+
+export function isIndoor(gx, gz) {
+  return indoorCells.has(`${gx},${gz}`);
+}
+
 /**
  * Get the floor height at a world position. Uses stair ramps and
  * upper floor detection based on current player Y.
@@ -155,6 +164,8 @@ export function randomWalkablePos() {
     const gz = rngInt(2, CFG.GRID - 3);
     if (grid[gx][gz]) {
       if (Math.abs(gx - CFG.GRID / 2) < 4 && Math.abs(gz - CFG.GRID / 2) < 4) continue;
+      // Don't spawn inside buildings
+      if (indoorCells.has(`${gx},${gz}`)) continue;
       const p = g2w(gx, gz);
       // Don't spawn in water (unless snow mode where water is ice)
       if (!CFG.SNOW_MODE && getTerrainHeight(p.x, p.z) < CFG.WATER_Y) continue;
