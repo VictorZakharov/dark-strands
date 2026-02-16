@@ -355,6 +355,10 @@ canvas#game {
   color: #c0a878;
 }
 
+.hotbar-slot .slot-icon-svg {
+  display: block;
+}
+
 .hotbar-slot.selected {
   border-color: rgba(232, 216, 160, 0.7);
   background: rgba(232, 216, 160, 0.15);
@@ -366,10 +370,45 @@ canvas#game {
   border-color: rgba(232, 216, 160, 0.9);
 }
 
+#hotbar.alt-active .hotbar-slot {
+  border-color: rgba(232, 216, 160, 0.6);
+  animation: hotbar-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes hotbar-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(232, 216, 160, 0.3); }
+  50% { box-shadow: 0 0 16px rgba(232, 216, 160, 0.7); }
+}
+
 .hotbar-slot.drag-target {
   border-color: rgba(100, 200, 255, 0.8);
   background: rgba(100, 200, 255, 0.2);
   box-shadow: 0 0 10px rgba(100, 200, 255, 0.4);
+}
+
+#alt-cursor {
+  position: fixed;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 99;
+  display: none;
+  border: 2px solid rgba(232, 216, 160, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(232, 216, 160, 0.4);
+}
+
+#drag-placeholder {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  font-size: 32px;
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
+  opacity: 0.7;
+  pointer-events: none;
+  z-index: 100;
+  filter: drop-shadow(0 0 6px rgba(232, 216, 160, 0.5));
+  display: none;
 }
 
 .hotbar-slot .slot-label {

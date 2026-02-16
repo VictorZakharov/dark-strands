@@ -26,6 +26,13 @@ const doorMat = new THREE.MeshStandardMaterial({
   roughness: 0.85,
 });
 
+const knobMat = new THREE.MeshStandardMaterial({
+  color: 0x886633,
+  metalness: 0.8,
+  roughness: 0.3,
+});
+const knobGeo = new THREE.SphereGeometry(0.12, 8, 6);
+
 export function placeDoors(scene) {
   const doorW = CFG.CELL;
   const doorH = CFG.WALL_H * 0.88;
@@ -51,6 +58,25 @@ export function placeDoors(scene) {
 
       mesh.castShadow = true;
       group.add(mesh);
+
+      // Door knobs on both sides
+      const knobY = doorH * 0.5;
+      if (isNS) {
+        const knobX = doorW * 0.85; // near opening edge
+        for (const side of [-1, 1]) {
+          const knob = new THREE.Mesh(knobGeo, knobMat);
+          knob.position.set(knobX, knobY, side * 0.08);
+          group.add(knob);
+        }
+      } else {
+        const knobZ = doorW * 0.85;
+        for (const side of [-1, 1]) {
+          const knob = new THREE.Mesh(knobGeo, knobMat);
+          knob.position.set(side * 0.08, knobY, knobZ);
+          group.add(knob);
+        }
+      }
+
       scene.add(group);
 
       doors.push({

@@ -75,10 +75,9 @@ export function buildFloors(scene) {
   for (const b of getBuildings()) {
     const c = getBuildingCenter(b);
 
-    // Ground floor — solid slab covering full building footprint (including under walls)
-    // Seals all light paths: extends past wall edges and below ground
-    const fw = b.w * CFG.CELL;
-    const fh = b.h * CFG.CELL;
+    // Ground floor — inset slightly inside walls to avoid z-fighting at edges
+    const fw = (b.w - 1) * CFG.CELL + CFG.WALL_T - 0.06;
+    const fh = (b.h - 1) * CFG.CELL + CFG.WALL_T - 0.06;
     const GROUND_SLAB = 0.6;
     const fg = new THREE.BoxGeometry(fw, GROUND_SLAB, fh);
     const fm = new THREE.Mesh(fg, floorMat);
@@ -130,9 +129,9 @@ export function buildFloors(scene) {
 
       buildStairSteps(scene, b, stairMat);
     } else if (b.stories === 2) {
-      // Full floor, no stairwell — extend into walls
-      const fullW = b.w * CFG.CELL;
-      const fullH = b.h * CFG.CELL;
+      // Full floor, no stairwell — inset slightly inside walls
+      const fullW = (b.w - 1) * CFG.CELL + CFG.WALL_T - 0.06;
+      const fullH = (b.h - 1) * CFG.CELL + CFG.WALL_T - 0.06;
       const mg = new THREE.BoxGeometry(fullW, FLOOR_THICK, fullH);
       const mm = new THREE.Mesh(mg, floorMat);
       mm.position.set(c.x, CFG.WALL_H, c.z);
@@ -201,9 +200,10 @@ export function buildWalls(scene) {
     }
   }
 
-  // Add upper wall blocks for doors on 2-story buildings
+  // Add wall blocks above doors: 1 above-door block per door + 1 extra for 2-story
   for (const b of buildings) {
-    if (b.stories === 2) count += b.doors.length;
+    count += b.doors.length; // gap above door on ground floor
+    if (b.stories === 2) count += b.doors.length; // full wall on 2nd floor
   }
 
   const wallGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -240,6 +240,23 @@ export function buildWalls(scene) {
 
   const dummy = new THREE.Object3D();
   let idx = 0;
+
+  // Helper: is cell a thin post? (corner, outer corner, or isolated — not a straight wall)
+  function isThinPost(gx, gz) {
+    if (gx < 0 || gz < 0 || gx >= CFG.GRID || gz >= CFG.GRID) return false;
+    if (grid[gx][gz] || isDoorCell(gx, gz) || isWindowCell(gx, gz) || isStairCell(gx, gz)) return false;
+    const oN = gz > 0 && grid[gx][gz - 1];
+    const oS = gz < CFG.GRID - 1 && grid[gx][gz + 1];
+    const oW = gx > 0 && grid[gx - 1][gz];
+    const oE = gx < CFG.GRID - 1 && grid[gx + 1][gz];
+    const facesNS = oN || oS;
+    const facesEW = oW || oE;
+    // Thin if faces both directions (inner corner) or neither (outer corner / isolated)
+    return (facesNS && facesEW) || (!facesNS && !facesEW);
+  }
+
+  const ext = (CFG.CELL - CFG.WALL_T) / 2; // how far to extend toward a thin post
+
   for (let x = 0; x < CFG.GRID; x++) {
     for (let z = 0; z < CFG.GRID; z++) {
       if (!grid[x][z] && !isDoorCell(x, z) && !isWindowCell(x, z) && !isStairCell(x, z)) {
@@ -254,21 +271,39 @@ export function buildWalls(scene) {
         const facesNS = openN || openS;
         const facesEW = openW || openE;
 
-        let sx, sz;
-        if (facesNS && facesEW) {
-          sx = CFG.CELL; sz = CFG.CELL; // corner
-        } else if (facesNS) {
+        let sx, sz, px = p.x, pz = p.z;
+        if (facesNS && !facesEW) {
           sx = CFG.CELL; sz = CFG.WALL_T;
-        } else if (facesEW) {
+          // Extend toward thin posts (corners / outer corners) in X direction
+          const extW = isThinPost(x - 1, z) ? ext : 0;
+          const extE = isThinPost(x + 1, z) ? ext : 0;
+          sx += extW + extE;
+          px += (extE - extW) / 2;
+        } else if (facesEW && !facesNS) {
           sx = CFG.WALL_T; sz = CFG.CELL;
+          // Extend toward thin posts in Z direction
+          const extN = isThinPost(x, z - 1) ? ext : 0;
+          const extS = isThinPost(x, z + 1) ? ext : 0;
+          sz += extN + extS;
+          pz += (extS - extN) / 2;
         } else {
-          sx = CFG.CELL; sz = CFG.CELL;
+          // Corner (both) or outer corner / isolated (neither) — thin post
+          // Extend toward any adjacent non-walkable cell (wall, door, window, etc.)
+          sx = CFG.WALL_T; sz = CFG.WALL_T;
+          const wallW = x > 0 && !grid[x - 1][z] ? ext : 0;
+          const wallE = x < CFG.GRID - 1 && !grid[x + 1][z] ? ext : 0;
+          const wallN = z > 0 && !grid[x][z - 1] ? ext : 0;
+          const wallS = z < CFG.GRID - 1 && !grid[x][z + 1] ? ext : 0;
+          sx += wallW + wallE;
+          sz += wallN + wallS;
+          px += (wallE - wallW) / 2;
+          pz += (wallS - wallN) / 2;
         }
 
         // Ignore terrain (buildings on flat zones ≈ 0); fixed baseline seals all gaps
         const bottom = -0.5;
         const totalH = h - bottom;
-        dummy.position.set(p.x, bottom + totalH / 2, p.z);
+        dummy.position.set(px, bottom + totalH / 2, pz);
         dummy.scale.set(sx, totalH, sz);
         dummy.updateMatrix();
         walls.setMatrixAt(idx++, dummy.matrix);
@@ -276,14 +311,26 @@ export function buildWalls(scene) {
     }
   }
 
-  // Upper wall blocks above doors on 2-story buildings
+  // Wall blocks above doors (fills gap between door top and ceiling/roof)
+  const doorTopY = CFG.WALL_H * 0.88;
   for (const b of buildings) {
-    if (b.stories === 2) {
-      for (const d of b.doors) {
-        const p = g2w(d.gx, d.gz);
-        const isNS = d.wall === 'south' || d.wall === 'north';
-        const sx = isNS ? CFG.CELL : CFG.WALL_T;
-        const sz = isNS ? CFG.WALL_T : CFG.CELL;
+    for (const d of b.doors) {
+      const p = g2w(d.gx, d.gz);
+      const isNS = d.wall === 'south' || d.wall === 'north';
+      const sx = isNS ? CFG.CELL : CFG.WALL_T;
+      const sz = isNS ? CFG.WALL_T : CFG.CELL;
+
+      // Gap above door on ground floor
+      const gapH = CFG.WALL_H - doorTopY;
+      if (gapH > 0.01) {
+        dummy.position.set(p.x, doorTopY + gapH / 2, p.z);
+        dummy.scale.set(sx, gapH, sz);
+        dummy.updateMatrix();
+        walls.setMatrixAt(idx++, dummy.matrix);
+      }
+
+      // Full wall above door on 2nd floor (for 2-story buildings)
+      if (b.stories === 2) {
         dummy.position.set(p.x, CFG.WALL_H + CFG.WALL_H / 2, p.z);
         dummy.scale.set(sx, CFG.WALL_H, sz);
         dummy.updateMatrix();
@@ -492,8 +539,8 @@ export function buildRoofs(scene) {
 
   for (const b of buildings) {
     const topY = b.stories * CFG.WALL_H;
-    const bw = b.w * CFG.CELL;
-    const bh = b.h * CFG.CELL;
+    const bw = (b.w - 1) * CFG.CELL + CFG.WALL_T;
+    const bh = (b.h - 1) * CFG.CELL + CFG.WALL_T;
     const c = getBuildingCenter(b);
 
     if (b.roofType === 'flat') {

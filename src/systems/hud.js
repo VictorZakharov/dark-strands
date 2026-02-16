@@ -6,6 +6,10 @@ import { getPlayerState } from '../entities/player.js';
 import { w2g } from '../utils/helpers.js';
 import { getSlotItem, ITEM_META } from '../systems/hotbar.js';
 
+const SVG_ICONS = {
+  rock: '<svg class="slot-icon-svg" viewBox="0 0 24 24" width="26" height="26"><polygon points="5,18 2,12 4,7 9,4 15,3 20,6 22,12 19,18 14,20 8,20" fill="#8a7a60" stroke="#5c4e3a" stroke-width="1"/><polygon points="7,16 5,11 8,7 13,6 17,8 18,13 15,17 10,17" fill="#a08c6e"/><line x1="9" y1="7" x2="14" y2="16" stroke="#6e5e46" stroke-width="0.5"/><line x1="5" y1="12" x2="17" y2="9" stroke="#6e5e46" stroke-width="0.5"/></svg>',
+};
+
 let frameCount = 0;
 let fpsTime = 0;
 
@@ -31,8 +35,11 @@ export function updateInventory() {
     const count = meta ? inv[meta.invKey] : 0;
 
     if (meta && count > 0) {
+      const iconHtml = meta.icon.startsWith('svg:')
+        ? SVG_ICONS[meta.icon.slice(4)] || ''
+        : '<span class="slot-icon">' + meta.icon + '</span>';
       sl.innerHTML = '<span class="slot-label">' + (i + 1) + '</span>'
-        + '<span class="slot-icon">' + meta.icon + '</span>'
+        + iconHtml
         + '<span class="slot-count">' + count + '</span>';
     } else {
       sl.innerHTML = '<span class="slot-label">' + (i + 1) + '</span>';

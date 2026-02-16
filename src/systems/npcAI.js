@@ -447,8 +447,11 @@ export function updateSoldierHint() {
     if (el && _projNpc.z < 1) {
       const hw = window.innerWidth / 2;
       const hh = window.innerHeight / 2;
-      el.style.left = (_projNpc.x * hw + hw) + 'px';
-      el.style.top = (-_projNpc.y * hh + hh) + 'px';
+      const margin = 80;
+      const bx = Math.max(margin, Math.min(window.innerWidth - margin, _projNpc.x * hw + hw));
+      const by = Math.max(margin, Math.min(window.innerHeight - margin, -_projNpc.y * hh + hh));
+      el.style.left = bx + 'px';
+      el.style.top = by + 'px';
     }
   }
 
@@ -469,21 +472,5 @@ export function updateSoldierHint() {
     return;
   }
 
-  const pos = soldier.model.position;
-  _projNpc.set(pos.x, pos.y + 0.8, pos.z);
-  _projNpc.project(camera);
-
-  if (_projNpc.z > 1) {
-    if (hintEl.dataset.source === 'soldier') hintEl.style.display = 'none';
-    return;
-  }
-
-  const hw = window.innerWidth / 2;
-  const hh = window.innerHeight / 2;
-  hintEl.textContent = '[E] Talk';
-  hintEl.style.fontSize = '21px';
-  hintEl.style.left = (_projNpc.x * hw + hw) + 'px';
-  hintEl.style.top = (-_projNpc.y * hh + hh) + 'px';
-  hintEl.style.display = 'block';
-  hintEl.dataset.source = 'soldier';
+  // Soldier hint positioning is handled by updateInteractHint() in main.js
 }

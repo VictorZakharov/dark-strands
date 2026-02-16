@@ -15,7 +15,7 @@ import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH } 
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
 import { updateFlowers, getNearestFlower, initFlowerPreview, updateFlowerPreview } from './world/flowers.js';
 import { getTerrainHeight } from './world/terrain.js';
-import { initHotbar, getSelectedSlot, getSlotItem, isPlacementMode } from './systems/hotbar.js';
+import { initHotbar, getSelectedSlot, getSlotItem, isPlacementMode, isAltMode } from './systems/hotbar.js';
 import { updateProjectiles } from './systems/projectiles.js';
 import { getSunLight, getSunGroup, getSunLensflare } from './core/lighting.js';
 import { updateNpcs, updateSoldierHint, getNearestSoldier } from './systems/npcAI.js';
@@ -24,7 +24,9 @@ import { initMenuScene, renderMenu, disposeMenu } from './systems/menu.js';
 const clock = new THREE.Clock();
 let minimapTick = 0;
 let menuMode = true;
+let altBlend = 0; // 0 = normal, 1 = greyscale (ALT mode)
 const _projHint = new THREE.Vector3();
+let _hintSx = 0, _hintSy = 0, _hintActive = false;
 
 /**
  * Unified interact hint — picks the interactable closest to the crosshair.
@@ -73,7 +75,7 @@ function updateInteractHint(camera) {
   const soldier = getNearestSoldier();
   if (soldier) {
     const pos = soldier.model.position;
-    tryCandidate(pos.x, pos.y + 0.8, pos.z, '[E] Talk', '21px', 'soldier');
+    tryCandidate(pos.x, pos.y + 1.0, pos.z, '[E] Talk', '21px', 'soldier');
   }
 
   const flower = getNearestFlower();
@@ -94,15 +96,37 @@ function updateInteractHint(camera) {
   }
 
   if (bestSource) {
+    // Clamp to viewport, staying above hotbar (bottom: 40px + 52px height + gap)
+    const margin = 40;
+    const maxY = window.innerHeight - 110; // above hotbar
+    let targetX = Math.max(margin, Math.min(window.innerWidth - margin, bestSx));
+    let targetY = bestSy;
+    if (targetY > maxY) {
+      targetY = (cy + maxY) / 2;
+    }
+    targetY = Math.max(margin, targetY);
+
+    // Smooth lerp toward target so hint never jumps
+    const lerpSpeed = 0.18;
+    if (!_hintActive) {
+      _hintSx = targetX;
+      _hintSy = targetY;
+      _hintActive = true;
+    } else {
+      _hintSx += (targetX - _hintSx) * lerpSpeed;
+      _hintSy += (targetY - _hintSy) * lerpSpeed;
+    }
+
     el.textContent = bestText;
     el.style.fontSize = bestSize;
-    el.style.left = bestSx + 'px';
-    el.style.top = bestSy + 'px';
+    el.style.left = _hintSx + 'px';
+    el.style.top = _hintSy + 'px';
     el.style.display = 'block';
     el.dataset.source = bestSource;
   } else {
     el.style.display = 'none';
     el.dataset.source = '';
+    _hintActive = false;
   }
 }
 
@@ -135,11 +159,23 @@ function gameLoop(time) {
     const keys = getKeys();
 
     // Q key = 3× game speed (time, movement, animations)
-    const speed = keys['KeyQ'] ? 3 : 1;
+    const alt = isAltMode();
+    const speed = keys['KeyQ'] && !alt ? 3 : 1;
     const gdt = dt * speed;
 
-    updatePlayer(gdt, camera, getSunLight(), keys);
+    // In ALT mode: freeze player input but keep world ticking
+    const emptyKeys = {};
+    updatePlayer(gdt, camera, getSunLight(), alt ? emptyKeys : keys);
     updateDayNight(gdt, scene);
+
+    // Greyscale transition
+    altBlend = Math.max(0, Math.min(1, altBlend + (alt ? 1 : -1) * dt * 2)); // 0.5s transition
+    const canvas = renderer.domElement;
+    canvas.style.filter = altBlend > 0.001 ? `saturate(${1 - altBlend * 0.85})` : '';
+
+    // Crosshair visibility
+    const chEl = document.getElementById('crosshair');
+    if (chEl) chEl.style.opacity = alt ? '0' : '';
 
     // Sun group + lensflare follow player position in sky
     const sunH = getSunH();
@@ -163,20 +199,24 @@ function gameLoop(time) {
       }
     }
 
-    updateInteractHint(camera);
+    if (!alt) updateInteractHint(camera);
+    else {
+      const hEl = document.getElementById('interact-hint');
+      if (hEl) { hEl.style.display = 'none'; hEl.dataset.source = ''; }
+      _hintActive = false;
+    }
 
     updateDoors(gdt);
     updateNpcs(gdt);
     updateFlowers(gdt, camera);
     updateProjectiles(gdt);
 
-    // Flower placement preview — active when flower slot selected via key press
-    const slotItem = getSlotItem(getSelectedSlot());
-    const placementActive = isPlacementMode() && slotItem === 'flower';
+    // Flower/torch previews — disabled in ALT mode
+    const slotItem = alt ? null : getSlotItem(getSelectedSlot());
+    const placementActive = !alt && isPlacementMode() && slotItem === 'flower';
     updateFlowerPreview(camera, placementActive);
 
-    // Held torch — active when torch slot selected and equipped
-    const torchActive = isPlacementMode() && slotItem === 'torch';
+    const torchActive = !alt && isPlacementMode() && slotItem === 'torch';
     updateHeldTorch(camera, torchActive, getPlayerState());
     updateTorchPreview(camera, torchActive);
     updateTorchEmbers(gdt);

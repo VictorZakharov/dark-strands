@@ -4,7 +4,7 @@ import { toggleNearestDoor, getNearestDoor } from '../world/doors.js';
 import { talkToNearestSoldier } from '../systems/npcAI.js';
 import { pickNearestFlower, getInventory, plantFlower, isPreviewValid, hideFlowerPreview } from '../world/flowers.js';
 import { pickNearestRock } from '../world/vegetation.js';
-import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacementMode, isAltMode, enterAltMode, exitAltMode, addItemToSlot, clearItemSlot } from '../systems/hotbar.js';
+import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacementMode, isAltMode, enterAltMode, exitAltMode, moveCursor, cursorDown, cursorUp, addItemToSlot, clearItemSlot } from '../systems/hotbar.js';
 import { spawnProjectile } from '../systems/projectiles.js';
 import { pickNearestTorch, hideHeldTorch, isTorchPreviewValid, placeTorchAtPreview } from '../world/torches.js';
 
@@ -79,12 +79,13 @@ export function initControls() {
       blocker.style.display = 'none';
       skipNextMove = true; // ignore first mousemove after re-lock (has junk delta)
     } else {
+      if (isAltMode()) exitAltMode();
       hideFlowerPreview();
       hideHeldTorch();
       setPlacementMode(false);
 
-      // Help overlay or ALT mode released pointer lock — don't show pause screen
-      if (helpVisible || isAltMode()) return;
+      // Help overlay released pointer lock — don't show pause screen
+      if (helpVisible) return;
 
       blocker.style.display = 'flex';
       if (blocker.dataset.mode === 'game') {
@@ -105,6 +106,10 @@ export function initControls() {
   document.addEventListener('mousemove', (e) => {
     if (!pointerLocked) return;
     if (skipNextMove) { skipNextMove = false; return; }
+    if (isAltMode()) {
+      moveCursor(e.movementX, e.movementY);
+      return;
+    }
     player.yaw -= e.movementX * 0.002;
     player.pitch -= e.movementY * 0.002;
     player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
@@ -130,11 +135,10 @@ export function initControls() {
       return;
     }
 
-    // ALT key — show cursor for hotbar drag-and-drop
-    if ((e.code === 'AltLeft' || e.code === 'AltRight') && pointerLocked) {
+    // ALT key — press to enter cursor mode, release to exit
+    if ((e.code === 'AltLeft' || e.code === 'AltRight')) {
       e.preventDefault();
-      enterAltMode();
-      document.exitPointerLock();
+      if (!isAltMode() && pointerLocked) enterAltMode();
       return;
     }
 
@@ -145,7 +149,10 @@ export function initControls() {
       tryLock(pendingLockEl);
       return;
     }
-    if (e.code === 'KeyV') toggleCamera();
+    if (e.code === 'KeyV' && !isAltMode()) toggleCamera();
+
+    // Block game keys during ALT mode
+    if (isAltMode()) return;
 
     // Number keys 1-5 select hotbar slots
     if (pointerLocked && e.code >= 'Digit1' && e.code <= 'Digit5') {
@@ -181,11 +188,9 @@ export function initControls() {
   document.addEventListener('keyup', (e) => {
     keys[e.code] = false;
 
-    // ALT released — re-lock pointer
+    // ALT released — exit cursor mode
     if ((e.code === 'AltLeft' || e.code === 'AltRight') && isAltMode()) {
       exitAltMode();
-      pendingLockEl = renderer.domElement;
-      tryLock(renderer.domElement);
     }
   });
 
@@ -195,12 +200,14 @@ export function initControls() {
   });
   document.addEventListener('mouseup', (e) => {
     if (e.button === 2) rightMouseDown = false;
+    if (e.button === 0 && isAltMode()) cursorUp();
   });
   document.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  // Left-click item action
+  // Left-click item action (or virtual cursor in ALT mode)
   document.addEventListener('mousedown', (e) => {
     if (e.button !== 0 || !pointerLocked) return;
+    if (isAltMode()) { cursorDown(); return; }
 
     const slot = getSelectedSlot();
     const item = getSlotItem(slot);

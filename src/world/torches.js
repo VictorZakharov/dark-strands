@@ -160,7 +160,7 @@ export function placeTorches(scene) {
 export function placeDoorTorches(scene) {
   const grid = getGrid();
   const torchY = 2.2;
-  const sideOff = CFG.CELL * 0.45;
+  const sideOff = CFG.CELL - CFG.WALL_T / 2 - 0.1; // flush with adjacent wall surface
   const normOff = CFG.WALL_T / 2 + 0.08;
 
   for (const b of getBuildings()) {
@@ -169,42 +169,57 @@ export function placeDoorTorches(scene) {
       const isNS = d.wall === 'south' || d.wall === 'north';
       let side = 1;
       if (isNS) {
-        const rightOk = d.gx + 1 < CFG.GRID && !grid[d.gx + 1][d.gz] && !isDoorCell(d.gx + 1, d.gz);
-        const leftOk = d.gx - 1 >= 0 && !grid[d.gx - 1][d.gz] && !isDoorCell(d.gx - 1, d.gz);
+        const rightOk = d.gx + 1 < CFG.GRID && !grid[d.gx + 1][d.gz] && !isDoorCell(d.gx + 1, d.gz) && !isWindowCell(d.gx + 1, d.gz);
+        const leftOk = d.gx - 1 >= 0 && !grid[d.gx - 1][d.gz] && !isDoorCell(d.gx - 1, d.gz) && !isWindowCell(d.gx - 1, d.gz);
         if (!rightOk && leftOk) side = -1;
         else if (!rightOk && !leftOk) continue;
       } else {
-        const rightOk = d.gz + 1 < CFG.GRID && !grid[d.gx][d.gz + 1] && !isDoorCell(d.gx, d.gz + 1);
-        const leftOk = d.gz - 1 >= 0 && !grid[d.gx][d.gz - 1] && !isDoorCell(d.gx, d.gz - 1);
+        const rightOk = d.gz + 1 < CFG.GRID && !grid[d.gx][d.gz + 1] && !isDoorCell(d.gx, d.gz + 1) && !isWindowCell(d.gx, d.gz + 1);
+        const leftOk = d.gz - 1 >= 0 && !grid[d.gx][d.gz - 1] && !isDoorCell(d.gx, d.gz - 1) && !isWindowCell(d.gx, d.gz - 1);
         if (!rightOk && leftOk) side = -1;
         else if (!rightOk && !leftOk) continue;
       }
 
-      let wx, wz;
+      // Mount point on adjacent wall, normal pointing outward (away from wall)
+      let mountX, mountZ, nx = 0, nz = 0;
       switch (d.wall) {
-        case 'south': wx = p.x + side * sideOff; wz = p.z + normOff; break;
-        case 'north': wx = p.x + side * sideOff; wz = p.z - normOff; break;
-        case 'west':  wx = p.x - normOff; wz = p.z + side * sideOff; break;
-        case 'east':  wx = p.x + normOff; wz = p.z + side * sideOff; break;
+        case 'south': mountX = p.x + side * sideOff; mountZ = p.z + normOff; nz = 1; break;
+        case 'north': mountX = p.x + side * sideOff; mountZ = p.z - normOff; nz = -1; break;
+        case 'west':  mountX = p.x - normOff; mountZ = p.z + side * sideOff; nx = -1; break;
+        case 'east':  mountX = p.x + normOff; mountZ = p.z + side * sideOff; nx = 1; break;
       }
 
-      // Door torches use separate arrays for daynight fade control
+      // Angled wall torch (same geometry as interior torches)
+      const tipX = mountX + nx * TIP_OUT;
+      const tipZ = mountZ + nz * TIP_OUT;
+      const tipY = torchY + TIP_UP;
+
       const light = new THREE.PointLight(0xff8833, 0, 10, 1.5);
-      light.position.set(wx, torchY + 0.4, wz);
+      light.position.set(tipX, tipY + 0.12, tipZ);
       scene.add(light);
       doorTorchLights.push(light);
 
       const flame = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 5), _flameMat);
-      flame.position.set(wx, torchY + 0.35, wz);
+      flame.position.set(tipX, tipY + 0.08, tipZ);
       flame.visible = false;
       scene.add(flame);
       doorTorchFlames.push(flame);
 
-      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.6, 4), _stickMat);
-      stick.position.set(wx, torchY, wz);
+      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, STICK_LEN, 4), _stickMat);
+      stick.position.set(
+        mountX + nx * TIP_OUT / 2,
+        torchY + TIP_UP / 2,
+        mountZ + nz * TIP_OUT / 2
+      );
+      if (Math.abs(nx) > 0.5) {
+        stick.rotation.z = nx > 0 ? -TILT : TILT;
+      } else {
+        stick.rotation.x = nz > 0 ? TILT : -TILT;
+      }
       stick.castShadow = true;
       scene.add(stick);
 
+      const wx = tipX, wz = tipZ;
       pickableTorches.push({ light, flame, stick, wx, wz, active: true });
     }
   }
@@ -310,10 +325,12 @@ function findPlacementTarget(camera) {
       let nx = 0, nz = 0;
       if (hitX && !hitZ) { nx = dir.x > 0 ? -1 : 1; }
       else if (hitZ && !hitX) { nz = dir.z > 0 ? -1 : 1; }
-      else { nx = dir.x > 0 ? -1 : 1; }
-      // Push mount point flush against the wall (halfway between prev and hit)
-      const mountX = (prevX + x) / 2;
-      const mountZ = (prevZ + z) / 2;
+      else { return null; } // corner hit — reject, no clean wall surface
+      // Snap mount point to wall surface, pushed 0.1 inside (matches world-gen)
+      const wc = g2w(g.x, g.z);
+      const wallSurf = CFG.CELL / 2 - CFG.WALL_T / 2 - 0.1;
+      const mountX = nx !== 0 ? wc.x + nx * wallSurf : prevX;
+      const mountZ = nz !== 0 ? wc.z + nz * wallSurf : prevZ;
       return { type: 'wall', x: mountX, z: mountZ, y, nx, nz };
     }
 

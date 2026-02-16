@@ -2,6 +2,9 @@
 
 3D first-person survival roguelite prototype built with Three.js. Switchable to third person.
 
+## Workflow Rules
+- **Never commit or push without explicit user approval.** Always present the proposed commit message and wait for confirmation before running `git commit` or `git push`.
+
 ## Running
 
 ```
@@ -16,7 +19,14 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 - SHIFT - Sprint
 - SPACE - Jump
 - V - Toggle first/third person camera
-- ESC - Release mouse
+- E - Interact (doors, soldiers, flowers, rocks, torches)
+- 1-5 - Select hotbar slot
+- Left-click - Use selected item (throw stone, place flower/torch)
+- Right-click (hold) - Zoom
+- ALT (hold) - Virtual cursor for hotbar drag-and-drop
+- Q (hold) - Fast-forward (3x speed)
+- SHIFT+? - In-game survival guide
+- ESC - Release mouse / pause
 
 ## Tech Stack
 - **Three.js 0.162.0** installed locally via npm, loaded via importmap from `node_modules/`
