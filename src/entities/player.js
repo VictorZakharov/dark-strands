@@ -60,6 +60,7 @@ const state = {
 
 export function getPlayerState() { return state; }
 export function getPlayerModel() { return playerModel; }
+export function getCamBlend() { return camBlend; } // 0 = fully 1st person, 1 = fully 3rd person
 
 export function initPlayer(scene) {
   playerModel = new THREE.Group();

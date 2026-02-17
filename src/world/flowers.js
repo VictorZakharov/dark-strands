@@ -61,8 +61,13 @@ export function updateFlowerPreview(camera, active) {
 
   const origin = new THREE.Vector3();
   const dir = new THREE.Vector3();
+  // Ray from camera position (matches crosshair in both 1st/3rd person)
   camera.getWorldPosition(origin);
   camera.getWorldDirection(dir);
+
+  // Player position for distance checks
+  const p = getPlayerState();
+  const px = p.x, pz = p.z;
 
   // Looking up — no ground intersection
   if (dir.y >= -0.01) {
@@ -76,7 +81,7 @@ export function updateFlowerPreview(camera, active) {
   let hitX, hitZ, t;
   for (let i = 0; i < 3; i++) {
     t = (groundY - origin.y) / dir.y;
-    if (t < 1 || t > CFG.PLANT_MAX_DIST) {
+    if (t < 0.1 || t > 20) {
       previewMesh.visible = false;
       previewValid = false;
       return;
@@ -84,6 +89,15 @@ export function updateFlowerPreview(camera, active) {
     hitX = origin.x + dir.x * t;
     hitZ = origin.z + dir.z * t;
     groundY = getTerrainHeight(hitX, hitZ);
+  }
+
+  // Check distance from player (not camera) to placement point
+  const dxp = hitX - px, dzp = hitZ - pz;
+  const distPlayer = Math.sqrt(dxp * dxp + dzp * dzp);
+  if (distPlayer > CFG.PLANT_MAX_DIST) {
+    previewMesh.visible = false;
+    previewValid = false;
+    return;
   }
 
   // Validate placement

@@ -3,7 +3,7 @@ import { getGrid, isDoorCell, isWindowCell, isStairCell, isWalkable } from './gr
 import { getBuildings } from './generator.js';
 import { g2w, w2g, rngInt } from '../utils/helpers.js';
 import { CFG } from '../config.js';
-import { getPlayerState } from '../entities/player.js';
+import { getPlayerState, getCamBlend } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
 import { getTerrainHeight } from './terrain.js';
 import { getInventory } from './flowers.js';
@@ -287,31 +287,42 @@ export function initTorchPreview(scene) {
   scene.add(previewGroup);
 }
 
-/** Ray-march from camera to find wall or ground hit */
+/** Ray-march from camera through crosshair; distances measured from player */
 function findPlacementTarget(camera) {
   const origin = new THREE.Vector3();
   const dir = new THREE.Vector3();
   camera.getWorldPosition(origin);
   camera.getWorldDirection(dir);
 
+  // Player position for distance checks (consistent between 1st/3rd person)
+  const p = getPlayerState();
+  const px = p.x, pz = p.z;
+
   let prevX = origin.x, prevZ = origin.z;
   let prevWalkable = true;
   let groundDone = false;
 
-  for (let t = 0.3; t < PLACE_MAX_DIST_WALL; t += PLACE_STEP) {
+  for (let t = 0.3; t < 12; t += PLACE_STEP) {
     const x = origin.x + dir.x * t;
     const y = origin.y + dir.y * t;
     const z = origin.z + dir.z * t;
     const groundY = getTerrainHeight(x, z);
 
-    // Ground hit (only within shorter range)
+    // Distance from player to this point (horizontal)
+    const dxp = x - px, dzp = z - pz;
+    const distPlayer = Math.sqrt(dxp * dxp + dzp * dzp);
+
+    // Ground hit (only within shorter range from player)
     if (!groundDone && y <= groundY + 0.05) {
-      if (t <= PLACE_MAX_DIST_GROUND) {
+      if (distPlayer <= PLACE_MAX_DIST_GROUND) {
         const valid = isWalkable(x, z) && (CFG.SNOW_MODE || groundY >= CFG.WATER_Y);
         return valid ? { type: 'ground', x, z, y: groundY } : null;
       }
       groundDone = true; // past ground range, keep scanning for walls
     }
+
+    // Past wall range from player — stop
+    if (distPlayer > PLACE_MAX_DIST_WALL) break;
 
     // Wall hit (walkable → non-walkable transition)
     const walkable = isWalkable(x, z);
@@ -456,8 +467,10 @@ export function updateHeldTorch(camera, active, playerState) {
 
   let px, py, pz;
 
-  if (playerState && !playerState.firstPerson) {
-    // 3rd person — position torch relative to player model
+  // Use 3rd-person positioning whenever camera isn't fully in 1st person
+  // (prevents torch jumping to camera during blend transition)
+  if (playerState && getCamBlend() > 0.01) {
+    // 3rd person (or transitioning) — position torch relative to player model
     const yaw = playerState.yaw;
     const rX = Math.cos(yaw), rZ = -Math.sin(yaw);   // right vector
     const fX = -Math.sin(yaw), fZ = -Math.cos(yaw);   // forward vector

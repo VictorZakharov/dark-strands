@@ -1,3 +1,5 @@
+import { toggleCamera } from '../entities/player.js';
+
 export const isTouchDevice = 'ontouchstart' in window;
 
 // --- State ---
@@ -219,6 +221,7 @@ export function initTouch() {
   };
   bind('touch-jump', () => { jumpPressed = true; });
   bind('touch-use', () => { usePressed = true; });
+  bind('touch-camera', () => { toggleCamera(); });
 
   // Pause button — show blocker with pause screen
   bind('touch-pause', () => {

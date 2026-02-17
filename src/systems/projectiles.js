@@ -3,13 +3,25 @@ import { CFG } from '../config.js';
 import { getTerrainHeight } from '../world/terrain.js';
 import { getRockTexture, registerPickableRock, collidesWithRock, getRockPushback } from '../world/vegetation.js';
 import { isWalkable } from '../world/grid.js';
+import { getPlayerState } from '../entities/player.js';
 
 const projectiles = [];
 const BOUNCE = 0.5; // coefficient of restitution
 
 export function spawnProjectile(camera, scene) {
-  const dir = new THREE.Vector3();
-  camera.getWorldDirection(dir);
+  // Camera ray determines where the crosshair points
+  const camPos = new THREE.Vector3();
+  const camDir = new THREE.Vector3();
+  camera.getWorldPosition(camPos);
+  camera.getWorldDirection(camDir);
+
+  // Spawn from player eye position (works in both 1st/3rd person)
+  const p = getPlayerState();
+  const eyePos = new THREE.Vector3(p.x, p.y + CFG.PLAYER_H, p.z);
+
+  // Throw direction: from player eye toward where crosshair points
+  const target = new THREE.Vector3().copy(camPos).addScaledVector(camDir, 50);
+  const dir = new THREE.Vector3().subVectors(target, eyePos).normalize();
 
   const geo = new THREE.DodecahedronGeometry(CFG.THROWN_STONE_SIZE, 1);
   const mat = new THREE.MeshStandardMaterial({
@@ -21,8 +33,8 @@ export function spawnProjectile(camera, scene) {
   mesh.castShadow = true;
   mesh.receiveShadow = true;
 
-  // Spawn at camera position (always walkable) so the full arc is visible
-  mesh.position.copy(camera.position);
+  // Spawn slightly forward from player eye so stone doesn't clip player model
+  mesh.position.copy(eyePos).addScaledVector(dir, 0.5);
   mesh.position.y -= 0.3;
   scene.add(mesh);
 
