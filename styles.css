@@ -399,6 +399,20 @@ canvas#game {
   box-shadow: 0 0 6px rgba(232, 216, 160, 0.4);
 }
 
+/* Simulated cursor for pause screen (same style as ALT cursor) */
+#sim-cursor {
+  position: fixed;
+  width: 20px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 1000;
+  display: none;
+  border: 2px solid rgba(232, 216, 160, 0.9);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(232, 216, 160, 0.4);
+}
+
 #drag-placeholder {
   position: fixed;
   transform: translate(-50%, -50%);

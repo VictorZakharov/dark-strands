@@ -232,9 +232,13 @@ export function placeRocks(scene) {
 
   const grid = getGrid();
   const buildings = getBuildings();
-  let placed = 0;
 
-  for (let i = 0; i < CFG.ROCKS * 3 && placed < CFG.ROCKS; i++) {
+  // Spawn throwable pebbles first, then environment rocks
+  const totalRocks = CFG.ROCKS + CFG.THROWABLE_STONES;
+  let placedPebbles = 0;
+  let placedEnv = 0;
+
+  for (let i = 0; i < totalRocks * 3 && (placedPebbles < CFG.THROWABLE_STONES || placedEnv < CFG.ROCKS); i++) {
     const gx = rngInt(1, CFG.GRID - 2);
     const gz = rngInt(1, CFG.GRID - 2);
 
@@ -253,15 +257,25 @@ export function placeRocks(scene) {
     const p0 = g2w(gx, gz);
     if (getTerrainHeight(p0.x, p0.z) < CFG.WATER_Y) continue;
 
-    // Random size — some small, some very big
-    const r = Math.random();
+    // Decide: throwable pebble or environment rock
     let s;
-    if (r < 0.15) {
-      s = rng(1.5, 2.5); // big rocks (15% chance)
-    } else if (r < 0.4) {
-      s = rng(0.7, 1.5); // medium rocks
+    if (placedPebbles < CFG.THROWABLE_STONES && (placedEnv >= CFG.ROCKS || Math.random() < 0.3)) {
+      // Throwable pebble — fixed small size (matches thrown stone)
+      s = CFG.THROWN_STONE_SIZE;
+      placedPebbles++;
+    } else if (placedEnv < CFG.ROCKS) {
+      // Environment rock — clearly bigger (random, 3x+ diameter of pebbles)
+      const r = Math.random();
+      if (r < 0.2) {
+        s = rng(1.5, 2.5); // big
+      } else if (r < 0.5) {
+        s = rng(0.9, 1.5); // medium
+      } else {
+        s = rng(0.6, 0.9); // small env (still 3x pebble diameter)
+      }
+      placedEnv++;
     } else {
-      s = rng(0.2, 0.7); // small rocks
+      continue;
     }
 
     // Only block grid cell for large rocks (small/medium use circle collision only)
@@ -271,8 +285,6 @@ export function placeRocks(scene) {
     const oz = rng(-0.3, 0.3);
     const ty = getTerrainHeight(p0.x + ox, p0.z + oz);
 
-    // Register circle collider matching actual rock radius
-    // top = approximate world Y of the rock's top surface
     const geo = new THREE.DodecahedronGeometry(s, 1);
     const rock = new THREE.Mesh(geo, rockMat);
     rock.position.set(p0.x + ox, ty + s * 0.4, p0.z + oz);
@@ -286,7 +298,6 @@ export function placeRocks(scene) {
       r: s * 0.85, top: ty + s * 0.8, height: s * 0.8,
       mesh: rock, size: s, active: true,
     });
-    placed++;
   }
 }
 

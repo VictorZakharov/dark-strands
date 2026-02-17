@@ -15,10 +15,57 @@ let rightMouseDown = false;
 let pendingLockEl = null;
 let helpVisible = false;
 
+// Virtual-cursor pause: ESC pauses with simulated cursor, click/key resumes instantly
+let simPause = false;
+let resuming = false;
+let simCursorEl = null;
+let simCursorX = 0, simCursorY = 0;
+let skipSimMove = false;
+
 // Silently swallow SecurityError when browser blocks pointer lock
 function tryLock(el) {
   const p = el.requestPointerLock();
   if (p && p.catch) p.catch(() => {});
+}
+
+function showSimCursor() {
+  if (!simCursorEl) {
+    simCursorEl = document.createElement('div');
+    simCursorEl.id = 'sim-cursor';
+    document.body.appendChild(simCursorEl);
+  }
+  simCursorX = window.innerWidth / 2;
+  simCursorY = window.innerHeight * 0.62;
+  simCursorEl.style.left = simCursorX + 'px';
+  simCursorEl.style.top = simCursorY + 'px';
+  simCursorEl.style.display = 'block';
+  skipSimMove = true;
+}
+
+function hideSimCursor() {
+  if (simCursorEl) simCursorEl.style.display = 'none';
+}
+
+function enterSimPause(blocker) {
+  simPause = true;
+  resuming = false;
+  document.body.style.cursor = 'none';
+  blocker.style.cursor = 'none';
+  blocker.style.display = 'flex';
+  blocker.style.background = 'rgba(0, 0, 0, 0.45)';
+  const panel = document.getElementById('menu-panel');
+  const loading = document.getElementById('menu-loading');
+  const keysEl = document.getElementById('menu-keys');
+  const pause = document.getElementById('menu-pause');
+  if (panel) panel.style.display = 'none';
+  if (loading) loading.style.display = 'none';
+  if (keysEl) keysEl.style.display = 'none';
+  if (pause) pause.style.display = 'flex';
+  const pt = document.getElementById('pause-text');
+  const ph = document.getElementById('pause-hint');
+  if (pt) pt.textContent = 'Paused';
+  if (ph) ph.textContent = 'Click or press any key to resume';
+  showSimCursor();
 }
 
 function toggleHelp() {
@@ -41,7 +88,7 @@ export function isHelpVisible() { return helpVisible; }
 
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
-export function isGameActive() { return pointerLocked || isMobileGameActive(); }
+export function isGameActive() { return pointerLocked || resuming || isMobileGameActive(); }
 export function isRightMouseDown() { return rightMouseDown; }
 
 export function doInteract() {
@@ -104,9 +151,10 @@ export function initControls() {
   const blocker = document.getElementById('blocker');
   const player = getPlayerState();
 
-  // When paused (ESC), clicking blocker re-enters game
+  // Before game starts, clicking blocker/canvas requests pointer lock
   blocker.addEventListener('mousedown', (e) => {
     if (blocker.dataset.mode !== 'game') return;
+    if (simPause) return; // handled by document-level simPause click
     if (e.target.closest('#daynight-toggle')) return;
     if (e.target.closest('#menu-panel')) return;
     if (e.target.closest('#menu-loading')) return;
@@ -115,17 +163,27 @@ export function initControls() {
   });
 
   renderer.domElement.addEventListener('mousedown', () => {
-    if (!pointerLocked) {
+    if (!pointerLocked && !simPause && !resuming) {
       pendingLockEl = renderer.domElement;
       tryLock(renderer.domElement);
     }
   });
 
-  // Retry pointer lock on any user gesture while paused
-  // (browser may enforce a brief cooldown after ESC; real user gestures
-  //  like mousedown/keydown can re-lock once the cooldown expires)
-  document.addEventListener('mousedown', () => {
-    if (pendingLockEl && !pointerLocked) tryLock(pendingLockEl);
+  // Click to resume from simPause
+  document.addEventListener('mousedown', (e) => {
+    if (simPause) {
+      // Stop other document mousedown handlers from treating this as a game click
+      e.stopImmediatePropagation();
+      simPause = false;
+      resuming = true;
+      hideSimCursor();
+      blocker.style.display = 'none';
+      blocker.style.cursor = '';
+      document.body.style.cursor = 'none';
+      pendingLockEl = renderer.domElement;
+      tryLock(renderer.domElement);
+      return;
+    }
   });
 
   let skipNextMove = false;
@@ -134,6 +192,9 @@ export function initControls() {
     if (pointerLocked) {
       pendingLockEl = null;
       blocker.style.display = 'none';
+      hideSimCursor();
+      resuming = false;
+      document.body.style.cursor = '';
       skipNextMove = true; // ignore first mousemove after re-lock (has junk delta)
     } else {
       if (isAltMode()) exitAltMode();
@@ -144,32 +205,39 @@ export function initControls() {
       // Help overlay released pointer lock — don't show pause screen
       if (helpVisible) return;
 
-      blocker.style.display = 'flex';
       if (blocker.dataset.mode === 'game') {
+        // Enter simulated-cursor pause instead of full pause
         pendingLockEl = renderer.domElement;
-        const panel = document.getElementById('menu-panel');
-        const loading = document.getElementById('menu-loading');
-        const keys = document.getElementById('menu-keys');
-        const pause = document.getElementById('menu-pause');
-        if (panel) panel.style.display = 'none';
-        if (loading) loading.style.display = 'none';
-        if (keys) keys.style.display = 'none';
-        if (pause) pause.style.display = 'flex';
-        blocker.style.background = 'rgba(0, 0, 0, 0.45)';
+        enterSimPause(blocker);
+      } else {
+        blocker.style.display = 'flex';
       }
     }
   });
 
   document.addEventListener('mousemove', (e) => {
-    if (!pointerLocked) return;
-    if (skipNextMove) { skipNextMove = false; return; }
-    if (isAltMode()) {
-      moveCursor(e.movementX, e.movementY);
-      return;
+    if (pointerLocked) {
+      if (skipNextMove) { skipNextMove = false; return; }
+      if (isAltMode()) {
+        moveCursor(e.movementX, e.movementY);
+        return;
+      }
+      player.yaw -= e.movementX * 0.002;
+      player.pitch -= e.movementY * 0.002;
+      player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
+    } else if (simPause && simCursorEl) {
+      // Move virtual cursor via relative delta (avoids jerk from OS cursor mismatch)
+      if (skipSimMove) { skipSimMove = false; return; }
+      simCursorX = Math.max(0, Math.min(window.innerWidth, simCursorX + e.movementX));
+      simCursorY = Math.max(0, Math.min(window.innerHeight, simCursorY + e.movementY));
+      simCursorEl.style.left = simCursorX + 'px';
+      simCursorEl.style.top = simCursorY + 'px';
+    } else if (resuming) {
+      // Camera control while waiting for pointer lock
+      player.yaw -= e.movementX * 0.002;
+      player.pitch -= e.movementY * 0.002;
+      player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
     }
-    player.yaw -= e.movementX * 0.002;
-    player.pitch -= e.movementY * 0.002;
-    player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
   });
 
   document.addEventListener('keydown', (e) => {
@@ -192,6 +260,13 @@ export function initControls() {
       return;
     }
 
+    // ESC during simPause or resuming → back to sim-pause
+    if (e.code === 'Escape' && (simPause || (resuming && !pointerLocked))) {
+      e.preventDefault();
+      if (resuming) { resuming = false; enterSimPause(blocker); }
+      return;
+    }
+
     // ALT key — press to enter cursor mode, release to exit
     if ((e.code === 'AltLeft' || e.code === 'AltRight')) {
       e.preventDefault();
@@ -199,24 +274,29 @@ export function initControls() {
       return;
     }
 
-    // Any key while paused → try to resume (keydown is a user gesture)
-    // Skip ESC and ALT — browsers block requestPointerLock from Escape key
-    if (pendingLockEl && !pointerLocked && e.code !== 'Escape'
-        && e.code !== 'AltLeft' && e.code !== 'AltRight') {
-      tryLock(pendingLockEl);
+    // Any key during simPause → resume (like click)
+    if (simPause && e.code !== 'Escape' && e.code !== 'AltLeft' && e.code !== 'AltRight') {
+      simPause = false;
+      resuming = true;
+      hideSimCursor();
+      blocker.style.display = 'none';
+      blocker.style.cursor = '';
+      document.body.style.cursor = 'none';
+      tryLock(renderer.domElement);
       return;
     }
+
     if (e.code === 'KeyV' && !isAltMode()) toggleCamera();
 
     // Block game keys during ALT mode
     if (isAltMode()) return;
 
     // Number keys 1-5 select hotbar slots
-    if (pointerLocked && e.code >= 'Digit1' && e.code <= 'Digit5') {
+    if ((pointerLocked || resuming) && e.code >= 'Digit1' && e.code <= 'Digit5') {
       selectSlot(parseInt(e.code.charAt(5)) - 1);
     }
 
-    if (e.code === 'KeyE' && pointerLocked) {
+    if (e.code === 'KeyE' && (pointerLocked || resuming)) {
       doInteract();
     }
   });
@@ -232,7 +312,7 @@ export function initControls() {
 
   // Right-click zoom
   document.addEventListener('mousedown', (e) => {
-    if (e.button === 2 && pointerLocked) rightMouseDown = true;
+    if (e.button === 2 && (pointerLocked || resuming)) rightMouseDown = true;
   });
   document.addEventListener('mouseup', (e) => {
     if (e.button === 2) rightMouseDown = false;
@@ -242,7 +322,8 @@ export function initControls() {
 
   // Left-click item action (or virtual cursor in ALT mode)
   document.addEventListener('mousedown', (e) => {
-    if (e.button !== 0 || !pointerLocked) return;
+    if (e.button !== 0) return;
+    if (simPause || (!pointerLocked && !resuming)) return;
     if (isAltMode()) { cursorDown(); return; }
     doUseItem();
   });

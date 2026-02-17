@@ -114,6 +114,21 @@ To add more animations (attack, jump, die, reload, etc.) use **Mixamo** (https:/
 - First person: camera at player eye height (1.7 units)
 - Third person: over-the-shoulder view, player offset ~35% left of screen, Soldier model with direction-aware facing and smooth rotation lerp
 - Toggle with V key
+- `getCamBlend()` returns 0 (fully 1st person) to 1 (fully 3rd person) — use this instead of `firstPerson` boolean for transition-aware checks
+- **3rd person raycasting**: cast ray from camera world position (matches crosshair) but measure distances from player position. This pattern is used in `torches.js`, `flowers.js`, and `projectiles.js`
+
+### Virtual Cursor
+A simulated mouse cursor rendered as a CSS circle element, used in two contexts:
+
+1. **ALT mode** (`src/systems/hotbar.js`): hold ALT during gameplay. Pointer lock stays active, `movementX/Y` drives the cursor position via `moveCursor(dx, dy)`. Used for hotbar drag-and-drop. Element: `#alt-cursor`, created dynamically. Styled as a golden circle (`border: 2px solid rgba(232, 216, 160, 0.9)`, `border-radius: 50%`).
+
+2. **Pause screen** (`src/systems/controls.js`): ESC releases pointer lock (browser-forced) and enters `simPause` state. OS cursor is hidden via `document.body.style.cursor = 'none'`. Virtual cursor (`#sim-cursor`) follows real mouse position via `clientX/clientY` from `mousemove`. Click or any key resumes the game instantly — sets `resuming = true` so `isGameActive()` returns true before pointer lock is reacquired, using `movementX/Y` for camera control in the interim. This avoids the 1.5s Windows pointer lock cooldown delay. Same golden circle style as ALT cursor.
+
+**Key state machine** (desktop only, mobile uses `gameActive` flag instead):
+- `pointerLocked` — normal gameplay, pointer lock active
+- `simPause` — paused, blocker visible, virtual cursor shown, OS cursor hidden
+- `resuming` — game active, waiting for pointer lock, `movementX/Y` for camera
+- `isGameActive()` = `pointerLocked || resuming || isMobileGameActive()`
 
 ## Adding New Models
 

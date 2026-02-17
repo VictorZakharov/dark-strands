@@ -35,10 +35,11 @@ export const CFG = {
 
   // Stone pickup & throwing
   ROCK_PICK_DIST: 2.5,
-  ROCK_PICK_MAX_SIZE: 0.7,
+  ROCK_PICK_MAX_SIZE: 0.3,
+  THROWABLE_STONES: 15,
   THROW_SPEED: 18,
   THROW_GRAV: 15,
-  THROWN_STONE_SIZE: 0.35,
+  THROWN_STONE_SIZE: 0.2,
 
   // Flower planting
   PLANT_MAX_DIST: 15,
