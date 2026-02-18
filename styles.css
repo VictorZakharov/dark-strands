@@ -211,9 +211,12 @@ canvas#game {
 
 #menu-load-fill {
   height: 100%;
-  width: 0%;
+  width: 100%;
   background: linear-gradient(90deg, rgba(232, 216, 160, 0.3), rgba(232, 216, 160, 0.8));
-  transition: width 0.3s ease;
+  transform: scaleX(0);
+  transform-origin: left;
+  will-change: transform;
+  transition: transform 0.15s ease;
 }
 
 /* ---- Pause overlay ---- */

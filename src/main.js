@@ -261,6 +261,7 @@ function gameLoop(time) {
 
     minimapTick++;
     if (minimapTick % 10 === 0) updateMinimap();
+
   } else if (menuMode) {
     // Menu screen — render the procedural menu scene
     renderMenu(renderer, dt);
@@ -274,7 +275,7 @@ function gameLoop(time) {
 
 function setLoadProgress(pct) {
   const fill = document.getElementById('menu-load-fill');
-  if (fill) fill.style.width = pct + '%';
+  if (fill) fill.style.transform = `scaleX(${pct / 100})`;
 }
 
 // Yield to browser so progress bar can repaint
@@ -282,68 +283,36 @@ const yieldFrame = () => new Promise(r => requestAnimationFrame(() => requestAni
 
 async function buildWorld() {
   const scene = getScene();
+  const step = (pct) => setLoadProgress(pct);
 
+  // Batch 1: World structure (0→3%)
   await yieldFrame();
   initLighting(scene);
-  setLoadProgress(5);
-
-  await yieldFrame();
   initGrid();
-  setLoadProgress(10);
-
-  await yieldFrame();
   generateBuildings();
-  setLoadProgress(18);
-
-  await yieldFrame();
   buildGround(scene);
-  setLoadProgress(25);
-
-  await yieldFrame();
   buildFloors(scene);
-  setLoadProgress(30);
+  step(3);
 
+  // Batch 2: World details (3→5%)
   await yieldFrame();
   buildWalls(scene);
-  setLoadProgress(40);
-
-  await yieldFrame();
   buildRoofs(scene);
-  setLoadProgress(45);
-
-  await yieldFrame();
   placeTrees(scene);
-  setLoadProgress(52);
-
-  await yieldFrame();
   placeRocks(scene);
-  setLoadProgress(58);
-
-  await yieldFrame();
   placeTorches(scene);
   placeDoorTorches(scene);
-  setLoadProgress(62);
-
-  await yieldFrame();
   placeDoors(scene);
-  setLoadProgress(66);
-
-  await yieldFrame();
   buildWindows(scene);
-  setLoadProgress(70);
-
-  await yieldFrame();
   buildWater(scene);
-  setLoadProgress(75);
+  step(5);
 
+  // Batch 3: Player + controls (5→6%)
   await yieldFrame();
   initPlayer(scene);
-  setLoadProgress(80);
-
-  await yieldFrame();
   initControls();
   initHotbar();
-  setLoadProgress(85);
+  step(6);
 
   // Wire up day/night toggle
   const dnCheckbox = document.getElementById('daynight-checkbox');
@@ -351,26 +320,38 @@ async function buildWorld() {
     setCycleEnabled(dnCheckbox.checked);
     dnCheckbox.addEventListener('change', () => setCycleEnabled(dnCheckbox.checked));
   }
-
   updateDayNight(0, scene);
-  setLoadProgress(88);
 
-  // Load models async
+  // Batch 4: Models (6→14%)
   await yieldFrame();
   await loadAllModels(scene);
+  step(14);
+
+  // Batch 5: Previews + shader compile (14→18%)
+  await yieldFrame();
   initFlowerPreview(scene);
   initHeldTorch(scene);
   initTorchLightPool(scene);
   initTorchPreview(scene);
   initTorchEmbers(scene);
-
-  // Pre-compile all shaders during loading to avoid stutter on first use
-  // Temporarily show hidden meshes so their shaders get compiled
   const hiddenMeshes = [];
   scene.traverse(c => { if (!c.visible && c.isMesh) { c.visible = true; hiddenMeshes.push(c); } });
   getRenderer().compile(scene, getCamera());
+  step(18);
+
+  // GPU render (18→100%) — blocks main thread
+  await yieldFrame();
+  getRenderer().render(scene, getCamera());
   for (const m of hiddenMeshes) m.visible = false;
-  setLoadProgress(100);
+
+  // Animate bar to 100% and let user see it before entering game
+  const fill = document.getElementById('menu-load-fill');
+  if (fill) {
+    fill.style.transition = 'transform 0.35s ease-out';
+    fill.style.transform = 'scaleX(1)';
+  }
+  step(100);
+  await new Promise(r => setTimeout(r, 400));
 }
 
 function setupPlayButton() {
@@ -399,7 +380,7 @@ function setupPlayButton() {
     if (loadText) loadText.textContent = 'Building world...';
     if (fill) {
       fill.style.transition = 'none';
-      fill.style.width = '0%';
+      fill.style.transform = 'scaleX(0)';
     }
 
     // Build the world (progress bar updates during build via yieldFrame)
@@ -408,6 +389,7 @@ function setupPlayButton() {
     // World ready — enter game
     if (loadText) loadText.textContent = 'Entering world...';
     await yieldFrame();
+
     if (isTouchDevice) {
       setMobileGameActive(true);
     } else {

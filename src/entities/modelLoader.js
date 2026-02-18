@@ -113,16 +113,18 @@ function placeClone(scene, model, gltf, def) {
   if (def.id === 'flower') registerFlower(clone, pos.x, pos.z);
 }
 
-export async function loadAllModels(scene) {
+export async function loadAllModels(scene, onModel) {
   const loader = new GLTFLoader();
   const progressFill = document.getElementById('load-fill');
   let loaded = 0;
 
   for (const def of MODEL_REGISTRY) {
+    const mt0 = performance.now();
     try {
       const gltf = await loadGLTF(loader, def.url);
-      const model = gltf.scene;
+      const fetchMs = (performance.now() - mt0).toFixed(0);
 
+      const model = gltf.scene;
       normalizeScale(model, def.targetHeight);
       enableShadows(model);
 
@@ -138,9 +140,11 @@ export async function loadAllModels(scene) {
         }
       }
 
-      console.log(`Loaded: ${def.name} (x${def.count})`);
+      const totalMs = (performance.now() - mt0).toFixed(0);
+      if (onModel) onModel(`${def.name} x${def.count} (fetch ${fetchMs}ms, total ${totalMs}ms)`);
     } catch (err) {
       console.warn(`Failed to load ${def.name}:`, err.message || err);
+      if (onModel) onModel(`${def.name} FAILED`);
     }
 
     loaded++;

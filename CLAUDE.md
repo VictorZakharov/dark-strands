@@ -1,6 +1,6 @@
 # Dark Strands
 
-3D first-person survival roguelite prototype built with Three.js. Switchable to third person.
+3D first-person survival roguelite prototype built with Three.js. Switchable to third person. Supports desktop (keyboard+mouse) and mobile (touch controls).
 
 ## Workflow Rules
 - **Never commit or push without explicit user approval.** Always present the proposed commit message and wait for confirmation before running `git commit` or `git push`.
@@ -26,7 +26,16 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 - ALT (hold) - Virtual cursor for hotbar drag-and-drop
 - Q (hold) - Fast-forward (3x speed)
 - SHIFT+? - In-game survival guide
-- ESC - Release mouse / pause
+- TAB / PAUSE - Pause (mouse stays trapped, virtual cursor). ESC during pause releases mouse.
+- ESC - Release mouse cursor (game keeps running, click to re-lock)
+
+### Mobile Touch Controls
+- Left side drag - Virtual joystick for movement
+- Right side swipe - Camera look
+- Right side long-press (1s) - Interact (with progress ring)
+- JUMP / USE / CAM buttons - Bottom-right action buttons
+- Hotbar tap - Select slot
+- Pause (||) and Help (?) buttons - Top-left
 
 ## Tech Stack
 - **Three.js 0.162.0** installed locally via npm, loaded via importmap from `node_modules/`
@@ -49,16 +58,23 @@ src/
     generator.js           # Procedural building placement
     geometry.js            # 3D walls, ground plane, building floors
     vegetation.js          # Low-poly trees and rocks
-    torches.js             # Wall-mounted point lights inside buildings
+    terrain.js             # Perlin noise terrain heightmap
+    torches.js             # Wall-mounted point lights, torch pickup/placement
+    doors.js               # Door meshes with pivot rotation, open/close
+    flowers.js             # Flower pickup, planting, preview system
   entities/
     models.js              # Model registry (data only — URLs, heights, counts, licenses)
     modelLoader.js         # GLTF loading, cloning, animation setup, places models in scene
     player.js              # Player state, movement, collision, camera modes
   systems/
-    controls.js            # Pointer lock, keyboard, mouse input
+    controls.js            # Pointer lock, keyboard, mouse input, pause states
+    touch.js               # Mobile touch input (joystick, look, long-press interact)
+    hotbar.js              # Hotbar slots, ALT cursor drag-and-drop
     daynight.js            # Day/night cycle, sky color, fog, star visibility
     hud.js                 # FPS counter, minimap canvas, camera mode label
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
+    projectiles.js         # Stone throwing physics
+    menu.js                # Procedural campfire menu scene
   utils/
     helpers.js             # Grid↔world coordinate conversion, rng utilities
 ```
@@ -122,13 +138,14 @@ A simulated mouse cursor rendered as a CSS circle element, used in two contexts:
 
 1. **ALT mode** (`src/systems/hotbar.js`): hold ALT during gameplay. Pointer lock stays active, `movementX/Y` drives the cursor position via `moveCursor(dx, dy)`. Used for hotbar drag-and-drop. Element: `#alt-cursor`, created dynamically. Styled as a golden circle (`border: 2px solid rgba(232, 216, 160, 0.9)`, `border-radius: 50%`).
 
-2. **Pause screen** (`src/systems/controls.js`): ESC releases pointer lock (browser-forced) and enters `simPause` state. OS cursor is hidden via `document.body.style.cursor = 'none'`. Virtual cursor (`#sim-cursor`) follows real mouse position via `clientX/clientY` from `mousemove`. Click or any key resumes the game instantly — sets `resuming = true` so `isGameActive()` returns true before pointer lock is reacquired, using `movementX/Y` for camera control in the interim. This avoids the 1.5s Windows pointer lock cooldown delay. Same golden circle style as ALT cursor.
+2. **Pause screen** (`src/systems/controls.js`): Tab or Pause key enters `simPause` state — pointer lock stays active so mouse is fully trapped. Virtual cursor (`#sim-cursor`) driven by `movementX/Y`. Tab/Pause again or any key resumes instantly. ESC during pause releases pointer lock (shows pause overlay with "Click to resume"). ESC during normal gameplay just frees the cursor — game keeps running, click canvas to re-lock. Same golden circle style as ALT cursor.
 
 **Key state machine** (desktop only, mobile uses `gameActive` flag instead):
-- `pointerLocked` — normal gameplay, pointer lock active
-- `simPause` — paused, blocker visible, virtual cursor shown, OS cursor hidden
-- `resuming` — game active, waiting for pointer lock, `movementX/Y` for camera
-- `isGameActive()` = `pointerLocked || resuming || isMobileGameActive()`
+- `pointerLocked && !simPause` — normal gameplay, pointer lock active
+- `simPause && pointerLocked` — Tab/Pause pause, virtual cursor shown, game frozen
+- `simPause && !pointerLocked` — Tab/Pause pause + ESC release, OS cursor visible, game frozen, click/key to resume
+- `gameStarted && !pointerLocked && !simPause` — ESC during gameplay, cursor free, game keeps running. Click canvas to re-lock.
+- `isGameActive()` = `(gameStarted && !simPause) || isMobileGameActive()`
 
 ## Adding New Models
 

@@ -14,13 +14,16 @@ let pointerLocked = false;
 let rightMouseDown = false;
 let pendingLockEl = null;
 let helpVisible = false;
+let gameStarted = false;
 
-// Virtual-cursor pause: ESC pauses with simulated cursor, click/key resumes instantly
+// simPause = Tab pause — pointer lock stays active, virtual cursor shown
 let simPause = false;
-let resuming = false;
 let simCursorEl = null;
 let simCursorX = 0, simCursorY = 0;
-let skipSimMove = false;
+
+// Timestamp-based mousemove ignore — skips junk deltas after lock/unlock transitions
+let moveIgnoreUntil = 0;
+function ignoreMovesFor(ms) { moveIgnoreUntil = performance.now() + ms; }
 
 // Silently swallow SecurityError when browser blocks pointer lock
 function tryLock(el) {
@@ -39,18 +42,13 @@ function showSimCursor() {
   simCursorEl.style.left = simCursorX + 'px';
   simCursorEl.style.top = simCursorY + 'px';
   simCursorEl.style.display = 'block';
-  skipSimMove = true;
 }
 
 function hideSimCursor() {
   if (simCursorEl) simCursorEl.style.display = 'none';
 }
 
-function enterSimPause(blocker) {
-  simPause = true;
-  resuming = false;
-  document.body.style.cursor = 'none';
-  blocker.style.cursor = 'none';
+function showPauseUI(blocker, hint) {
   blocker.style.display = 'flex';
   blocker.style.background = 'rgba(0, 0, 0, 0.45)';
   const panel = document.getElementById('menu-panel');
@@ -62,10 +60,40 @@ function enterSimPause(blocker) {
   if (keysEl) keysEl.style.display = 'none';
   if (pause) pause.style.display = 'flex';
   const pt = document.getElementById('pause-text');
-  const ph = document.getElementById('pause-hint');
   if (pt) pt.textContent = 'Paused';
-  if (ph) ph.textContent = 'Click or press any key to resume';
+  const ph = document.getElementById('pause-hint');
+  if (ph) ph.textContent = hint;
+}
+
+// Tab pause — pointer lock stays active, mouse fully trapped
+function enterSimPause(blocker) {
+  simPause = true;
+  blocker.style.cursor = 'none';
+  document.body.style.cursor = 'none';
+  showPauseUI(blocker, 'Tab to resume · ESC to release cursor');
   showSimCursor();
+}
+
+// ESC during Tab-pause — pointer lock lost, game still paused, OS cursor visible
+function enterPausedReleased(blocker) {
+  // simPause stays true — game remains frozen
+  hideSimCursor();
+  blocker.style.cursor = '';
+  document.body.style.cursor = '';
+  showPauseUI(blocker, 'Click or press any key to resume');
+}
+
+function resumeFromPause(blocker) {
+  simPause = false;
+  hideSimCursor();
+  blocker.style.display = 'none';
+  blocker.style.cursor = '';
+  document.body.style.cursor = '';
+  if (!pointerLocked) {
+    // Need to re-lock — game resumes fully once pointerlockchange fires
+    ignoreMovesFor(150);
+    tryLock(getRenderer().domElement);
+  }
 }
 
 function toggleHelp() {
@@ -74,10 +102,8 @@ function toggleHelp() {
   helpVisible = !helpVisible;
   el.style.display = helpVisible ? 'flex' : 'none';
   if (helpVisible) {
-    // Release pointer lock so the cursor is visible
     document.exitPointerLock();
   } else {
-    // Re-lock pointer to resume gameplay
     const renderer = getRenderer();
     pendingLockEl = renderer.domElement;
     tryLock(renderer.domElement);
@@ -88,7 +114,7 @@ export function isHelpVisible() { return helpVisible; }
 
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
-export function isGameActive() { return pointerLocked || resuming || isMobileGameActive(); }
+export function isGameActive() { return (gameStarted && !simPause) || isMobileGameActive(); }
 export function isRightMouseDown() { return rightMouseDown; }
 
 export function doInteract() {
@@ -151,64 +177,49 @@ export function initControls() {
   const blocker = document.getElementById('blocker');
   const player = getPlayerState();
 
-  // Before game starts, clicking blocker/canvas requests pointer lock
-  blocker.addEventListener('mousedown', (e) => {
-    if (blocker.dataset.mode !== 'game') return;
-    if (simPause) return; // handled by document-level simPause click
-    if (e.target.closest('#daynight-toggle')) return;
-    if (e.target.closest('#menu-panel')) return;
-    if (e.target.closest('#menu-loading')) return;
-    pendingLockEl = renderer.domElement;
-    tryLock(renderer.domElement);
-  });
-
+  // Clicking canvas requests pointer lock (for initial entry or re-lock after ESC)
   renderer.domElement.addEventListener('mousedown', () => {
-    if (!pointerLocked && !simPause && !resuming) {
+    if (!pointerLocked && !simPause) {
       pendingLockEl = renderer.domElement;
       tryLock(renderer.domElement);
     }
   });
 
-  // Click to resume from simPause
+  // Click to resume from Tab-pause
   document.addEventListener('mousedown', (e) => {
     if (simPause) {
-      // Stop other document mousedown handlers from treating this as a game click
       e.stopImmediatePropagation();
-      simPause = false;
-      resuming = true;
-      hideSimCursor();
-      blocker.style.display = 'none';
-      blocker.style.cursor = '';
-      document.body.style.cursor = 'none';
-      pendingLockEl = renderer.domElement;
-      tryLock(renderer.domElement);
+      resumeFromPause(blocker);
       return;
     }
   });
 
-  let skipNextMove = false;
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === renderer.domElement;
     if (pointerLocked) {
+      // Lock acquired — enter/resume game
       pendingLockEl = null;
+      gameStarted = true;
       blocker.style.display = 'none';
       hideSimCursor();
-      resuming = false;
       document.body.style.cursor = '';
-      skipNextMove = true; // ignore first mousemove after re-lock (has junk delta)
+      ignoreMovesFor(150);
     } else {
       if (isAltMode()) exitAltMode();
       hideFlowerPreview();
       hideHeldTorch();
       setPlacementMode(false);
 
-      // Help overlay released pointer lock — don't show pause screen
       if (helpVisible) return;
 
       if (blocker.dataset.mode === 'game') {
-        // Enter simulated-cursor pause instead of full pause
-        pendingLockEl = renderer.domElement;
-        enterSimPause(blocker);
+        ignoreMovesFor(150);
+
+        if (simPause) {
+          // ESC during Tab-pause → show pause UI with OS cursor
+          enterPausedReleased(blocker);
+        }
+        // else: ESC during gameplay → game keeps running, cursor free
       } else {
         blocker.style.display = 'flex';
       }
@@ -216,24 +227,20 @@ export function initControls() {
   });
 
   document.addEventListener('mousemove', (e) => {
-    if (pointerLocked) {
-      if (skipNextMove) { skipNextMove = false; return; }
-      if (isAltMode()) {
-        moveCursor(e.movementX, e.movementY);
-        return;
-      }
-      player.yaw -= e.movementX * 0.002;
-      player.pitch -= e.movementY * 0.002;
-      player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
-    } else if (simPause && simCursorEl) {
-      // Move virtual cursor via relative delta (avoids jerk from OS cursor mismatch)
-      if (skipSimMove) { skipSimMove = false; return; }
+    // Skip junk deltas during lock/unlock transitions
+    if (performance.now() < moveIgnoreUntil) return;
+
+    // simPause — pointer lock active, drive virtual cursor with movementX/Y
+    if (simPause && simCursorEl) {
       simCursorX = Math.max(0, Math.min(window.innerWidth, simCursorX + e.movementX));
       simCursorY = Math.max(0, Math.min(window.innerHeight, simCursorY + e.movementY));
       simCursorEl.style.left = simCursorX + 'px';
       simCursorEl.style.top = simCursorY + 'px';
-    } else if (resuming) {
-      // Camera control while waiting for pointer lock
+    } else if (pointerLocked) {
+      if (isAltMode()) {
+        moveCursor(e.movementX, e.movementY);
+        return;
+      }
       player.yaw -= e.movementX * 0.002;
       player.pitch -= e.movementY * 0.002;
       player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
@@ -243,14 +250,11 @@ export function initControls() {
   document.addEventListener('keydown', (e) => {
     keys[e.code] = true;
 
-    // SHIFT+? (Shift+Slash) toggles help overlay
     if (e.key === '?' && e.shiftKey) {
       toggleHelp();
       return;
     }
 
-    // ESC closes help — browser blocks requestPointerLock from ESC,
-    // so just close the overlay and let next click/key re-enter the game
     if (e.code === 'Escape' && helpVisible) {
       e.preventDefault();
       helpVisible = false;
@@ -260,59 +264,60 @@ export function initControls() {
       return;
     }
 
-    // ESC during simPause or resuming → back to sim-pause
-    if (e.code === 'Escape' && (simPause || (resuming && !pointerLocked))) {
+    // Tab or Pause key toggles pause (pointer lock stays active — mouse trapped)
+    if (e.code === 'Tab' || e.code === 'Pause') {
       e.preventDefault();
-      if (resuming) { resuming = false; enterSimPause(blocker); }
+      if (simPause) {
+        resumeFromPause(blocker);
+      } else if (pointerLocked) {
+        enterSimPause(blocker);
+      }
       return;
     }
 
-    // ALT key — press to enter cursor mode, release to exit
+    // ESC during Tab pause → release pointer lock for real
+    // Keep simPause=true so pointerlockchange calls enterPausedReleased()
+    if (e.code === 'Escape' && simPause) {
+      hideSimCursor();
+      ignoreMovesFor(150);
+      document.exitPointerLock();
+      return;
+    }
+
     if ((e.code === 'AltLeft' || e.code === 'AltRight')) {
       e.preventDefault();
-      if (!isAltMode() && pointerLocked) enterAltMode();
+      if (!isAltMode() && pointerLocked && !simPause) enterAltMode();
       return;
     }
 
-    // Any key during simPause → resume (like click)
-    if (simPause && e.code !== 'Escape' && e.code !== 'AltLeft' && e.code !== 'AltRight') {
-      simPause = false;
-      resuming = true;
-      hideSimCursor();
-      blocker.style.display = 'none';
-      blocker.style.cursor = '';
-      document.body.style.cursor = 'none';
-      tryLock(renderer.domElement);
+    // Any key during simPause (released state) → resume
+    if (simPause && !pointerLocked && e.code !== 'Escape' && e.code !== 'AltLeft' && e.code !== 'AltRight') {
+      resumeFromPause(blocker);
       return;
     }
 
     if (e.code === 'KeyV' && !isAltMode()) toggleCamera();
 
-    // Block game keys during ALT mode
     if (isAltMode()) return;
 
-    // Number keys 1-5 select hotbar slots
-    if ((pointerLocked || resuming) && e.code >= 'Digit1' && e.code <= 'Digit5') {
+    if (pointerLocked && e.code >= 'Digit1' && e.code <= 'Digit5') {
       selectSlot(parseInt(e.code.charAt(5)) - 1);
     }
 
-    if (e.code === 'KeyE' && (pointerLocked || resuming)) {
+    if (e.code === 'KeyE' && pointerLocked) {
       doInteract();
     }
   });
 
   document.addEventListener('keyup', (e) => {
     keys[e.code] = false;
-
-    // ALT released — exit cursor mode
     if ((e.code === 'AltLeft' || e.code === 'AltRight') && isAltMode()) {
       exitAltMode();
     }
   });
 
-  // Right-click zoom
   document.addEventListener('mousedown', (e) => {
-    if (e.button === 2 && (pointerLocked || resuming)) rightMouseDown = true;
+    if (e.button === 2 && pointerLocked && !simPause) rightMouseDown = true;
   });
   document.addEventListener('mouseup', (e) => {
     if (e.button === 2) rightMouseDown = false;
@@ -320,15 +325,13 @@ export function initControls() {
   });
   document.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  // Left-click item action (or virtual cursor in ALT mode)
   document.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
-    if (simPause || (!pointerLocked && !resuming)) return;
+    if (simPause || !pointerLocked) return;
     if (isAltMode()) { cursorDown(); return; }
     doUseItem();
   });
 
-  // Mobile: tap blocker to resume from pause
   if (isTouchDevice) {
     blocker.addEventListener('touchstart', (e) => {
       if (blocker.dataset.mode !== 'game') return;
