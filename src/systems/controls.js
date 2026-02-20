@@ -5,7 +5,7 @@ import { talkToNearestSoldier } from '../systems/npcAI.js';
 import { pickNearestFlower, getInventory, plantFlower, isPreviewValid, hideFlowerPreview } from '../world/flowers.js';
 import { pickNearestRock } from '../world/vegetation.js';
 import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacementMode, isAltMode, enterAltMode, exitAltMode, moveCursor, cursorDown, cursorUp, addItemToSlot, clearItemSlot } from '../systems/hotbar.js';
-import { spawnProjectile } from '../systems/projectiles.js';
+import { spawnProjectile, isRockPreviewValid, placeRockAtPreview, pickNearestInFlightRock } from '../systems/projectiles.js';
 import { pickNearestTorch, hideHeldTorch, isTorchPreviewValid, placeTorchAtPreview } from '../world/torches.js';
 import { isTouchDevice, initTouch, setMobileGameActive, isMobileGameActive } from './touch.js';
 
@@ -14,6 +14,14 @@ let pointerLocked = false;
 let rightMouseDown = false;
 let pendingLockEl = null;
 let helpVisible = false;
+let lastThrowTime = 0;
+const THROW_COOLDOWN = 500;
+
+export function getThrowCooldownFrac() {
+  const elapsed = performance.now() - lastThrowTime;
+  if (elapsed >= THROW_COOLDOWN) return 0;
+  return 1 - elapsed / THROW_COOLDOWN;
+}
 let gameStarted = false;
 
 // simPause = Tab pause — pointer lock stays active, virtual cursor shown
@@ -120,23 +128,29 @@ export function isRightMouseDown() { return rightMouseDown; }
 export function doInteract() {
   const hintEl = document.getElementById('interact-hint');
   const source = hintEl ? hintEl.dataset.source : '';
+  let handled = false;
+
   if (source === 'door') {
-    toggleNearestDoor();
+    toggleNearestDoor(); handled = true;
   } else if (source === 'soldier') {
-    talkToNearestSoldier();
+    talkToNearestSoldier(); handled = true;
   } else if (source === 'flower') {
-    if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
+    if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); handled = true; }
   } else if (source === 'rock') {
-    if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
+    if (pickNearestRock(getInventory()) || pickNearestInFlightRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); handled = true; }
   } else if (source === 'torch') {
-    if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
+    if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); handled = true; }
   } else {
-    if (getNearestDoor()) toggleNearestDoor();
-    else if (!talkToNearestSoldier()) {
-      if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); }
-      else if (pickNearestRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); }
-      else if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); }
-    }
+    if (getNearestDoor()) { toggleNearestDoor(); handled = true; }
+    else if (talkToNearestSoldier()) { handled = true; }
+    else if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); handled = true; }
+    else if (pickNearestRock(getInventory()) || pickNearestInFlightRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); handled = true; }
+    else if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); handled = true; }
+  }
+
+  // E toggles throw/place mode for stones when nothing to interact with
+  if (!handled && getSlotItem(getSelectedSlot()) === 'stone' && getInventory().stones > 0) {
+    setPlacementMode(!isPlacementMode());
   }
 }
 
@@ -156,9 +170,19 @@ export function doUseItem() {
     }
   } else if (item === 'stone') {
     if (inv.stones <= 0) return;
-    spawnProjectile(getCamera(), getScene());
-    inv.stones--;
-    if (inv.stones <= 0) clearItemSlot('stone');
+    if (isPlacementMode()) {
+      if (isRockPreviewValid()) {
+        placeRockAtPreview(getScene());
+        inv.stones--;
+        if (inv.stones <= 0) { clearItemSlot('stone'); setPlacementMode(false); }
+      }
+    } else {
+      if (performance.now() - lastThrowTime < THROW_COOLDOWN) return;
+      spawnProjectile(getCamera(), getScene());
+      lastThrowTime = performance.now();
+      inv.stones--;
+      if (inv.stones <= 0) clearItemSlot('stone');
+    }
   } else if (item === 'torch') {
     if (inv.torches <= 0) return;
     if (isPlacementMode()) {

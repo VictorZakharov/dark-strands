@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { getGrid, isDoorCell, isWindowCell, isStairCell, isWalkable } from './grid.js';
-import { getBuildings } from './generator.js';
+import { getBuildings, getWallHeightAt } from './generator.js';
+import { isInsideWindowOpening } from './geometry.js';
+import { collidesWithRock } from './vegetation.js';
+import { getDoorByCell } from './doors.js';
 import { g2w, w2g, rngInt } from '../utils/helpers.js';
 import { CFG } from '../config.js';
 import { getPlayerState, getCamBlend } from '../entities/player.js';
@@ -15,13 +18,31 @@ const doorTorchFlames = [];
 // All pickable torches (interior + door + player-placed)
 const pickableTorches = [];
 
+// Player-placed door torches — need wx/wz updates when door rotates
+const playerDoorTorches = [];
+
 // Pre-allocated light pool — avoids adding/removing PointLights which triggers shader recompile
 const LIGHT_POOL_SIZE = 20;
 const lightPool = [];       // { light, inUse }
 
+// Limit shadow-casting point lights to avoid GPU cost (cube maps = 6 passes each)
+const MAX_SHADOW_TORCHES = 3;
+let _shadowTorchCount = 0;
+
+function configureTorchShadow(light) {
+  if (_shadowTorchCount >= MAX_SHADOW_TORCHES) return;
+  _shadowTorchCount++;
+  light.castShadow = true;
+  light.shadow.mapSize.width = 256;
+  light.shadow.mapSize.height = 256;
+  light.shadow.camera.near = 0.1;
+  light.shadow.camera.far = 8;
+  light.shadow.bias = -0.003;
+}
+
 export function initTorchLightPool(scene) {
   for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
-    const light = new THREE.PointLight(0xff8833, 0, 12, 1.5);
+    const light = new THREE.PointLight(0xff8833, 0, 6, 2.0);
     scene.add(light);
     lightPool.push({ light, inUse: false });
   }
@@ -53,11 +74,12 @@ const _flameMat = new THREE.MeshBasicMaterial({ color: 0xff7722 });
 const _stickMat = new THREE.MeshStandardMaterial({ color: 0x4a3020 });
 const TILT = Math.PI / 6;
 const STICK_LEN = 0.6;
-const TIP_OUT = Math.sin(TILT) * STICK_LEN / 2;
-const TIP_UP = Math.cos(TILT) * STICK_LEN / 2;
+const TIP_OUT = Math.sin(TILT) * STICK_LEN;
+const TIP_UP = Math.cos(TILT) * STICK_LEN;
 
 /** Create a wall-mounted torch at given position, returns { light, flame, stick } */
 function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ, usePool) {
+  // Actual tip = stick center + half-length projection
   const tipX = mountX + normalX * TIP_OUT;
   const tipZ = mountZ + normalZ * TIP_OUT;
   const tipY = mountY + TIP_UP;
@@ -67,14 +89,14 @@ function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ, usePoo
     light = acquirePoolLight();
     if (!light) return null;
   } else {
-    light = new THREE.PointLight(0xff8833, 0, 12, 1.5);
+    light = new THREE.PointLight(0xff8833, 0, 6, 2.0);
     scene.add(light);
   }
   light.intensity = 2;
-  light.position.set(tipX, tipY + 0.12, tipZ);
+  light.position.set(tipX, tipY + 0.06, tipZ);
 
   const flame = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 5), _flameMat);
-  flame.position.set(tipX, tipY + 0.08, tipZ);
+  flame.position.set(tipX, tipY, tipZ);
   scene.add(flame);
 
   const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, STICK_LEN, 4), _stickMat);
@@ -101,7 +123,7 @@ function createGroundTorch(scene, x, groundY, z, usePool) {
     light = acquirePoolLight();
     if (!light) return null;
   } else {
-    light = new THREE.PointLight(0xff8833, 0, 12, 1.5);
+    light = new THREE.PointLight(0xff8833, 0, 6, 2.0);
     scene.add(light);
   }
   light.intensity = 2;
@@ -151,6 +173,7 @@ export function placeTorches(scene) {
       const wx = p.x + tp.ox, wz = p.z + tp.oz;
       const awayX = -tp.ox / wallOffset, awayZ = -tp.oz / wallOffset;
       const t = createWallTorch(scene, wx, wz, 2.2, awayX, awayZ);
+      if (b.stories >= 2) configureTorchShadow(t.light);
       torchLights.push(t.light);
       pickableTorches.push({ ...t, active: true });
     }
@@ -189,38 +212,11 @@ export function placeDoorTorches(scene) {
         case 'east':  mountX = p.x + normOff; mountZ = p.z + side * sideOff; nx = 1; break;
       }
 
-      // Angled wall torch (same geometry as interior torches)
-      const tipX = mountX + nx * TIP_OUT;
-      const tipZ = mountZ + nz * TIP_OUT;
-      const tipY = torchY + TIP_UP;
-
-      const light = new THREE.PointLight(0xff8833, 0, 10, 1.5);
-      light.position.set(tipX, tipY + 0.12, tipZ);
-      scene.add(light);
-      doorTorchLights.push(light);
-
-      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 5), _flameMat);
-      flame.position.set(tipX, tipY + 0.08, tipZ);
-      flame.visible = false;
-      scene.add(flame);
-      doorTorchFlames.push(flame);
-
-      const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, STICK_LEN, 4), _stickMat);
-      stick.position.set(
-        mountX + nx * TIP_OUT / 2,
-        torchY + TIP_UP / 2,
-        mountZ + nz * TIP_OUT / 2
-      );
-      if (Math.abs(nx) > 0.5) {
-        stick.rotation.z = nx > 0 ? -TILT : TILT;
-      } else {
-        stick.rotation.x = nz > 0 ? TILT : -TILT;
-      }
-      stick.castShadow = true;
-      scene.add(stick);
-
-      const wx = tipX, wz = tipZ;
-      pickableTorches.push({ light, flame, stick, wx, wz, active: true });
+      const t = createWallTorch(scene, mountX, mountZ, torchY, nx, nz);
+      if (b.stories >= 2) configureTorchShadow(t.light);
+      doorTorchLights.push(t.light);
+      doorTorchFlames.push(t.flame);
+      pickableTorches.push({ ...t, active: true });
     }
   }
 }
@@ -254,6 +250,9 @@ export function pickNearestTorch(inventory) {
     t.light.intensity = 0;
     t.light.userData.picked = true;
   }
+  // Remove from door-torch tracking if it was door-parented
+  const dIdx = playerDoorTorches.indexOf(t);
+  if (dIdx >= 0) playerDoorTorches.splice(dIdx, 1);
   inventory.torches++;
   return true;
 }
@@ -287,6 +286,19 @@ export function initTorchPreview(scene) {
   scene.add(previewGroup);
 }
 
+const MIN_TORCH_SPACING = 0.6;
+
+function isTooCloseToTorch(x, y, z) {
+  for (const t of pickableTorches) {
+    if (!t.active) continue;
+    const dx = x - t.wx;
+    const dz = z - t.wz;
+    const dy = y - t.flame.position.y;
+    if (dx * dx + dy * dy + dz * dz < MIN_TORCH_SPACING * MIN_TORCH_SPACING) return true;
+  }
+  return false;
+}
+
 /** Ray-march from camera through crosshair; distances measured from player */
 function findPlacementTarget(camera) {
   const origin = new THREE.Vector3();
@@ -315,7 +327,9 @@ function findPlacementTarget(camera) {
     // Ground hit (only within shorter range from player)
     if (!groundDone && y <= groundY + 0.05) {
       if (distPlayer <= PLACE_MAX_DIST_GROUND) {
-        const valid = isWalkable(x, z) && (CFG.SNOW_MODE || groundY >= CFG.WATER_Y);
+        const valid = isWalkable(x, z) && (CFG.SNOW_MODE || groundY >= CFG.WATER_Y)
+          && !collidesWithRock(x, z, 0.15)
+          && !isTooCloseToTorch(x, groundY + STICK_LEN, z);
         return valid ? { type: 'ground', x, z, y: groundY } : null;
       }
       groundDone = true; // past ground range, keep scanning for walls
@@ -327,9 +341,45 @@ function findPlacementTarget(camera) {
     // Wall hit (walkable → non-walkable transition)
     const walkable = isWalkable(x, z);
     if (!walkable && prevWalkable) {
-      // Reject window cells
       const g = w2g(x, z);
-      if (isWindowCell(g.x, g.z)) return null;
+
+      // Door cell: allow placing torch ON the door panel or ABOVE the door gap
+      if (isDoorCell(g.x, g.z)) {
+        const door = getDoorByCell(g.x, g.z);
+        if (!door) return null;
+        const doorTopY = CFG.WALL_H * 0.88;
+        if (y >= doorTopY && y <= CFG.WALL_H) {
+          // Above door gap — mount on lintel wall, normal outward
+          const hitX2 = !isWalkable(x, prevZ);
+          const hitZ2 = !isWalkable(prevX, z);
+          let nx2 = 0, nz2 = 0;
+          if (hitX2 && !hitZ2) nx2 = dir.x > 0 ? -1 : 1;
+          else if (hitZ2 && !hitX2) nz2 = dir.z > 0 ? -1 : 1;
+          else return null;
+          const wc = g2w(g.x, g.z);
+          const wallSurf = CFG.CELL / 2 - CFG.WALL_T / 2 - 0.1;
+          const mountX = nx2 !== 0 ? wc.x + nx2 * wallSurf : prevX;
+          const mountZ = nz2 !== 0 ? wc.z + nz2 * wallSurf : prevZ;
+          if (isTooCloseToTorch(mountX, y, mountZ)) return null;
+          return { type: 'wall', x: mountX, z: mountZ, y, nx: nx2, nz: nz2 };
+        }
+        // On door panel itself
+        const hitX2 = !isWalkable(x, prevZ);
+        const hitZ2 = !isWalkable(prevX, z);
+        let nx2 = 0, nz2 = 0;
+        if (hitX2 && !hitZ2) nx2 = dir.x > 0 ? -1 : 1;
+        else if (hitZ2 && !hitX2) nz2 = dir.z > 0 ? -1 : 1;
+        else return null;
+        if (y < 0.3 || y > doorTopY) return null;
+        if (isTooCloseToTorch(prevX, y, prevZ)) return null;
+        return { type: 'door', x: prevX, z: prevZ, y, nx: nx2, nz: nz2, door };
+      }
+
+      if (isWindowCell(g.x, g.z) && isInsideWindowOpening(g.x, g.z, y, prevX, prevZ)) return null;
+
+      // Reject if Y is above the wall height (torch would be on/above roof)
+      const maxWallY = getWallHeightAt(g.x, g.z);
+      if (y > maxWallY || y < 0) return null;
 
       const hitX = !isWalkable(x, prevZ);
       const hitZ = !isWalkable(prevX, z);
@@ -342,6 +392,10 @@ function findPlacementTarget(camera) {
       const wallSurf = CFG.CELL / 2 - CFG.WALL_T / 2 - 0.1;
       const mountX = nx !== 0 ? wc.x + nx * wallSurf : prevX;
       const mountZ = nz !== 0 ? wc.z + nz * wallSurf : prevZ;
+
+      // Reject if too close to an existing torch (prevent stacking)
+      if (isTooCloseToTorch(mountX, y, mountZ)) return null;
+
       return { type: 'wall', x: mountX, z: mountZ, y, nx, nz };
     }
 
@@ -376,8 +430,8 @@ export function updateTorchPreview(camera, active) {
   previewStick.rotation.set(0, 0, 0);
   previewFlame.position.set(0, 0.3, 0);
 
-  if (hit.type === 'wall') {
-    // Wall-mounted — position at wall face, tilted away
+  if (hit.type === 'wall' || hit.type === 'door') {
+    // Wall/door-mounted — position at surface, tilted away
     const mx = hit.x, mz = hit.z, my = hit.y;
     previewGroup.position.set(
       mx + hit.nx * TIP_OUT / 2,
@@ -393,7 +447,7 @@ export function updateTorchPreview(camera, active) {
   } else {
     // Ground — vertical
     previewGroup.position.set(hit.x, hit.y + STICK_LEN / 2, hit.z);
-    previewFlame.position.set(0, STICK_LEN / 2 + 0.08, 0);
+    previewFlame.position.set(0, STICK_LEN / 2, 0);
   }
 }
 
@@ -407,7 +461,28 @@ export function placeTorchAtPreview(scene) {
   if (inv.torches <= 0) return false;
 
   let t;
-  if (placementHit.type === 'wall') {
+  if (placementHit.type === 'door') {
+    // Place torch on door panel — parent meshes to door group so they rotate with it
+    t = createWallTorch(scene, placementHit.x, placementHit.z, placementHit.y, placementHit.nx, placementHit.nz, true);
+    if (!t) return false;
+    const door = placementHit.door;
+    // Re-parent flame + stick into door group (convert to door-local coords)
+    const doorGroup = door.group;
+    for (const child of [t.flame, t.stick]) {
+      const wp = new THREE.Vector3();
+      child.getWorldPosition(wp);
+      scene.remove(child);
+      doorGroup.add(child);
+      doorGroup.worldToLocal(wp);
+      child.position.copy(wp);
+    }
+    const entry = { ...t, active: true, doorGroup };
+    pickableTorches.push(entry);
+    playerDoorTorches.push(entry);
+    addTorchEmbers(entry);
+    inv.torches--;
+    return true;
+  } else if (placementHit.type === 'wall') {
     t = createWallTorch(scene, placementHit.x, placementHit.z, placementHit.y, placementHit.nx, placementHit.nz, true);
   } else {
     t = createGroundTorch(scene, placementHit.x, placementHit.y, placementHit.z, true);
@@ -418,6 +493,20 @@ export function placeTorchAtPreview(scene) {
   addTorchEmbers(entry);
   inv.torches--;
   return true;
+}
+
+/** Update world-space coords for player-placed door torches (door rotation changes their position) */
+export function updateDoorTorchPositions() {
+  for (const t of playerDoorTorches) {
+    if (!t.active || !t.doorGroup) continue;
+    // Convert flame local position to world position for light + ember tracking
+    const wp = new THREE.Vector3();
+    t.flame.getWorldPosition(wp);
+    t.wx = wp.x;
+    t.wz = wp.z;
+    // Update pooled light position to match
+    t.light.position.set(wp.x, wp.y + 0.04, wp.z);
+  }
 }
 
 // ---- Hint (used by old system, kept for reference but main uses unified hint) ----
@@ -552,9 +641,10 @@ export function initTorchEmbers(scene) {
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function resetEmber(e) {
-  const fx = e.torch.flame.position.x;
+  // Use wx/wz (world coords, updated for door-parented torches) + flame local Y (unaffected by door rotation)
+  const fx = e.torch.wx;
   const fy = e.torch.flame.position.y;
-  const fz = e.torch.flame.position.z;
+  const fz = e.torch.wz;
   e.sprite.position.set(fx + rnd(-0.05, 0.05), fy, fz + rnd(-0.05, 0.05));
   e.vel.set(rnd(-0.15, 0.15), rnd(0.5, 1.2), rnd(-0.15, 0.15));
   e.maxLife = rnd(0.8, 2.0);

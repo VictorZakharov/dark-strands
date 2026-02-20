@@ -1,14 +1,15 @@
 import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { CFG } from '../config.js';
-import { canMoveTo, getFloorHeight } from '../world/grid.js';
-import { getNpcCollision } from '../systems/npcAI.js';
-import { collidesWithRock, getRockPushback, getRockSurfaceHeight } from '../world/vegetation.js';
-import { collidesWithDoorPanel, getDoorPanelPushback } from '../world/doors.js';
+import { createPlayerBody, getPhysicsWorld } from '../core/physics.js';
 import { getScene } from '../core/scene.js';
 import { isRightMouseDown } from '../systems/controls.js';
 import { getSunOffset } from '../systems/daynight.js';
+import { getNpcCollision } from '../systems/npcAI.js';
+import { getTerrainHeight } from '../world/terrain.js';
+import { spawnBoundaryHit } from '../world/boundary.js';
 
 let playerModel;
 let mixer, idleAction, walkAction, runAction;
@@ -58,14 +59,26 @@ const state = {
   firstPerson: true,
 };
 
+let playerBody = null;
+let _moving = false, _sprinting = false;
+let _boundaryShieldCD = 0; // frame cooldown for boundary shield spawns
+let _frozenY = null; // locked Y when standing still to eliminate terrain jitter
+
 export function getPlayerState() { return state; }
 export function getPlayerModel() { return playerModel; }
 export function getCamBlend() { return camBlend; } // 0 = fully 1st person, 1 = fully 3rd person
+
+export function getPlayerBody() { return playerBody; }
 
 export function initPlayer(scene) {
   playerModel = new THREE.Group();
   playerModel.visible = false;
   scene.add(playerModel);
+
+  // Create physics capsule body at spawn position (on terrain surface)
+  const spawnY = getTerrainHeight(state.x, state.z);
+  state.y = spawnY;
+  playerBody = createPlayerBody(state.x, spawnY, state.z);
 
   // Load soldier model for the player
   const loader = new GLTFLoader();
@@ -159,6 +172,7 @@ export function toggleCamera() {
       let obj = hit.object;
       while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
       if (isPlayer) continue;
+      if (hit.object.userData && hit.object.userData.isGround) continue;
       _crosshairTarget.copy(hit.point);
       found = true;
       break;
@@ -171,7 +185,7 @@ export function toggleCamera() {
 
     // convergenceDist for after the transition ends
     _toHit.subVectors(_crosshairTarget, fpEye);
-    convergenceDist = Math.max(3, _toHit.dot(fpFwd));
+    convergenceDist = Math.max(15, _toHit.dot(fpFwd));
 
     // Decompose target offset into player-local (right, up, fwd) coords
     // so mouse rotation during transition moves the target naturally.
@@ -193,8 +207,9 @@ export function toggleCamera() {
       let obj = hit.object;
       while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
       if (isPlayer) continue;
+      if (hit.object.userData && hit.object.userData.isGround) continue;
       _toHit.subVectors(hit.point, fpEye);
-      convergenceDist = Math.max(3, _toHit.dot(fpFwd));
+      convergenceDist = Math.max(15, _toHit.dot(fpFwd));
       break;
     }
   }
@@ -215,14 +230,34 @@ function inverseSmoothstep(y) {
   return x;
 }
 
-export function updatePlayer(dt, camera, sunLight, keys) {
+// --- Physics-based movement ---
+
+const _rayFrom = new CANNON.Vec3();
+const _rayTo = new CANNON.Vec3();
+const _rayResult = new CANNON.RaycastResult();
+
+function isPlayerGrounded() {
+  if (!playerBody) return true;
+  const world = getPhysicsWorld();
+  // Cast ray from inside bottom sphere down past capsule bottom
+  _rayFrom.set(playerBody.position.x, playerBody.position.y + 0.3, playerBody.position.z);
+  _rayTo.set(playerBody.position.x, playerBody.position.y - 0.15, playerBody.position.z);
+  _rayResult.reset();
+  // collisionFilterMask ~2 excludes player body (group 2)
+  world.raycastClosest(_rayFrom, _rayTo, { collisionFilterMask: ~2 }, _rayResult);
+  return _rayResult.hasHit;
+}
+
+/** Called BEFORE physics step — sets body velocity from input */
+export function updatePlayerMovement(dt, keys) {
+  if (!playerBody) return;
+
   const fwd = new THREE.Vector3(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
   const right = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
-  const sprinting = keys['ShiftLeft'] || keys['ShiftRight'];
-  // Underwater slows movement to 40%
+  _sprinting = keys['ShiftLeft'] || keys['ShiftRight'];
   const underwater = !CFG.SNOW_MODE && (state.y + CFG.PLAYER_H) < CFG.WATER_Y;
   const spdMul = underwater ? 0.4 : 1;
-  const spd = (sprinting ? CFG.SPRINT : CFG.SPEED) * spdMul;
+  const spd = (_sprinting ? CFG.SPRINT : CFG.SPEED) * spdMul;
   const mv = new THREE.Vector3();
 
   if (keys['KeyW']) mv.add(fwd);
@@ -230,70 +265,147 @@ export function updatePlayer(dt, camera, sunLight, keys) {
   if (keys['KeyA']) mv.sub(right);
   if (keys['KeyD']) mv.add(right);
 
-  const moving = mv.lengthSq() > 0;
+  _moving = mv.lengthSq() > 0;
 
-  if (moving) {
+  if (_moving) {
     mv.normalize();
 
-    // Target facing = direction of movement
+    // Smooth facing rotation
     const targetAngle = Math.atan2(mv.x, mv.z);
-
-    // Smooth rotation — lerp the shortest arc
     let diff = targetAngle - facingAngle;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
     facingAngle += diff * Math.min(1, dt * 12);
 
-    mv.multiplyScalar(spd * dt);
-    if (canMoveTo(state.x + mv.x, state.z, state.y) && !collidesWithRock(state.x + mv.x, state.z, CFG.PLAYER_R, state.y) && !collidesWithDoorPanel(state.x + mv.x, state.z, CFG.PLAYER_R)) state.x += mv.x;
-    if (canMoveTo(state.x, state.z + mv.z, state.y) && !collidesWithRock(state.x, state.z + mv.z, CFG.PLAYER_R, state.y) && !collidesWithDoorPanel(state.x, state.z + mv.z, CFG.PLAYER_R)) state.z += mv.z;
+    playerBody.velocity.x = mv.x * spd;
+    playerBody.velocity.z = mv.z * spd;
+  } else {
+    playerBody.velocity.x = 0;
+    playerBody.velocity.z = 0;
   }
 
-  // NPC collision — push player out of NPCs
+  // Ground check (used for jump and slope anti-slide)
+  const grounded = isPlayerGrounded();
+
+  // Prevent sliding on slopes when not moving — freeze position
+  if (!_moving && grounded && !keys['Space']) {
+    playerBody.velocity.set(0, 0, 0);
+    playerBody.applyForce(new CANNON.Vec3(0, playerBody.mass * CFG.GRAV, 0));
+    // Lock Y position to eliminate terrain contact jitter
+    if (_frozenY === null) _frozenY = playerBody.position.y;
+  } else {
+    _frozenY = null;
+  }
+
+  // Damp small terrain-contact bounces when walking on ground
+  if (_moving && grounded && playerBody.velocity.y > 0 && playerBody.velocity.y < 1.5) {
+    playerBody.velocity.y = 0;
+  }
+
+  // Jump
+  if (keys['Space'] && grounded) {
+    playerBody.velocity.y = underwater ? CFG.JUMP * 0.5 : CFG.JUMP;
+  }
+
+  // Underwater: counteract 70% of gravity
+  if (underwater) {
+    playerBody.applyForce(new CANNON.Vec3(0, playerBody.mass * CFG.GRAV * 0.7, 0));
+  }
+
+  playerBody.wakeUp();
+}
+
+/** Called AFTER physics step — reads body position back into state */
+export function syncPlayerFromPhysics() {
+  if (!playerBody) return;
+  state.x = playerBody.position.x;
+  state.y = playerBody.position.y;
+  state.z = playerBody.position.z;
+  state.velY = playerBody.velocity.y;
+
+  // Restore frozen Y when standing still — eliminates terrain contact jitter
+  if (_frozenY !== null) {
+    state.y = _frozenY;
+    playerBody.position.y = _frozenY;
+    playerBody.velocity.y = 0;
+  }
+
+  // Damp vertical micro-bounces from heightfield/floor contact resolution
+  if (playerBody.velocity.y > 0 && playerBody.velocity.y < 0.8) {
+    playerBody.velocity.y = 0;
+  }
+
+  // Ceiling clamp — safety net: raycast upward to catch any floor/roof penetration
+  const world = getPhysicsWorld();
+  _rayFrom.set(state.x, state.y + 0.1, state.z);
+  _rayTo.set(state.x, state.y + CFG.PLAYER_H + 0.3, state.z);
+  _rayResult.reset();
+  world.raycastClosest(_rayFrom, _rayTo, { collisionFilterMask: ~2 }, _rayResult);
+  if (_rayResult.hasHit) {
+    const ceilingY = _rayResult.hitPointWorld.y;
+    const maxY = ceilingY - CFG.PLAYER_H;
+    if (state.y > maxY) {
+      state.y = maxY;
+      playerBody.position.y = maxY;
+      if (playerBody.velocity.y > 0) playerBody.velocity.y = 0;
+    }
+  }
+
+  // Snow mode: water acts as ice floor
+  if (CFG.SNOW_MODE && state.y < CFG.WATER_Y) {
+    state.y = CFG.WATER_Y;
+    playerBody.position.y = CFG.WATER_Y;
+    if (playerBody.velocity.y < 0) playerBody.velocity.y = 0;
+  }
+
+  // NPC pushback (post-physics nudge)
   const push = getNpcCollision(state.x, state.z, CFG.PLAYER_R);
   if (push) {
-    const nx = state.x + push.x;
-    const nz = state.z + push.z;
-    if (canMoveTo(nx, nz, state.y)) { state.x = nx; state.z = nz; }
+    state.x += push.x;
+    state.z += push.z;
+    playerBody.position.x = state.x;
+    playerBody.position.z = state.z;
   }
 
-  // Rock collision — push player out of rocks (skip if above rock)
-  const rockPush = getRockPushback(state.x, state.z, CFG.PLAYER_R, state.y);
-  if (rockPush) {
-    const rx = state.x + rockPush.x;
-    const rz = state.z + rockPush.z;
-    if (canMoveTo(rx, rz, state.y)) { state.x = rx; state.z = rz; }
+  // World boundary — only trigger shield when player actually crosses the hard edge
+  const edge = CFG.HALF - 1;
+  const eyeY = state.y + CFG.PLAYER_H * 0.5;
+  const shieldVis = edge + 2; // visual placed past clamp so 1st person can see it
+  let hitBoundary = false;
+
+  if (state.x > edge) {
+    if (_boundaryShieldCD <= 0) { spawnBoundaryHit(shieldVis, eyeY, state.z, -1, 0); hitBoundary = true; }
+    state.x = edge; playerBody.position.x = edge; playerBody.velocity.x = 0;
+  } else if (state.x < -edge) {
+    if (_boundaryShieldCD <= 0) { spawnBoundaryHit(-shieldVis, eyeY, state.z, 1, 0); hitBoundary = true; }
+    state.x = -edge; playerBody.position.x = -edge; playerBody.velocity.x = 0;
+  }
+  if (state.z > edge) {
+    if (_boundaryShieldCD <= 0) { spawnBoundaryHit(state.x, eyeY, shieldVis, 0, -1); hitBoundary = true; }
+    state.z = edge; playerBody.position.z = edge; playerBody.velocity.z = 0;
+  } else if (state.z < -edge) {
+    if (_boundaryShieldCD <= 0) { spawnBoundaryHit(state.x, eyeY, -shieldVis, 0, 1); hitBoundary = true; }
+    state.z = -edge; playerBody.position.z = -edge; playerBody.velocity.z = 0;
   }
 
-  // Door panel pushback — prevent getting stuck in swinging doors
-  const doorPush = getDoorPanelPushback(state.x, state.z, CFG.PLAYER_R);
-  if (doorPush) {
-    const dpx = state.x + doorPush.x;
-    const dpz = state.z + doorPush.z;
-    if (canMoveTo(dpx, dpz, state.y)) { state.x = dpx; state.z = dpz; }
-  }
+  if (hitBoundary) _boundaryShieldCD = 30; // ~0.5s at 60fps
+  else if (_boundaryShieldCD > 0) _boundaryShieldCD--;
+}
+
+export function updatePlayer(dt, camera, sunLight, keys) {
+  const underwater = !CFG.SNOW_MODE && (state.y + CFG.PLAYER_H) < CFG.WATER_Y;
 
   // Player animation state
   if (modelReady) {
-    if (moving && sprinting && currentAction !== runAction) {
+    if (_moving && _sprinting && currentAction !== runAction) {
       crossfade(currentAction, runAction);
-    } else if (moving && !sprinting && currentAction !== walkAction) {
+    } else if (_moving && !_sprinting && currentAction !== walkAction) {
       crossfade(currentAction, walkAction);
-    } else if (!moving && currentAction !== idleAction) {
+    } else if (!_moving && currentAction !== idleAction) {
       crossfade(currentAction, idleAction);
     }
     mixer.update(dt);
   }
-
-  // Jump & gravity
-  let groundY = getFloorHeight(state.x, state.z, state.y);
-  const rockY = getRockSurfaceHeight(state.x, state.z, state.y);
-  if (rockY !== null) groundY = Math.max(groundY, rockY);
-  if (CFG.SNOW_MODE) groundY = Math.max(groundY, CFG.WATER_Y);
-  if (keys['Space'] && state.y < groundY + 0.01) state.velY = underwater ? CFG.JUMP * 0.5 : CFG.JUMP;
-  state.velY -= (underwater ? CFG.GRAV * 0.3 : CFG.GRAV) * dt;
-  state.y += state.velY * dt;
-  if (state.y < groundY) { state.y = groundY; state.velY = 0; }
 
   // Camera blend transition (smoothstep over CAM_TRANS_DUR)
   if (camBlend !== camBlendTarget) {
@@ -358,10 +470,13 @@ export function updatePlayer(dt, camera, sunLight, keys) {
 
     const hits = camRay.intersectObjects(scene.children, true);
     for (const hit of hits) {
+      // Skip player model
       let isPlayer = false;
       let obj = hit.object;
       while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
       if (isPlayer) continue;
+      // Skip ground/water planes (they clip camera near flat areas)
+      if (hit.object.userData && hit.object.userData.isGround) continue;
       // Project hit distance onto main ray direction
       const projDist = Math.max(0.5, hit.distance * _probeDir.dot(toCamera) - PULL_BACK);
       if (projDist < finalDist) finalDist = projDist;
@@ -399,7 +514,7 @@ export function updatePlayer(dt, camera, sunLight, keys) {
         -Math.cos(state.yaw) * Math.cos(state.pitch)
       ).normalize();
       _toHit.subVectors(_crosshairTarget, _fpPos);
-      convergenceDist = Math.max(3, _toHit.dot(newFwd));
+      convergenceDist = Math.max(15, _toHit.dot(newFwd));
 
       _blendedLookAt.copy(_fpPos).addScaledVector(newFwd, convergenceDist);
       _trackWorldTarget = false;

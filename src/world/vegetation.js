@@ -1,16 +1,20 @@
 import * as THREE from 'three';
 import { CFG } from '../config.js';
-import { getGrid, setCell } from './grid.js';
+import { getGrid, setCell, markTreeCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w, rng, rngInt } from '../utils/helpers.js';
 import { getTerrainHeight } from './terrain.js';
 import { getPlayerState } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
+import { createStaticSphere } from '../core/physics.js';
 
 const texLoader = new THREE.TextureLoader();
 let barkTex, leafTex, rockTex;
 
 const rockColliders = [];
+
+// Tree positions for foliage collision checks
+const treePosData = []; // { x, z, ty, scale }
 
 // Shared depth material for leaf shadow rendering — discards ~45% of fragments
 // via world-position hash to create dappled/lighter shadows
@@ -218,7 +222,10 @@ export function placeTrees(scene) {
     if (getTerrainHeight(p.x, p.z) < CFG.WATER_Y) continue;
 
     setCell(gx, gz, false);
-    scene.add(createTree(p.x, p.z));
+    markTreeCell(gx, gz);
+    const tree = createTree(p.x, p.z);
+    scene.add(tree);
+    treePosData.push({ x: p.x, z: p.z, ty: getTerrainHeight(p.x, p.z), scale: tree.scale.x });
     placed++;
   }
 }
@@ -253,6 +260,19 @@ export function placeRocks(scene) {
       }
     }
     if (inside) continue;
+
+    // Check door proximity — prevent rocks spawning near doors (would block them)
+    let nearDoor = false;
+    for (const b of buildings) {
+      for (const d of b.doors) {
+        if (Math.abs(gx - d.gx) <= 2 && Math.abs(gz - d.gz) <= 2) {
+          nearDoor = true;
+          break;
+        }
+      }
+      if (nearDoor) break;
+    }
+    if (nearDoor) continue;
 
     const p0 = g2w(gx, gz);
     if (getTerrainHeight(p0.x, p0.z) < CFG.WATER_Y) continue;
@@ -293,21 +313,113 @@ export function placeRocks(scene) {
     rock.receiveShadow = true;
     scene.add(rock);
 
-    rockColliders.push({
+    const rc = {
       x: p0.x + ox, z: p0.z + oz,
       r: s * 0.85, top: ty + s * 0.8, height: s * 0.8,
       mesh: rock, size: s, active: true,
-    });
+    };
+    // Physics body for rocks large enough to block movement
+    if (s > 0.5) {
+      rc.physicsBody = createStaticSphere(s * 0.65, p0.x + ox, ty + s * 0.4, p0.z + oz);
+    }
+    rockColliders.push(rc);
   }
+}
+
+/**
+ * Returns the top Y of the highest rock that overlaps (wx, wz) from above.
+ * Used for stacking placed rocks on existing rocks.
+ */
+export function getRockStackHeight(wx, wz, currentY) {
+  let bestTop = null;
+  for (const rc of rockColliders) {
+    if (!rc.active) continue;
+    const dx = wx - rc.x;
+    const dz = wz - rc.z;
+    if (dx * dx + dz * dz < rc.r * rc.r) {
+      if (currentY > rc.top - 0.1) {
+        if (bestTop === null || rc.top > bestTop) {
+          bestTop = rc.top;
+        }
+      }
+    }
+  }
+  return bestTop;
+}
+
+/**
+ * Returns the top Y of the first rock collider the ray point is inside.
+ * Used for rock placement preview ray-march.
+ */
+export function findRockSurface(wx, wz, wy) {
+  for (const rc of rockColliders) {
+    if (!rc.active) continue;
+    const dx = wx - rc.x;
+    const dz = wz - rc.z;
+    if (dx * dx + dz * dz < rc.r * rc.r) {
+      if (wy <= rc.top + 0.2 && wy >= rc.top - rc.height) {
+        return rc.top;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Check if a world position is inside any tree's foliage area.
+ * Returns a damping factor (0-1, where 0 = full stop, 1 = no effect), or null if not in foliage.
+ */
+export function getTreeFoliageDamping(wx, wy, wz) {
+  for (const t of treePosData) {
+    const dx = wx - t.x;
+    const dz = wz - t.z;
+    const hDist = Math.sqrt(dx * dx + dz * dz);
+    const foliageR = t.scale * 1.3; // foliage radius (scaled cones)
+    if (hDist > foliageR) continue;
+    const trunkTop = t.ty + t.scale * 1.4; // scaled trunk top
+    const foliageTop = t.ty + t.scale * 5.0; // top of foliage
+    if (wy < trunkTop || wy > foliageTop) continue;
+    // Inside foliage — return damping (closer to center = more damping)
+    const centerDist = hDist / foliageR;
+    return 0.3 + 0.5 * centerDist; // 0.3 at center, 0.8 at edge
+  }
+  return null;
 }
 
 export function registerPickableRock(mesh, x, z, size) {
   const top = mesh.position.y + size * 0.4;
-  rockColliders.push({
+  const rc = {
     x, z,
     r: size * 0.85, top, height: size * 0.8,
     mesh, size, active: true,
-  });
+  };
+  rc.physicsBody = createStaticSphere(size * 0.65, x, mesh.position.y, z);
+  rockColliders.push(rc);
+}
+
+/**
+ * Returns a pickable rock near world position (wx, wz, wy), or null.
+ * Used for projectile-on-rock knockback detection.
+ */
+export function getPickableRockNear(wx, wz, wy, hitRadius) {
+  for (const rc of rockColliders) {
+    if (!rc.active || rc.size > CFG.ROCK_PICK_MAX_SIZE) continue;
+    const dx = wx - rc.x;
+    const dz = wz - rc.z;
+    const dy = wy - (rc.top - rc.height * 0.4);
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist < hitRadius + rc.size * 0.5) return rc;
+  }
+  return null;
+}
+
+/**
+ * Deactivate a rock collider (for knockback conversion to projectile).
+ * Caller must handle physics body removal.
+ */
+export function deactivateRock(rc) {
+  rc.active = false;
+  rc.mesh.visible = false;
 }
 
 export function getNearestPickableRock() {
@@ -337,6 +449,11 @@ export function pickNearestRock(inventory) {
 }
 
 const _projRock = new THREE.Vector3();
+
+/** Returns all active pickable rocks (for minimap display) */
+export function getPickableRocks() {
+  return rockColliders.filter(rc => rc.active && rc.size <= CFG.ROCK_PICK_MAX_SIZE);
+}
 
 export function updateRockHint() {
   const el = document.getElementById('interact-hint');

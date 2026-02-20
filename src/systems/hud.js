@@ -5,6 +5,9 @@ import { getBuildings } from '../world/generator.js';
 import { getPlayerState } from '../entities/player.js';
 import { w2g } from '../utils/helpers.js';
 import { getSlotItem, ITEM_META } from '../systems/hotbar.js';
+import { getPickableRocks } from '../world/vegetation.js';
+import { getActiveProjectilePositions } from '../systems/projectiles.js';
+import { getTerrainHeight } from '../world/terrain.js';
 
 const SVG_ICONS = {
   rock: '<svg class="slot-icon-svg" viewBox="0 0 24 24" width="26" height="26"><polygon points="5,18 2,12 4,7 9,4 15,3 20,6 22,12 19,18 14,20 8,20" fill="#8a7a60" stroke="#5c4e3a" stroke-width="1"/><polygon points="7,16 5,11 8,7 13,6 17,8 18,13 15,17 10,17" fill="#a08c6e"/><line x1="9" y1="7" x2="14" y2="16" stroke="#6e5e46" stroke-width="0.5"/><line x1="5" y1="12" x2="17" y2="9" stroke="#6e5e46" stroke-width="0.5"/></svg>',
@@ -12,6 +15,7 @@ const SVG_ICONS = {
 
 let frameCount = 0;
 let fpsTime = 0;
+let _waterCells = null; // cached water cell coordinates
 
 export function updateFPS(time) {
   frameCount++;
@@ -72,6 +76,26 @@ export function updateMinimap() {
     }
   }
 
+  // Water overlay — blue tint on cells below water level (cached)
+  if (!CFG.SNOW_MODE) {
+    if (!_waterCells) {
+      _waterCells = [];
+      for (let x = 0; x < CFG.GRID; x++) {
+        for (let z = 0; z < CFG.GRID; z++) {
+          const wx = (x - CFG.GRID / 2) * CFG.CELL + CFG.CELL / 2;
+          const wz = (z - CFG.GRID / 2) * CFG.CELL + CFG.CELL / 2;
+          if (getTerrainHeight(wx, wz) < CFG.WATER_Y) {
+            _waterCells.push(x, z);
+          }
+        }
+      }
+    }
+    ctx.fillStyle = 'rgba(30, 90, 180, 0.5)';
+    for (let i = 0; i < _waterCells.length; i += 2) {
+      ctx.fillRect(_waterCells[i] * s, _waterCells[i + 1] * s, Math.ceil(s), Math.ceil(s));
+    }
+  }
+
   // Building interiors
   for (const b of buildings) {
     ctx.fillStyle = b.stories === 2 ? '#4a3a2a' : '#3a2a1a';
@@ -84,6 +108,19 @@ export function updateMinimap() {
     if (!f.active) continue;
     const fg = w2g(f.wx, f.wz);
     ctx.fillRect(fg.x * s, fg.z * s, Math.ceil(s), Math.ceil(s));
+  }
+
+  // Pickable rocks (orange dots)
+  ctx.fillStyle = '#e89030';
+  for (const rc of getPickableRocks()) {
+    const rg = w2g(rc.x, rc.z);
+    ctx.fillRect(rg.x * s - 0.5, rg.z * s - 0.5, Math.ceil(s * 0.6), Math.ceil(s * 0.6));
+  }
+
+  // In-flight projectiles (orange dots)
+  for (const pp of getActiveProjectilePositions()) {
+    const rg = w2g(pp.x, pp.z);
+    ctx.fillRect(rg.x * s - 0.5, rg.z * s - 0.5, Math.ceil(s * 0.6), Math.ceil(s * 0.6));
   }
 
   // Player dot

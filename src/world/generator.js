@@ -10,6 +10,16 @@ export function getBuildings() {
   return buildings;
 }
 
+/** Get the wall height at a grid cell (building stories * WALL_H) */
+export function getWallHeightAt(gx, gz) {
+  for (const b of buildings) {
+    if (gx >= b.x && gx < b.x + b.w && gz >= b.z && gz < b.z + b.h) {
+      return b.stories * CFG.WALL_H;
+    }
+  }
+  return CFG.WALL_H;
+}
+
 /** Check if a world position is inside any building interior */
 export function isInsideBuilding(wx, wz) {
   for (const b of buildings) {

@@ -53,19 +53,21 @@ src/
   core/
     scene.js               # Renderer, scene, camera setup
     lighting.js            # Sun, hemisphere light, stars
+    physics.js             # cannon-es world, materials, body helpers, step
   world/
     grid.js                # 2D collision grid, walkability checks
     generator.js           # Procedural building placement
-    geometry.js            # 3D walls, ground plane, building floors
-    vegetation.js          # Low-poly trees and rocks
+    geometry.js            # 3D walls, ground plane, building floors, physics bodies
+    vegetation.js          # Low-poly trees and rocks (with physics bodies)
     terrain.js             # Perlin noise terrain heightmap
+    boundary.js            # World-edge hex-grid shield effect
     torches.js             # Wall-mounted point lights, torch pickup/placement
-    doors.js               # Door meshes with pivot rotation, open/close
+    doors.js               # Door meshes with pivot rotation, open/close, kinematic bodies
     flowers.js             # Flower pickup, planting, preview system
   entities/
     models.js              # Model registry (data only — URLs, heights, counts, licenses)
     modelLoader.js         # GLTF loading, cloning, animation setup, places models in scene
-    player.js              # Player state, movement, collision, camera modes
+    player.js              # Player state, physics capsule, camera modes
   systems/
     controls.js            # Pointer lock, keyboard, mouse input, pause states
     touch.js               # Mobile touch input (joystick, look, long-press interact)
@@ -73,7 +75,7 @@ src/
     daynight.js            # Day/night cycle, sky color, fog, star visibility
     hud.js                 # FPS counter, minimap canvas, camera mode label
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
-    projectiles.js         # Stone throwing physics
+    projectiles.js         # Stone throwing with cannon-es dynamic bodies
     menu.js                # Procedural campfire menu scene
   utils/
     helpers.js             # Grid↔world coordinate conversion, rng utilities
@@ -92,9 +94,13 @@ src/
 - Player spawns at center; buildings avoid the center area
 
 ### Collision
-- 2D boolean grid: `true` = walkable, `false` = blocked
-- Player checked with radius (4-corner test in `canMoveTo`)
-- NPCs use same collision system
+- **cannon-es** physics engine handles player movement, projectile physics, and door collisions
+- Player is a compound capsule body (2 spheres + cylinder, mass 80, fixedRotation)
+- Projectiles are dynamic sphere bodies with material-based friction/restitution
+- Static world bodies: wall boxes, floor slabs, stair steps, roof caps, rock spheres, terrain heightfield, boundary walls
+- Doors use kinematic box bodies synced to visual rotation each frame
+- 2D boolean grid still used for: NPC pathfinding, placement validation, indoor/outdoor detection, torch/flower placement raycasts
+- NPCs use grid-based collision (not physics engine)
 
 ### Models
 - All `.glb` files stored locally in `assets/models/`
@@ -203,7 +209,7 @@ A timestamped development journal is maintained in `DEV_JOURNAL.md` at the proje
 Keep entries append-only — never edit or remove previous entries.
 
 ## Known Quirks
-- Three.js loaded from CDN — requires internet for first load (browser caches it after)
-- No bundler means no tree-shaking; full Three.js module is fetched
+- No bundler means no tree-shaking; full Three.js and cannon-es modules are fetched
 - Pointer lock requires HTTPS or localhost
 - The blocker overlay handles click-to-play (not the canvas)
+- PointLight shadows are expensive (cube maps = 6 passes each). Max 3 shadow-casting torches, only in multi-story buildings

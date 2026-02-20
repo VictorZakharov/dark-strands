@@ -9,6 +9,7 @@
     "serve:prod": "node build.js && npx serve dist -p 3000 --no-clipboard"
   },
   "dependencies": {
+    "cannon-es": "^0.20.0",
     "three": "^0.162.0"
   },
   "devDependencies": {

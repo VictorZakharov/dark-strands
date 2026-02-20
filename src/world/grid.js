@@ -25,6 +25,7 @@ export function initGrid() {
   doorCells.clear();
   windowCells.clear();
   stairCells.clear();
+  treeCells.clear();
 }
 
 export function setCell(gx, gz, value) {
@@ -52,7 +53,9 @@ export function isWalkable(wx, wz, entityY) {
       if (wx >= s.xMin && wx <= s.xMax && wz >= s.zMin && wz <= s.zMax) {
         const t = Math.max(0, Math.min(1, (wz - s.zMin) / (s.zMax - s.zMin)));
         const stairY = terrain + s.hStart + t * (s.hEnd - s.hStart);
-        if (entityY > stairY - 1.5) return true;
+        if (entityY > stairY - 1.5 && entityY < stairY + 1.0) return true;
+        // Player on upper floor above stair zone — still walkable
+        if (entityY >= terrain + CFG.WALL_H - 0.5) return true;
       }
     }
   }
@@ -78,6 +81,7 @@ export function canMoveToR(x, z, r) {
 const doorCells = new Map();
 const windowCells = new Set();
 const stairCells = new Set();
+const treeCells = new Set();
 
 export function addDoor(gx, gz, data) {
   doorCells.set(`${gx},${gz}`, data);
@@ -111,6 +115,18 @@ export function isStairCell(gx, gz) {
   return stairCells.has(`${gx},${gz}`);
 }
 
+export function markTreeCell(gx, gz) {
+  treeCells.add(`${gx},${gz}`);
+}
+
+export function isTreeCell(gx, gz) {
+  return treeCells.has(`${gx},${gz}`);
+}
+
+export function isUpperFloorCell(gx, gz) {
+  return upperFloorCells.has(`${gx},${gz}`);
+}
+
 export function markUpperFloor(gx, gz) {
   upperFloorCells.add(`${gx},${gz}`);
 }
@@ -141,8 +157,12 @@ export function getFloorHeight(wx, wz, currentY) {
       const stairY = terrain + s.hStart + t * (s.hEnd - s.hStart);
       // Only catch the player if they're near/above the stair surface
       // If well below (under the stairs), ignore the ramp
-      if (currentY > stairY - 1.5) {
+      if (currentY > stairY - 1.5 && currentY < stairY + 1.0) {
         return stairY;
+      }
+      // Player above stair ramp on upper floor — return upper floor height
+      if (currentY >= terrain + CFG.WALL_H - 0.5) {
+        return terrain + CFG.WALL_H;
       }
     }
   }

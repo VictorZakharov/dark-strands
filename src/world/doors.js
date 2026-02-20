@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
 import { CFG } from '../config.js';
 import { setCell } from './grid.js';
 import { getBuildings } from './generator.js';
@@ -6,6 +7,8 @@ import { g2w } from '../utils/helpers.js';
 import { getPlayerState } from '../entities/player.js';
 import { getTerrainHeight } from './terrain.js';
 import { getCamera } from '../core/scene.js';
+import { collidesWithRock } from './vegetation.js';
+import { createKinematicBox } from '../core/physics.js';
 
 const _projVec = new THREE.Vector3();
 
@@ -79,6 +82,21 @@ export function placeDoors(scene) {
 
       scene.add(group);
 
+      // Create kinematic physics body for door panel
+      const doorHalfW = doorW / 2;
+      const doorHalfH = doorH / 2;
+      const doorHalfT = 0.25; // half thickness (thicker than visual for reliable projectile collision)
+      const hingeX = isNS ? p.x - doorHalfW : p.x;
+      const hingeZ = isNS ? p.z : p.z - doorHalfW;
+      const physBody = createKinematicBox(
+        isNS ? doorHalfW : doorHalfT,
+        doorHalfH,
+        isNS ? doorHalfT : doorHalfW,
+        isNS ? hingeX + doorHalfW : hingeX,
+        doorHalfH,
+        isNS ? hingeZ : hingeZ + doorHalfW
+      );
+
       doors.push({
         group,
         gx: d.gx,
@@ -89,9 +107,19 @@ export function placeDoors(scene) {
         open: false,
         currentRotY: 0,
         targetRotY: 0,
+        physBody,
+        hingeX,
+        hingeZ,
       });
     }
   }
+}
+
+export function getDoorByCell(gx, gz) {
+  for (const door of doors) {
+    if (door.gx === gx && door.gz === gz) return door;
+  }
+  return null;
 }
 
 export function getNearestDoor() {
@@ -104,9 +132,27 @@ export function getNearestDoor() {
     const doorBaseY = door.group.position.y;
     if (p.y > doorBaseY + CFG.WALL_H * 0.7) continue;
 
-    const dx = p.x - door.wx;
-    const dz = p.z - door.wz;
-    const dist = Math.sqrt(dx * dx + dz * dz);
+    // Distance from player to nearest point on door panel segment (hinge→tip)
+    const doorW = CFG.CELL;
+    const rot = door.currentRotY;
+    let hx, hz, tx, tz;
+    if (door.isNS) {
+      hx = door.wx - doorW / 2;
+      hz = door.wz;
+      tx = hx + doorW * Math.cos(rot);
+      tz = door.wz - doorW * Math.sin(rot);
+    } else {
+      hx = door.wx;
+      hz = door.wz - doorW / 2;
+      tx = door.wx + doorW * Math.sin(rot);
+      tz = hz + doorW * Math.cos(rot);
+    }
+    const segDx = tx - hx, segDz = tz - hz;
+    const len2 = segDx * segDx + segDz * segDz;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, ((p.x - hx) * segDx + (p.z - hz) * segDz) / len2)) : 0;
+    const nearX = hx + t * segDx;
+    const nearZ = hz + t * segDz;
+    const dist = Math.sqrt((p.x - nearX) ** 2 + (p.z - nearZ) ** 2);
     if (dist < bestDist) {
       bestDist = dist;
       best = door;
@@ -116,17 +162,113 @@ export function getNearestDoor() {
   return best;
 }
 
+/** Compute door panel positions at a given rotation */
+function getDoorPanelPositions(door, rot) {
+  const doorW = CFG.CELL;
+  let cx, cz, tx, tz;
+  if (door.isNS) {
+    const hingeX = door.wx - doorW / 2;
+    cx = hingeX + doorW / 2 * Math.cos(rot);
+    cz = door.wz - doorW / 2 * Math.sin(rot);
+    tx = hingeX + doorW * Math.cos(rot);
+    tz = door.wz - doorW * Math.sin(rot);
+  } else {
+    const hingeZ = door.wz - doorW / 2;
+    cx = door.wx + doorW / 2 * Math.sin(rot);
+    cz = hingeZ + doorW / 2 * Math.cos(rot);
+    tx = door.wx + doorW * Math.sin(rot);
+    tz = hingeZ + doorW * Math.cos(rot);
+  }
+  return { cx, cz, tx, tz };
+}
+
+function panelHitsRock(door, rot, panelR) {
+  const { cx, cz, tx, tz } = getDoorPanelPositions(door, rot);
+  // Check center, 3/4-point, and tip along the panel for thorough coverage
+  const qx = (cx + tx) / 2, qz = (cz + tz) / 2;
+  return collidesWithRock(cx, cz, panelR) || collidesWithRock(qx, qz, panelR) || collidesWithRock(tx, tz, panelR);
+}
+
+/** Binary search refinement between a safe angle and a collision angle */
+function refineContact(door, lo, hi, panelR) {
+  for (let j = 0; j < 8; j++) {
+    const mid = (lo + hi) / 2;
+    if (panelHitsRock(door, mid, panelR)) hi = mid;
+    else lo = mid;
+  }
+  return lo;
+}
+
+/** Sweep test: find the maximum rotation before the door panel collides with a rock */
+function findMaxDoorRotation(door) {
+  const panelR = 0.12; // match door panel visual thickness for flush contact
+  const steps = 60;
+  const fullRot = -Math.PI / 2;
+  let safeRot = 0;
+
+  for (let i = 1; i <= steps; i++) {
+    const rot = fullRot * (i / steps);
+    if (panelHitsRock(door, rot, panelR)) {
+      return refineContact(door, safeRot, rot, panelR);
+    }
+    safeRot = rot;
+  }
+  return fullRot;
+}
+
+/** Sweep from current open angle toward 0; returns the closest-to-closed angle the door can reach */
+function findClosingTarget(door) {
+  const panelR = 0.12; // match door panel visual thickness for flush contact
+  const steps = 60;
+  const currentRot = door.currentRotY;
+  let safeRot = currentRot;
+
+  for (let i = 1; i <= steps; i++) {
+    const rot = currentRot * (1 - i / steps);
+    if (panelHitsRock(door, rot, panelR)) {
+      return refineContact(door, safeRot, rot, panelR);
+    }
+    safeRot = rot;
+  }
+  return 0;
+}
+
 export function toggleNearestDoor() {
   const door = getNearestDoor();
   if (!door) return;
 
-  door.open = !door.open;
-  door.targetRotY = door.open ? -Math.PI / 2 : 0;
+  if (!door.open) {
+    // Opening: sweep test to find max rotation before hitting a rock
+    const maxRot = findMaxDoorRotation(door);
+    if (Math.abs(maxRot) < 0.05) return; // rock completely blocks door
+    door.open = true;
+    door.targetRotY = maxRot;
+  } else {
+    // Recompute max open angle (rock situation may have changed)
+    const maxRot = findMaxDoorRotation(door);
+
+    // If door isn't at its max open angle, re-open it (e.g. after partial close against rock)
+    if (Math.abs(door.currentRotY - maxRot) > 0.1 && Math.abs(maxRot) > 0.05) {
+      door.targetRotY = maxRot;
+    } else {
+      // Door at max open — try to close
+      const closeTarget = findClosingTarget(door);
+      if (Math.abs(closeTarget) < 0.05) {
+        door.open = false;
+        door.targetRotY = 0;
+      } else {
+        // Rock blocks full close — close as far as possible (stays open)
+        door.targetRotY = closeTarget;
+      }
+    }
+  }
   // Doorway passable when open, blocked when closed
   setCell(door.gx, door.gz, door.open);
 }
 
 export function updateDoors(dt) {
+  const doorW = CFG.CELL;
+  const doorH = CFG.WALL_H * 0.88;
   for (const door of doors) {
     if (Math.abs(door.currentRotY - door.targetRotY) > 0.01) {
       const dir = Math.sign(door.targetRotY - door.currentRotY);
@@ -137,6 +279,22 @@ export function updateDoors(dt) {
       if (dir < 0 && door.currentRotY < door.targetRotY) door.currentRotY = door.targetRotY;
 
       door.group.rotation.y = door.currentRotY;
+    }
+
+    // Sync kinematic physics body to match door rotation
+    if (door.physBody) {
+      const rot = door.currentRotY;
+      const halfW = doorW / 2;
+      let cx, cz;
+      if (door.isNS) {
+        cx = door.hingeX + halfW * Math.cos(rot);
+        cz = door.hingeZ - halfW * Math.sin(rot);
+      } else {
+        cx = door.hingeX + halfW * Math.sin(rot);
+        cz = door.hingeZ + halfW * Math.cos(rot);
+      }
+      door.physBody.position.set(cx, doorH / 2, cz);
+      door.physBody.quaternion.setFromEuler(0, rot, 0);
     }
   }
 }

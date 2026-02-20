@@ -21,7 +21,7 @@ export function selectSlot(idx) {
   if (idx < 0 || idx > 4) return;
   if (idx === selectedSlot && placementMode) {
     placementMode = false;
-  } else if (idx === selectedSlot && (slotItems[idx] === 'flower' || slotItems[idx] === 'torch')) {
+  } else if (idx === selectedSlot && (slotItems[idx] === 'flower' || slotItems[idx] === 'torch' || slotItems[idx] === 'stone')) {
     placementMode = true;
   } else {
     selectedSlot = idx;

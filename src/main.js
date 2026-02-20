@@ -4,23 +4,25 @@ import { initScene, getRenderer, getScene, getCamera } from './core/scene.js';
 import { initLighting } from './core/lighting.js';
 import { initGrid } from './world/grid.js';
 import { generateBuildings } from './world/generator.js';
-import { buildGround, buildFloors, buildWalls, buildWindows, buildRoofs, buildWater } from './world/geometry.js';
+import { buildGround, buildFloors, buildWalls, buildWindows, buildRoofs, buildWater, createWorldPhysicsBodies } from './world/geometry.js';
 import { placeTrees, placeRocks, getNearestPickableRock } from './world/vegetation.js';
-import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initTorchEmbers, updateTorchEmbers } from './world/torches.js';
+import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initTorchEmbers, updateTorchEmbers, updateDoorTorchPositions } from './world/torches.js';
 import { placeDoors, updateDoors, getNearestDoor, getDoorPanelCenter } from './world/doors.js';
 import { loadAllModels, getAnimMixers } from './entities/modelLoader.js';
-import { initPlayer, updatePlayer, getPlayerState } from './entities/player.js';
-import { initControls, isGameActive, getKeys, doInteract, doUseItem } from './systems/controls.js';
+import { initPlayer, updatePlayer, updatePlayerMovement, syncPlayerFromPhysics, getPlayerState } from './entities/player.js';
+import { initPhysics, stepPhysics, createTerrainBody } from './core/physics.js';
+import { initControls, isGameActive, getKeys, doInteract, doUseItem, getThrowCooldownFrac } from './systems/controls.js';
 import { isTouchDevice, getTouchMove, consumeTouchLook, consumeJump, consumeInteract, consumeUse, consumeSlotTap, setMobileGameActive, updateTouchProgress } from './systems/touch.js';
 import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH } from './systems/daynight.js';
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
 import { updateFlowers, getNearestFlower, initFlowerPreview, updateFlowerPreview } from './world/flowers.js';
 import { getTerrainHeight } from './world/terrain.js';
 import { initHotbar, getSelectedSlot, getSlotItem, isPlacementMode, isAltMode, selectSlot } from './systems/hotbar.js';
-import { updateProjectiles } from './systems/projectiles.js';
+import { updateProjectiles, initRockPreview, updateRockPreview, getNearestInFlightRock, kickNearbyRock } from './systems/projectiles.js';
 import { getSunLight, getSunGroup, getSunLensflare } from './core/lighting.js';
 import { updateNpcs, updateSoldierHint, getNearestSoldier } from './systems/npcAI.js';
 import { initMenuScene, renderMenu, disposeMenu } from './systems/menu.js';
+import { initBoundaryShield, updateBoundaryShield } from './world/boundary.js';
 
 const clock = new THREE.Clock();
 let minimapTick = 0;
@@ -28,6 +30,17 @@ let menuMode = true;
 let altBlend = 0; // 0 = normal, 1 = greyscale (ALT mode)
 const _projHint = new THREE.Vector3();
 let _hintSx = 0, _hintSy = 0, _hintActive = false;
+
+// Cooldown ring canvas overlay (drawn at crosshair)
+let cdCanvas = null, cdCtx = null;
+function ensureCooldownCanvas() {
+  if (cdCanvas) return;
+  cdCanvas = document.createElement('canvas');
+  cdCanvas.width = 40; cdCanvas.height = 40;
+  cdCanvas.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:60;';
+  document.body.appendChild(cdCanvas);
+  cdCtx = cdCanvas.getContext('2d');
+}
 
 /**
  * Unified interact hint — picks the interactable closest to the crosshair.
@@ -91,6 +104,11 @@ function updateInteractHint(camera) {
   const rock = getNearestPickableRock();
   if (rock) {
     tryCandidate(rock.x, rock.top + 0.3, rock.z, pre + 'Pick up', '21px', 'rock');
+  }
+
+  const flyRock = getNearestInFlightRock();
+  if (flyRock) {
+    tryCandidate(flyRock.body.position.x, flyRock.body.position.y + 0.3, flyRock.body.position.z, pre + 'Catch', '21px', 'rock');
   }
 
   const torch = getNearestPickableTorch();
@@ -195,7 +213,12 @@ function gameLoop(time) {
 
     // In ALT mode: freeze player input but keep world ticking
     const emptyKeys = {};
-    updatePlayer(gdt, camera, getSunLight(), alt ? emptyKeys : keys);
+    const activeKeys = alt ? emptyKeys : keys;
+    updatePlayerMovement(gdt, activeKeys);
+    stepPhysics(gdt);
+    syncPlayerFromPhysics();
+    kickNearbyRock(scene);
+    updatePlayer(gdt, camera, getSunLight(), activeKeys);
     updateDayNight(gdt, scene);
 
     // Greyscale transition
@@ -206,6 +229,21 @@ function gameLoop(time) {
     // Crosshair visibility
     const chEl = document.getElementById('crosshair');
     if (chEl) chEl.style.opacity = alt ? '0' : '';
+
+    // Cooldown ring at crosshair
+    ensureCooldownCanvas();
+    const cdFrac = getThrowCooldownFrac();
+    if (cdFrac > 0) {
+      cdCanvas.style.display = '';
+      cdCtx.clearRect(0, 0, 40, 40);
+      cdCtx.beginPath();
+      cdCtx.arc(20, 20, 16, -Math.PI / 2, -Math.PI / 2 + cdFrac * Math.PI * 2);
+      cdCtx.strokeStyle = 'rgba(255,200,100,0.7)';
+      cdCtx.lineWidth = 2.5;
+      cdCtx.stroke();
+    } else if (cdCanvas) {
+      cdCanvas.style.display = 'none';
+    }
 
     // Sun group + lensflare follow player position in sky
     const sunH = getSunH();
@@ -237,9 +275,11 @@ function gameLoop(time) {
     }
 
     updateDoors(gdt);
+    updateDoorTorchPositions();
     updateNpcs(gdt);
     updateFlowers(gdt, camera);
     updateProjectiles(gdt);
+    updateBoundaryShield(gdt);
 
     // Flower/torch previews — disabled in ALT mode
     const slotItem = alt ? null : getSlotItem(getSelectedSlot());
@@ -250,6 +290,9 @@ function gameLoop(time) {
     updateHeldTorch(camera, torchActive, getPlayerState());
     updateTorchPreview(camera, torchActive);
     updateTorchEmbers(gdt);
+
+    const rockPlaceActive = !alt && isPlacementMode() && slotItem === 'stone';
+    updateRockPreview(camera, rockPlaceActive);
 
     for (const m of getAnimMixers()) m.update(gdt);
 
@@ -287,6 +330,7 @@ async function buildWorld() {
 
   // Batch 1: World structure (0→3%)
   await yieldFrame();
+  initPhysics();
   initLighting(scene);
   initGrid();
   generateBuildings();
@@ -294,17 +338,24 @@ async function buildWorld() {
   buildFloors(scene);
   step(3);
 
-  // Batch 2: World details (3→5%)
+  // Batch 2a: Visual world (3→4%)
   await yieldFrame();
   buildWalls(scene);
   buildRoofs(scene);
   placeTrees(scene);
   placeRocks(scene);
   placeTorches(scene);
-  placeDoorTorches(scene);
   placeDoors(scene);
+  placeDoorTorches(scene);
   buildWindows(scene);
   buildWater(scene);
+  step(4);
+
+  // Batch 2b: Physics bodies (4→5%)
+  await yieldFrame();
+  createTerrainBody();
+  createWorldPhysicsBodies();
+  initBoundaryShield(scene);
   step(5);
 
   // Batch 3: Player + controls (5→6%)
@@ -334,6 +385,7 @@ async function buildWorld() {
   initTorchLightPool(scene);
   initTorchPreview(scene);
   initTorchEmbers(scene);
+  initRockPreview(scene);
   const hiddenMeshes = [];
   scene.traverse(c => { if (!c.visible && c.isMesh) { c.visible = true; hiddenMeshes.push(c); } });
   getRenderer().compile(scene, getCamera());
