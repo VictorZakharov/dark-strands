@@ -9,8 +9,11 @@ import { getTerrainHeight } from './terrain.js';
 import { getCamera } from '../core/scene.js';
 import { collidesWithRock } from './vegetation.js';
 import { createKinematicBox } from '../core/physics.js';
+import { getScene } from '../core/scene.js';
 
 const _projVec = new THREE.Vector3();
+const _losRay = new THREE.Raycaster();
+_losRay.layers.set(0); // Only interact with world geometry
 
 const doors = [];
 const INTERACT_DIST = 3.5;
@@ -39,8 +42,85 @@ const knobGeo = new THREE.SphereGeometry(0.12, 8, 6);
 export function placeDoors(scene) {
   const doorW = CFG.CELL;
   const doorH = CFG.WALL_H * 0.88;
-  const doorGeoNS = new THREE.BoxGeometry(doorW, doorH, 0.12);
-  const doorGeoEW = new THREE.BoxGeometry(0.12, doorH, doorW);
+
+  // Reusable fancy door leaf builder
+  const buildFancyDoorLeaf = (w, h, thick) => {
+    const leaf = new THREE.Group();
+
+    // Base thin panel (darker wood)
+    const baseGeo = new THREE.BoxGeometry(w, h, thick * 0.3);
+    const baseMat = new THREE.MeshStandardMaterial({
+      map: barkTex, color: 0x663311, roughness: 0.95
+    });
+    const baseMesh = new THREE.Mesh(baseGeo, baseMat);
+    baseMesh.castShadow = true;
+    leaf.add(baseMesh);
+
+    // Frame and stiles
+    const stileW = 0.45;
+    const stileGeo = new THREE.BoxGeometry(stileW, h, thick);
+
+    const leftStile = new THREE.Mesh(stileGeo, doorMat);
+    leftStile.position.x = -w / 2 + stileW / 2;
+    leftStile.castShadow = true;
+    leaf.add(leftStile);
+
+    const rightStile = new THREE.Mesh(stileGeo, doorMat);
+    rightStile.position.x = w / 2 - stileW / 2;
+    rightStile.castShadow = true;
+    leaf.add(rightStile);
+
+    // Rails (horizontal)
+    const railH = 0.25;
+    const railGeo = new THREE.BoxGeometry(w, railH, thick);
+
+    const topRail = new THREE.Mesh(railGeo, doorMat);
+    topRail.position.y = h / 2 - railH / 2;
+    topRail.castShadow = true;
+    leaf.add(topRail);
+
+    const bottomRail = new THREE.Mesh(railGeo, doorMat);
+    bottomRail.position.y = -h / 2 + railH / 2;
+    bottomRail.castShadow = true;
+    leaf.add(bottomRail);
+
+    const midRail1 = new THREE.Mesh(railGeo, doorMat);
+    midRail1.position.y = h / 6;
+    midRail1.castShadow = true;
+    leaf.add(midRail1);
+
+    const midRail2 = new THREE.Mesh(railGeo, doorMat);
+    midRail2.position.y = -h / 4;
+    midRail2.castShadow = true;
+    leaf.add(midRail2);
+
+    // Old Knob on both sides
+    const knobZ = thick / 2 + 0.10; // pushed slightly further out to accommodate plate
+    const knobX = w / 2 - stileW / 2;
+
+    const knobR = new THREE.Mesh(knobGeo, knobMat);
+    knobR.position.set(knobX, 0, knobZ);
+    leaf.add(knobR);
+
+    // Knob on the back side too
+    const knobL = new THREE.Mesh(knobGeo, knobMat);
+    knobL.position.set(knobX, 0, -knobZ);
+    leaf.add(knobL);
+
+    // Add backplates to separate the knob from the door physically
+    const plateGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.04, 8);
+    plateGeo.rotateX(Math.PI / 2); // align to Z axis
+
+    const plateR = new THREE.Mesh(plateGeo, knobMat);
+    plateR.position.set(knobX, 0, thick / 2 + 0.02);
+    leaf.add(plateR);
+
+    const plateL = new THREE.Mesh(plateGeo, knobMat);
+    plateL.position.set(knobX, 0, -thick / 2 - 0.02);
+    leaf.add(plateL);
+
+    return leaf;
+  };
 
   for (const b of getBuildings()) {
     for (const d of b.doors) {
@@ -49,37 +129,18 @@ export function placeDoors(scene) {
       group.position.set(p.x, 0, p.z);
 
       const isNS = d.wall === 'south' || d.wall === 'north';
-      const mesh = new THREE.Mesh(isNS ? doorGeoNS : doorGeoEW, doorMat);
+      const leafGroup = buildFancyDoorLeaf(doorW, doorH, 0.16);
 
       if (isNS) {
-        mesh.position.set(doorW / 2, doorH / 2, 0);
+        leafGroup.position.set(doorW / 2, doorH / 2, 0);
         group.position.x -= doorW / 2;
       } else {
-        mesh.position.set(0, doorH / 2, doorW / 2);
+        leafGroup.rotation.y = Math.PI / 2;
+        leafGroup.position.set(0, doorH / 2, doorW / 2);
         group.position.z -= doorW / 2;
       }
 
-      mesh.castShadow = true;
-      group.add(mesh);
-
-      // Door knobs on both sides
-      const knobY = doorH * 0.5;
-      if (isNS) {
-        const knobX = doorW * 0.85; // near opening edge
-        for (const side of [-1, 1]) {
-          const knob = new THREE.Mesh(knobGeo, knobMat);
-          knob.position.set(knobX, knobY, side * 0.08);
-          group.add(knob);
-        }
-      } else {
-        const knobZ = doorW * 0.85;
-        for (const side of [-1, 1]) {
-          const knob = new THREE.Mesh(knobGeo, knobMat);
-          knob.position.set(side * 0.08, knobY, knobZ);
-          group.add(knob);
-        }
-      }
-
+      group.add(leafGroup);
       scene.add(group);
 
       // Create kinematic physics body for door panel
@@ -124,8 +185,11 @@ export function getDoorByCell(gx, gz) {
 
 export function getNearestDoor() {
   const p = getPlayerState();
+  const scene = getScene();
   let best = null;
   let bestDist = INTERACT_DIST;
+
+  const eyePos = new THREE.Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
 
   for (const door of doors) {
     // Skip doors if player is above door level (e.g. on 2nd floor)
@@ -154,8 +218,38 @@ export function getNearestDoor() {
     const nearZ = hz + t * segDz;
     const dist = Math.sqrt((p.x - nearX) ** 2 + (p.z - nearZ) ** 2);
     if (dist < bestDist) {
-      bestDist = dist;
-      best = door;
+      // Raycast check for line of sight to door
+      const doorH = CFG.WALL_H * 0.88;
+      const targetPos = new THREE.Vector3(nearX, doorBaseY + doorH / 2, nearZ);
+      const castDist = eyePos.distanceTo(targetPos);
+      const dir = new THREE.Vector3().subVectors(targetPos, eyePos).normalize();
+
+      _losRay.set(eyePos, dir);
+      _losRay.far = castDist;
+
+      let blocked = false;
+      if (scene) {
+        const hits = _losRay.intersectObjects(scene.children, true);
+        for (const h of hits) {
+          if (h.distance < castDist - 0.2) {
+            // Ignore hitting the door mesh itself
+            let isDoorPart = false;
+            h.object.traverseAncestors((ancestor) => {
+              if (ancestor === door.group) isDoorPart = true;
+            });
+
+            if (!isDoorPart && h.object.type !== 'Sprite') {
+              blocked = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!blocked) {
+        bestDist = dist;
+        best = door;
+      }
     }
   }
 

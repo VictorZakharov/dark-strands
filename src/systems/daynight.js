@@ -43,7 +43,7 @@ export function updateDayNight(dt, scene) {
 
   // Summer (normal): long days 05:00–21:00. Winter (snow): short days 08:00–16:00.
   const rise = CFG.SNOW_MODE ? 8 / 24 : 5 / 24;
-  const set  = CFG.SNOW_MODE ? 16 / 24 : 21 / 24;
+  const set = CFG.SNOW_MODE ? 16 / 24 : 21 / 24;
   const sunH = calcSunH(dayTime, rise, set);
   _sunH = sunH;
 
@@ -99,7 +99,7 @@ export function updateDayNight(dt, scene) {
   // Gradual fog transition (not a hard switch)
   const fogBlend = Math.max(0, Math.min(1, (sunH + 0.1) / 0.3));
   scene.fog.near = 5 + fogBlend * 5;   // 5 (night) → 10 (day)
-  scene.fog.far  = 30 + fogBlend * 25;  // 30 (night) → 55 (day)
+  scene.fog.far = 30 + fogBlend * 25;  // 30 (night) → 55 (day)
 
   // Stars — fade in gradually
   const starAlpha = Math.max(0, Math.min(1, (0.15 - sunH) / 0.35));
@@ -111,7 +111,7 @@ export function updateDayNight(dt, scene) {
   const torchIntensity = 1.0 + Math.max(0, -sunH) * 2.5;
   for (const t of torchLights) {
     if (t.userData.picked) continue;
-    t.intensity = torchIntensity;
+    t.userData.baseIntensity = torchIntensity;
   }
 
   // Door torches — on 1h before sunset, off 1h after sunrise, 30min fade
@@ -137,7 +137,7 @@ export function updateDayNight(dt, scene) {
   const doorIntensity = doorFade * (1.5 + Math.max(0, -sunH) * 2.0);
   for (const dl of doorLights) {
     if (dl.userData.picked) continue;
-    dl.intensity = doorIntensity;
+    dl.userData.baseIntensity = doorIntensity;
   }
   for (const df of doorFlames) df.visible = doorFade > 0.01;
 

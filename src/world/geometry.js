@@ -837,9 +837,10 @@ export function createWorldPhysicsBodies() {
   }
 
   // --- Mid-floor slabs (2-story buildings) ---
-  // Physics slab is thicker than visual (1.0 vs 0.5) to prevent fast-moving capsules phasing through
-  const PHYS_FLOOR_THICK = 1.0;
-  const FLOOR_TOP_OFFSET = -0.125;
+  // Physics slab is thicker than visual to prevent fast-moving capsules phasing through
+  const PHYS_FLOOR_THICK = 1.5;
+  // Center Y so top matches the visual floor top (WALL_H + 0.125)
+  const FLOOR_TOP_OFFSET = 0.125 - PHYS_FLOOR_THICK / 2;
   for (const b of buildings) {
     if (b.stories !== 2) continue;
     const c = getBuildingCenter(b);

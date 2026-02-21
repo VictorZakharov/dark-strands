@@ -7,7 +7,7 @@ import { getDoorByCell } from './doors.js';
 import { g2w, w2g, rngInt } from '../utils/helpers.js';
 import { CFG } from '../config.js';
 import { getPlayerState, getCamBlend } from '../entities/player.js';
-import { getCamera } from '../core/scene.js';
+import { getCamera, getScene } from '../core/scene.js';
 import { getTerrainHeight } from './terrain.js';
 import { getInventory } from './flowers.js';
 
@@ -17,6 +17,10 @@ const doorTorchFlames = [];
 
 // All pickable torches (interior + door + player-placed)
 const pickableTorches = [];
+
+const _losRay = new THREE.Raycaster();
+_losRay.layers.set(0); // Only interact with world geometry
+
 
 // Player-placed door torches — need wx/wz updates when door rotates
 const playerDoorTorches = [];
@@ -208,15 +212,18 @@ export function placeDoorTorches(scene) {
       switch (d.wall) {
         case 'south': mountX = p.x + side * sideOff; mountZ = p.z + normOff; nz = 1; break;
         case 'north': mountX = p.x + side * sideOff; mountZ = p.z - normOff; nz = -1; break;
-        case 'west':  mountX = p.x - normOff; mountZ = p.z + side * sideOff; nx = -1; break;
-        case 'east':  mountX = p.x + normOff; mountZ = p.z + side * sideOff; nx = 1; break;
+        case 'west': mountX = p.x - normOff; mountZ = p.z + side * sideOff; nx = -1; break;
+        case 'east': mountX = p.x + normOff; mountZ = p.z + side * sideOff; nx = 1; break;
       }
 
       const t = createWallTorch(scene, mountX, mountZ, torchY, nx, nz);
       if (b.stories >= 2) configureTorchShadow(t.light);
+      t.light.intensity = 0; // Let dayNight set it
+      t.light.userData.baseIntensity = 0;
+      t.flame.visible = false;
       doorTorchLights.push(t.light);
       doorTorchFlames.push(t.flame);
-      pickableTorches.push({ ...t, active: true });
+      pickableTorches.push({ ...t, active: true }); // Remains pickable even when light is off during day
     }
   }
 }
@@ -225,13 +232,44 @@ export function placeDoorTorches(scene) {
 
 export function getNearestPickableTorch() {
   const p = getPlayerState();
+  const scene = getScene();
   let best = null;
   let bestDist = CFG.TORCH_PICK_DIST;
+
+  const eyePos = new THREE.Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
+
   for (const t of pickableTorches) {
     if (!t.active) continue;
-    const dx = p.x - t.wx, dz = p.z - t.wz;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < bestDist) { bestDist = dist; best = t; }
+
+    const targetPos = new THREE.Vector3();
+    t.flame.getWorldPosition(targetPos);
+
+    const dist = eyePos.distanceTo(targetPos);
+    if (dist >= bestDist) continue;
+
+    // Line of sight check
+    const dir = new THREE.Vector3().subVectors(targetPos, eyePos).normalize();
+    _losRay.set(eyePos, dir);
+    _losRay.far = dist;
+
+    let blocked = false;
+    if (scene) {
+      const hits = _losRay.intersectObjects(scene.children, true);
+      for (const h of hits) {
+        // If we hit something significantly before the torch (allowing small threshold for torch meshes)
+        if (h.distance < dist - 0.2) {
+          if (h.object.type !== 'Sprite') {
+            blocked = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!blocked) {
+      bestDist = dist;
+      best = t;
+    }
   }
   return best;
 }
@@ -655,10 +693,39 @@ export function updateTorchEmbers(dt) {
   if (!torchEmbers.length) return;
   const p = getPlayerState();
   const px = p.x, pz = p.z;
+  const pg = w2g(px, pz);
+  const grid = getGrid();
+  const isInside = pg.x >= 0 && pg.x < CFG.GRID && pg.z >= 0 && pg.z < CFG.GRID && !!grid[pg.x][pg.z];
+  const playerFloor = Math.floor(Math.max(0, p.y) / CFG.WALL_H);
+
+  // Manage light occlusion across floors to prevent light bleed
+  for (const t of pickableTorches) {
+    if (!t.active || t.light.userData.picked) continue;
+
+    // Smoothly fade out lights that are on different floors
+    const flameY = t.flame.position.y;
+    const torchFloor = Math.floor(flameY / CFG.WALL_H);
+    const floorDiff = Math.abs(torchFloor - playerFloor);
+
+    // Base intensity comes from daynight.js (or defaults to 2.0 for player-placed non-world torches)
+    if (t.light.userData.baseIntensity === undefined) t.light.userData.baseIntensity = 2.0;
+
+    // Base intensity
+    let targetIntensity = t.light.userData.baseIntensity;
+
+    // If player is inside and on a different floor, scale down intensity heavily
+    if (isInside && floorDiff >= 1) {
+      targetIntensity = 0;
+    }
+
+    if (t.light.intensity !== targetIntensity) {
+      t.light.intensity += (targetIntensity - t.light.intensity) * dt * 5;
+    }
+  }
 
   for (const e of torchEmbers) {
-    // Skip inactive or unlit torches (door torches off during day)
-    if (!e.torch.active || e.torch.light.intensity < 0.1) {
+    // Skip inactive or unlit torches (door torches off during day or occluded)
+    if (!e.torch.active || Math.abs(e.torch.light.intensity) < 0.1 || !e.torch.flame.visible) {
       e.sprite.visible = false;
       e.life = 0;
       continue;
@@ -682,6 +749,15 @@ export function updateTorchEmbers(dt) {
     e.sprite.position.y += e.vel.y * dt;
     e.sprite.position.z += e.vel.z * dt;
     e.vel.x += rnd(-1.5, 1.5) * dt; // wind wobble
+
+    // Capping maximum ember height strictly to the room ceiling bounds
+    const flameY = e.torch.flame.position.y;
+    const floorIndex = Math.floor(flameY / CFG.WALL_H);
+    const ceilingY = (floorIndex + 1) * CFG.WALL_H - 0.1;
+
+    if (e.sprite.position.y > flameY + 1.0 || e.sprite.position.y > ceilingY) {
+      e.life = 0;
+    }
 
     const frac = Math.max(0, e.life / e.maxLife);
     e.sprite.material.opacity = frac * 0.7;
