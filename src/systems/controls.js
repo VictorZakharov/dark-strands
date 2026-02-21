@@ -8,6 +8,9 @@ import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacement
 import { spawnProjectile, isRockPreviewValid, placeRockAtPreview, pickNearestInFlightRock } from '../systems/projectiles.js';
 import { pickNearestTorch, hideHeldTorch, isTorchPreviewValid, placeTorchAtPreview } from '../world/torches.js';
 import { isTouchDevice, initTouch, setMobileGameActive, isMobileGameActive } from './touch.js';
+import { getNearestBed } from '../world/furniture.js';
+import { isCycleEnabled } from './daynight.js';
+import { openSleepMenu } from './sleep.js';
 
 const keys = {};
 let pointerLocked = false;
@@ -26,8 +29,13 @@ let gameStarted = false;
 
 // simPause = Tab pause — pointer lock stays active, virtual cursor shown
 let simPause = false;
+let timeStopped = false; // Used for completely freezing game logic without showing the ESC-Pause UI
 let simCursorEl = null;
 let simCursorX = 0, simCursorY = 0;
+
+export function setSimPause(p) { simPause = p; }
+export function isTimeStopped() { return timeStopped; }
+export function setTimeStopped(s) { timeStopped = s; }
 
 // Timestamp-based mousemove ignore — skips junk deltas after lock/unlock transitions
 let moveIgnoreUntil = 0;
@@ -36,7 +44,7 @@ function ignoreMovesFor(ms) { moveIgnoreUntil = performance.now() + ms; }
 // Silently swallow SecurityError when browser blocks pointer lock
 function tryLock(el) {
   const p = el.requestPointerLock();
-  if (p && p.catch) p.catch(() => {});
+  if (p && p.catch) p.catch(() => { });
 }
 
 function showSimCursor() {
@@ -122,7 +130,10 @@ export function isHelpVisible() { return helpVisible; }
 
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
-export function isGameActive() { return (gameStarted && !simPause) || isMobileGameActive(); }
+export function isGameActive() {
+  if (simPause || timeStopped) return false;
+  return gameStarted && (pointerLocked || isMobileGameActive());
+}
 export function isRightMouseDown() { return rightMouseDown; }
 
 export function doInteract() {
@@ -140,12 +151,29 @@ export function doInteract() {
     if (pickNearestRock(getInventory()) || pickNearestInFlightRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); handled = true; }
   } else if (source === 'torch') {
     if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); handled = true; }
+  } else if (source === 'bed') {
+    if (isCycleEnabled()) {
+      openSleepMenu((hours) => {
+        console.log(`[SLEEP] doInteract dispatching sleep-requested for ${hours} hours`);
+        const ev = new CustomEvent('sleep-requested', { detail: { hours } });
+        window.dispatchEvent(ev);
+      });
+      handled = true;
+    }
   } else {
     if (getNearestDoor()) { toggleNearestDoor(); handled = true; }
     else if (talkToNearestSoldier()) { handled = true; }
     else if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); handled = true; }
     else if (pickNearestRock(getInventory()) || pickNearestInFlightRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); handled = true; }
     else if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); handled = true; }
+    else if (getNearestBed(getPlayerState()) && isCycleEnabled()) {
+      openSleepMenu((hours) => {
+        console.log(`[SLEEP] doInteract dispatching sleep-requested for ${hours} hours`);
+        const ev = new CustomEvent('sleep-requested', { detail: { hours } });
+        window.dispatchEvent(ev);
+      });
+      handled = true;
+    }
   }
 
   // E toggles throw/place mode for stones when nothing to interact with
@@ -211,7 +239,7 @@ export function initControls() {
 
   // Click to resume from Tab-pause
   document.addEventListener('mousedown', (e) => {
-    if (simPause) {
+    if (simPause && !isSleepMenuActive()) {
       e.stopImmediatePropagation();
       resumeFromPause(blocker);
       return;
@@ -240,8 +268,10 @@ export function initControls() {
         ignoreMovesFor(150);
 
         if (simPause) {
-          // ESC during Tab-pause → show pause UI with OS cursor
-          enterPausedReleased(blocker);
+          if (!isSleepMenuActive()) {
+            // ESC during Tab-pause → show pause UI with OS cursor
+            enterPausedReleased(blocker);
+          }
         }
         // else: ESC during gameplay → game keeps running, cursor free
       } else {

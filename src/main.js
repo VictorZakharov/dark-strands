@@ -8,12 +8,13 @@ import { buildGround, buildFloors, buildWalls, buildWindows, buildRoofs, buildWa
 import { placeTrees, placeRocks, getNearestPickableRock } from './world/vegetation.js';
 import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initTorchEmbers, updateTorchEmbers, updateDoorTorchPositions } from './world/torches.js';
 import { placeDoors, updateDoors, getNearestDoor, getDoorPanelCenter } from './world/doors.js';
+import { placeFurniture, getNearestBed } from './world/furniture.js';
 import { loadAllModels, getAnimMixers } from './entities/modelLoader.js';
-import { initPlayer, updatePlayer, updatePlayerMovement, syncPlayerFromPhysics, getPlayerState } from './entities/player.js';
+import { initPlayer, updatePlayer, updatePlayerMovement, syncPlayerFromPhysics, getPlayerState, getPlayerBody } from './entities/player.js';
 import { initPhysics, stepPhysics, createTerrainBody } from './core/physics.js';
-import { initControls, isGameActive, getKeys, doInteract, doUseItem, getThrowCooldownFrac } from './systems/controls.js';
+import { initControls, isGameActive, getKeys, doInteract, doUseItem, getThrowCooldownFrac, isTimeStopped } from './systems/controls.js';
 import { isTouchDevice, getTouchMove, consumeTouchLook, consumeJump, consumeInteract, consumeUse, consumeSlotTap, setMobileGameActive, updateTouchProgress } from './systems/touch.js';
-import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH } from './systems/daynight.js';
+import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH, isCycleEnabled } from './systems/daynight.js';
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
 import { updateFlowers, getNearestFlower, initFlowerPreview, updateFlowerPreview } from './world/flowers.js';
 import { getTerrainHeight } from './world/terrain.js';
@@ -117,6 +118,16 @@ function updateInteractHint(camera) {
     tryCandidate(torch.wx, torchHintY, torch.wz, pre + 'Take', '21px', 'torch');
   }
 
+  const bed = getNearestBed(getPlayerState());
+  if (bed) {
+    const bedHintY = bed.y + 0.4; // Slightly above mattress
+    if (isCycleEnabled()) {
+      tryCandidate(bed.x, bedHintY, bed.z, pre + 'Sleep', '21px', 'bed');
+    } else {
+      tryCandidate(bed.x, bedHintY, bed.z, 'Enable Day/Night Cycle to Sleep', '14px', 'bed');
+    }
+  }
+
   if (bestSource) {
     // Clamp to viewport, staying above hotbar (bottom: 40px + 52px height + gap)
     const margin = 40;
@@ -151,6 +162,16 @@ function updateInteractHint(camera) {
     _hintActive = false;
   }
 }
+
+// Global sleep state
+let activeSleepTime = 0; // accumulated fast-forward time in hours
+let targetSleepTime = 0; // total hours requested
+
+window.addEventListener('sleep-requested', (e) => {
+  console.log(`[SLEEP] main.js received sleep-requested for ${e.detail.hours} hours`);
+  targetSleepTime = e.detail.hours;
+  activeSleepTime = 0;
+});
 
 function gameLoop(time) {
   requestAnimationFrame(gameLoop);
@@ -207,13 +228,38 @@ function gameLoop(time) {
     }
 
     // Q key = 3× game speed (time, movement, animations)
+    // Sleep = 30x game speed until target time reached
     const alt = isAltMode();
-    const speed = keys['KeyQ'] && !alt ? 3 : 1;
+    let speed = keys['KeyQ'] && !alt ? 3 : 1;
+
+    // Check sleep state
+    if (activeSleepTime < targetSleepTime) {
+      speed = 30; // Very fast simulation
+    }
+
+    // Explicit override for the sleep menu 
+    if (isTimeStopped()) {
+      speed = 0;
+    }
+
     const gdt = dt * speed;
+
+    if (activeSleepTime < targetSleepTime) {
+      // Accumulate the amount of actual game-world hours that have passed this frame
+      activeSleepTime += (gdt / CFG.DAY_SEC) * 24;
+
+      if (activeSleepTime >= targetSleepTime) {
+        // Sleep finished
+        console.log(`[SLEEP] Finished sleeping for ${targetSleepTime} hours.`);
+        targetSleepTime = 0;
+        activeSleepTime = 0;
+      }
+    }
 
     // In ALT mode: freeze player input but keep world ticking
     const emptyKeys = {};
-    const activeKeys = alt ? emptyKeys : keys;
+    const activeKeys = alt || targetSleepTime > 0 ? emptyKeys : keys; // Lock out movement during sleep
+
     updatePlayerMovement(gdt, activeKeys);
     stepPhysics(gdt);
     syncPlayerFromPhysics();
@@ -221,10 +267,16 @@ function gameLoop(time) {
     updatePlayer(gdt, camera, getSunLight(), activeKeys);
     updateDayNight(gdt, scene);
 
-    // Greyscale transition
-    altBlend = Math.max(0, Math.min(1, altBlend + (alt ? 1 : -1) * dt * 2)); // 0.5s transition
+    // Greyscale transition or Sleep Darkening
+    const isSleeping = targetSleepTime > 0;
+    altBlend = Math.max(0, Math.min(1, altBlend + (alt ? 1 : -1) * Math.min(1, dt * 2))); // 0.5s transition
     const canvas = renderer.domElement;
-    canvas.style.filter = altBlend > 0.001 ? `saturate(${1 - altBlend * 0.85})` : '';
+
+    if (isSleeping) {
+      canvas.style.filter = 'brightness(0.3) blur(0.5px)'; // Reduced blur
+    } else {
+      canvas.style.filter = altBlend > 0.001 ? `saturate(${1 - altBlend * 0.85})` : '';
+    }
 
     // Crosshair visibility
     const chEl = document.getElementById('crosshair');
@@ -347,6 +399,7 @@ async function buildWorld() {
   placeTorches(scene);
   placeDoors(scene);
   placeDoorTorches(scene);
+  placeFurniture(scene);
   buildWindows(scene);
   buildWater(scene);
   step(4);
@@ -361,6 +414,12 @@ async function buildWorld() {
   // Batch 3: Player + controls (5→6%)
   await yieldFrame();
   initPlayer(scene);
+  const pb = getPlayerBody();
+  for (let i = 0; i < 5; i++) {
+    if (pb) pb.velocity.y = 0; // Prevent gravity buildup before game starts
+    stepPhysics(0.016);
+  }
+  syncPlayerFromPhysics();
   initControls();
   initHotbar();
   step(6);
@@ -446,7 +505,7 @@ function setupPlayButton() {
       setMobileGameActive(true);
     } else {
       const p = getRenderer().domElement.requestPointerLock();
-      if (p && p.catch) p.catch(() => {});
+      if (p && p.catch) p.catch(() => { });
     }
   });
 }

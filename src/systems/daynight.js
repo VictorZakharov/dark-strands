@@ -14,6 +14,14 @@ let _sunOff = { x: 40, y: 50, z: 20 };
 export function getDayTime() { return dayTime; }
 export function getSunOffset() { return _sunOff; }
 export function getSunH() { return _sunH; }
+export function isCycleEnabled() { return cycleEnabled; } // New export for bed interactions
+
+export function getHoursUntilDawn() {
+  const rise = CFG.SNOW_MODE ? 8 / 24 : 5 / 24;
+  let remaining = rise - dayTime;
+  if (remaining <= 0) remaining += 1.0;
+  return remaining * 24;
+}
 
 export function setCycleEnabled(enabled) {
   cycleEnabled = enabled;
@@ -44,7 +52,7 @@ export function updateDayNight(dt, scene) {
   // Summer (normal): long days 05:00–21:00. Winter (snow): short days 08:00–16:00.
   const rise = CFG.SNOW_MODE ? 8 / 24 : 5 / 24;
   const set = CFG.SNOW_MODE ? 16 / 24 : 21 / 24;
-  const sunH = calcSunH(dayTime, rise, set);
+  const sunH = Math.max(-1, Math.min(1, calcSunH(dayTime, rise, set))); // Hard cap sun bounds
   _sunH = sunH;
 
   const sunLight = getSunLight();
@@ -65,12 +73,12 @@ export function updateDayNight(dt, scene) {
     _sunOff = { x: 0, y: -50, z: 0 };
   }
 
-  // Sun intensity & color
-  sunLight.intensity = Math.max(0, sunH) * 2.2;
+  // Sun intensity & color (cap intensity so fast-forward time jumps never overdrive the shader)
+  sunLight.intensity = Math.min(2.2, Math.max(0, sunH) * 2.2);
   sunLight.color.setHSL(0.08, 0.6, 0.5 + Math.max(0, sunH) * 0.5);
 
   // Hemisphere
-  hemiLight.intensity = 0.08 + Math.max(0, sunH) * 0.45;
+  hemiLight.intensity = Math.min(0.53, 0.08 + Math.max(0, sunH) * 0.45);
 
   // Sky color — wide gradual transition (sunH 0.4 → -0.2)
   const day = new THREE.Color(0x6cb4ee);
@@ -108,7 +116,7 @@ export function updateDayNight(dt, scene) {
   stars.visible = starAlpha > 0.01;
 
   // Interior torches (always on, brighter at night)
-  const torchIntensity = 1.0 + Math.max(0, -sunH) * 2.5;
+  const torchIntensity = Math.min(3.5, 1.0 + Math.max(0, -sunH) * 2.5); // Cap torch flare
   for (const t of torchLights) {
     if (t.userData.picked) continue;
     t.userData.baseIntensity = torchIntensity;
@@ -134,7 +142,10 @@ export function updateDayNight(dt, scene) {
     else if (h > offH - fadeH) doorFade = (offH - h) / fadeH;
     else doorFade = 1;
   }
-  const doorIntensity = doorFade * (1.5 + Math.max(0, -sunH) * 2.0);
+
+  doorFade = Math.max(0, Math.min(1, doorFade)); // Clamp to prevent intensity blowouts during fast-forward (dt * 30)
+
+  const doorIntensity = Math.min(3.5, doorFade * (1.5 + Math.max(0, -sunH) * 2.0)); // Cap door flare
   for (const dl of doorLights) {
     if (dl.userData.picked) continue;
     dl.userData.baseIntensity = doorIntensity;

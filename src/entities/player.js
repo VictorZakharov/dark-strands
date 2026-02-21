@@ -75,7 +75,7 @@ export function initPlayer(scene) {
   playerModel.visible = false;
   scene.add(playerModel);
 
-  // Create physics capsule body at spawn position (on terrain surface)
+  // Create physics capsule body at spawn position (exactly on terrain surface)
   const spawnY = getTerrainHeight(state.x, state.z);
   state.y = spawnY;
   playerBody = createPlayerBody(state.x, spawnY, state.z);
@@ -288,7 +288,8 @@ export function updatePlayerMovement(dt, keys) {
   const grounded = isPlayerGrounded();
 
   // Prevent sliding on slopes when not moving — freeze position
-  if (!_moving && grounded && !keys['Space']) {
+  // IMPORTANT: Only freeze if we are actually grounded, otherwise we hang in mid-air on spawn!
+  if (!_moving && grounded && !keys['Space'] && playerBody.velocity.y <= 0.1) {
     playerBody.velocity.set(0, 0, 0);
     playerBody.applyForce(new CANNON.Vec3(0, playerBody.mass * CFG.GRAV, 0));
     // Lock Y position to eliminate terrain contact jitter
@@ -318,6 +319,7 @@ export function updatePlayerMovement(dt, keys) {
 /** Called AFTER physics step — reads body position back into state */
 export function syncPlayerFromPhysics() {
   if (!playerBody) return;
+
   state.x = playerBody.position.x;
   state.y = playerBody.position.y;
   state.z = playerBody.position.z;
@@ -338,7 +340,7 @@ export function syncPlayerFromPhysics() {
   // Ceiling clamp — safety net: raycast upward to catch any floor/roof penetration
   const world = getPhysicsWorld();
   _rayFrom.set(state.x, state.y + 0.1, state.z);
-  _rayTo.set(state.x, state.y + CFG.PLAYER_H + 0.3, state.z);
+  _rayTo.set(state.x, state.y + CFG.PLAYER_H + 0.1, state.z);
   _rayResult.reset();
   world.raycastClosest(_rayFrom, _rayTo, { collisionFilterMask: ~2 }, _rayResult);
   if (_rayResult.hasHit) {

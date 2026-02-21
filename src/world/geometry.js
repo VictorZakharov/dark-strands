@@ -922,6 +922,9 @@ export function createWorldPhysicsBodies() {
     const bw = (b.w - 1) * CFG.CELL + CFG.WALL_T;
     const bh = (b.h - 1) * CFG.CELL + CFG.WALL_T;
     const overhang = 0.4;
-    createStaticBox((bw + overhang) / 2, 0.125, (bh + overhang) / 2, c.x, topY + 0.125, c.z);
+    // Make the ceiling block very thick to prevent high-velocity jumping tunneling through it
+    const CEIL_THICK = 1.0;
+    // Set the bottom of the ceiling block exactly flush with the top of the walls
+    createStaticBox((bw + overhang) / 2, CEIL_THICK / 2, (bh + overhang) / 2, c.x, topY + CEIL_THICK / 2, c.z);
   }
 }

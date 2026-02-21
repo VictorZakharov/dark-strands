@@ -719,7 +719,7 @@ export function updateTorchEmbers(dt) {
     }
 
     if (t.light.intensity !== targetIntensity) {
-      t.light.intensity += (targetIntensity - t.light.intensity) * dt * 5;
+      t.light.intensity += (targetIntensity - t.light.intensity) * Math.min(1, dt * 5);
     }
   }
 
