@@ -63,6 +63,9 @@ let playerBody = null;
 let _moving = false, _sprinting = false;
 let _boundaryShieldCD = 0; // frame cooldown for boundary shield spawns
 let _frozenY = null; // locked Y when standing still to eliminate terrain jitter
+let _lastGroundedTime = 0;
+const COYOTE_TIME_MS = 150; // allow jump 150ms after falling off a ledge
+
 export function getPlayerState() { return state; }
 export function getPlayerModel() { return playerModel; }
 export function getCamBlend() { return camBlend; } // 0 = fully 1st person, 1 = fully 3rd person
@@ -297,6 +300,9 @@ export function updatePlayerMovement(dt, keys) {
 
   // Ground check (used for jump and slope anti-slide)
   const grounded = isPlayerGrounded();
+  if (grounded) {
+    _lastGroundedTime = performance.now();
+  }
 
   // Prevent sliding on slopes when not moving — freeze position
   // IMPORTANT: Only freeze if we are actually grounded, otherwise we hang in mid-air on spawn!
@@ -309,9 +315,11 @@ export function updatePlayerMovement(dt, keys) {
     _frozenY = null;
   }
 
-  // Jump
-  if (keys['Space'] && grounded) {
+  // Coyote Time Jump: allow jumping if grounded NOW, or recently grounded (<150ms ago)
+  const canJump = grounded || (performance.now() - _lastGroundedTime < COYOTE_TIME_MS);
+  if (keys['Space'] && canJump) {
     playerBody.velocity.y = underwater ? CFG.JUMP * 0.5 : CFG.JUMP;
+    _lastGroundedTime = 0; // instantly consume jump buffer so we can't double-jump mid-air
   }
 
   // Underwater: counteract 70% of gravity
