@@ -254,7 +254,7 @@ export function placeRocks(scene) {
 
     let inside = false;
     for (const b of buildings) {
-      if (gx >= b.x && gx < b.x + b.w && gz >= b.z && gz < b.z + b.h) {
+      if (gx >= b.x - 1 && gx < b.x + b.w + 1 && gz >= b.z - 1 && gz < b.z + b.h + 1) {
         inside = true;
         break;
       }
@@ -459,7 +459,7 @@ export function updateRockHint() {
   const el = document.getElementById('interact-hint');
   if (!el) return;
   if (el.style.display === 'block' &&
-      (el.dataset.source === 'door' || el.dataset.source === 'soldier' || el.dataset.source === 'flower')) return;
+    (el.dataset.source === 'door' || el.dataset.source === 'soldier' || el.dataset.source === 'flower')) return;
 
   const rock = getNearestPickableRock();
   if (!rock) {

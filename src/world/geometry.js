@@ -233,10 +233,26 @@ export function buildWalls(scene) {
     if (b.stories === 2) count += b.doors.length; // full wall on 2nd floor
   }
 
+  // Add door-side fill blocks (wall between door cell edge and adjacent corners)
+  for (const b of buildings) {
+    for (const d of b.doors) {
+      const isNS = d.wall === 'south' || d.wall === 'north';
+      const floors = b.stories;
+      if (isNS) {
+        if (isThinPost(d.gx - 1, d.gz)) count += floors;
+        if (isThinPost(d.gx + 1, d.gz)) count += floors;
+      } else {
+        if (isThinPost(d.gx, d.gz - 1)) count += floors;
+        if (isThinPost(d.gx, d.gz + 1)) count += floors;
+      }
+    }
+  }
+
   const wallGeo = new THREE.BoxGeometry(1, 1, 1);
   const wallMat = new THREE.MeshStandardMaterial({
     map: wallTex,
     roughness: 0.9,
+    side: THREE.DoubleSide,
   });
 
   // World-space triplanar UVs so texture tiles uniformly regardless of wall dimensions
@@ -282,7 +298,7 @@ export function buildWalls(scene) {
     return (facesNS && facesEW) || (!facesNS && !facesEW);
   }
 
-  const ext = (CFG.CELL - CFG.WALL_T) / 2; // how far to extend toward a thin post
+  const ext = CFG.CELL / 2; // extend to corner cell center (overlap eliminates gaps)
 
   for (let x = 0; x < CFG.GRID; x++) {
     for (let z = 0; z < CFG.GRID; z++) {
@@ -315,16 +331,8 @@ export function buildWalls(scene) {
           pz += (extS - extN) / 2;
         } else {
           // Corner (both) or outer corner / isolated (neither) — thin post
-          // Extend toward any adjacent non-walkable cell (wall, door, window, etc.)
+          // Keep as WALL_T × WALL_T; adjacent straight walls already extend to cover the gap.
           sx = CFG.WALL_T; sz = CFG.WALL_T;
-          const wallW = x > 0 && !grid[x - 1][z] ? ext : 0;
-          const wallE = x < CFG.GRID - 1 && !grid[x + 1][z] ? ext : 0;
-          const wallN = z > 0 && !grid[x][z - 1] ? ext : 0;
-          const wallS = z < CFG.GRID - 1 && !grid[x][z + 1] ? ext : 0;
-          sx += wallW + wallE;
-          sz += wallN + wallS;
-          px += (wallE - wallW) / 2;
-          pz += (wallS - wallN) / 2;
         }
 
         // Ignore terrain (buildings on flat zones ≈ 0); fixed baseline seals all gaps
@@ -344,13 +352,27 @@ export function buildWalls(scene) {
     for (const d of b.doors) {
       const p = g2w(d.gx, d.gz);
       const isNS = d.wall === 'south' || d.wall === 'north';
-      const sx = isNS ? CFG.CELL : CFG.WALL_T;
-      const sz = isNS ? CFG.WALL_T : CFG.CELL;
+      let sx = isNS ? CFG.CELL : CFG.WALL_T;
+      let sz = isNS ? CFG.WALL_T : CFG.CELL;
+      let px = p.x, pz = p.z;
+
+      // Extend toward thin posts (corners) — same as regular walls
+      if (isNS) {
+        const extW = isThinPost(d.gx - 1, d.gz) ? ext : 0;
+        const extE = isThinPost(d.gx + 1, d.gz) ? ext : 0;
+        sx += extW + extE;
+        px += (extE - extW) / 2;
+      } else {
+        const extN = isThinPost(d.gx, d.gz - 1) ? ext : 0;
+        const extS = isThinPost(d.gx, d.gz + 1) ? ext : 0;
+        sz += extN + extS;
+        pz += (extS - extN) / 2;
+      }
 
       // Gap above door on ground floor
       const gapH = CFG.WALL_H - doorTopY;
       if (gapH > 0.01) {
-        dummy.position.set(p.x, doorTopY + gapH / 2, p.z);
+        dummy.position.set(px, doorTopY + gapH / 2, pz);
         dummy.scale.set(sx, gapH, sz);
         dummy.updateMatrix();
         walls.setMatrixAt(idx++, dummy.matrix);
@@ -358,7 +380,7 @@ export function buildWalls(scene) {
 
       // Full wall above door on 2nd floor (for 2-story buildings)
       if (b.stories === 2) {
-        dummy.position.set(p.x, CFG.WALL_H + CFG.WALL_H / 2, p.z);
+        dummy.position.set(px, CFG.WALL_H + CFG.WALL_H / 2, pz);
         dummy.scale.set(sx, CFG.WALL_H, sz);
         dummy.updateMatrix();
         walls.setMatrixAt(idx++, dummy.matrix);
@@ -366,6 +388,48 @@ export function buildWalls(scene) {
     }
   }
 
+  // Door-side fill blocks (wall between door cell edge and adjacent corners)
+  const fillW = ext + CFG.WALL_T / 2; // extend from cell edge to corner far edge
+  for (const b of buildings) {
+    const bWallH = b.stories * CFG.WALL_H;
+    for (const d of b.doors) {
+      const p = g2w(d.gx, d.gz);
+      const isNS = d.wall === 'south' || d.wall === 'north';
+
+      // Check neighbors along wall direction
+      const neighbors = isNS
+        ? [{ dg: -1, check: isThinPost(d.gx - 1, d.gz), sign: -1 },
+        { dg: +1, check: isThinPost(d.gx + 1, d.gz), sign: +1 }]
+        : [{ dg: -1, check: isThinPost(d.gx, d.gz - 1), sign: -1 },
+        { dg: +1, check: isThinPost(d.gx, d.gz + 1), sign: +1 }];
+
+      for (const n of neighbors) {
+        if (!n.check) continue;
+
+        // Fill block from door cell edge toward corner
+        const bottom = -0.5;
+        for (let floor = 0; floor < b.stories; floor++) {
+          const floorH = floor === 0 ? CFG.WALL_H * 0.88 : CFG.WALL_H; // ground floor = door height, upper = full
+          const floorBase = floor * CFG.WALL_H + bottom;
+          const totalH = (floor === 0 ? floorH - bottom : floorH);
+
+          if (isNS) {
+            const fx = p.x + n.sign * (CFG.CELL / 2 + fillW / 2);
+            dummy.position.set(fx, floorBase + totalH / 2, p.z);
+            dummy.scale.set(fillW, totalH, CFG.WALL_T);
+          } else {
+            const fz = p.z + n.sign * (CFG.CELL / 2 + fillW / 2);
+            dummy.position.set(p.x, floorBase + totalH / 2, fz);
+            dummy.scale.set(CFG.WALL_T, totalH, fillW);
+          }
+          dummy.updateMatrix();
+          walls.setMatrixAt(idx++, dummy.matrix);
+        }
+      }
+    }
+  }
+
+  walls.instanceMatrix.needsUpdate = true;
   scene.add(walls);
 }
 
@@ -444,6 +508,7 @@ export function buildWindows(scene) {
   const wallMat = new THREE.MeshStandardMaterial({
     map: wallTex,
     roughness: 0.9,
+    side: THREE.DoubleSide,
   });
 
   // World-space triplanar UVs for window wall segments
@@ -508,17 +573,48 @@ export function buildWindows(scene) {
     }
   }
 
+  // Thin-post detection for window wall extension (mirrors buildWalls logic)
+  const grid = getGrid();
+  function isWinThinPost(gx, gz) {
+    if (gx < 0 || gz < 0 || gx >= CFG.GRID || gz >= CFG.GRID) return false;
+    if (grid[gx][gz] || isDoorCell(gx, gz) || isWindowCell(gx, gz) || isStairCell(gx, gz)) return false;
+    const oN = gz > 0 && grid[gx][gz - 1];
+    const oS = gz < CFG.GRID - 1 && grid[gx][gz + 1];
+    const oW = gx > 0 && grid[gx - 1][gz];
+    const oE = gx < CFG.GRID - 1 && grid[gx + 1][gz];
+    const facesNS = oN || oS;
+    const facesEW = oW || oE;
+    return (facesNS && facesEW) || (!facesNS && !facesEW);
+  }
+  const winExt = CFG.CELL / 2; // same extension as buildWalls
+
   for (const [, cw] of cellWindows) {
     const p = g2w(cw.gx, cw.gz);
     const ty = 0; // buildings on flat zones — use fixed baseline
     const isNS = cw.wall === 'south' || cw.wall === 'north';
 
+    // Detect thin-post neighbors along the wall direction and extend toward them
+    // Shape local X = wall's primary axis. For EW walls (rotated PI/2), local +X = world -Z.
+    let extLeft = 0, extRight = 0; // in shape-local X
+    if (isNS) {
+      extLeft = isWinThinPost(cw.gx - 1, cw.gz) ? winExt : 0;
+      extRight = isWinThinPost(cw.gx + 1, cw.gz) ? winExt : 0;
+    } else {
+      // After PI/2 rotation: local -X = world +Z, local +X = world -Z
+      extLeft = isWinThinPost(cw.gx, cw.gz + 1) ? winExt : 0;  // world +Z → local -X
+      extRight = isWinThinPost(cw.gx, cw.gz - 1) ? winExt : 0; // world -Z → local +X
+    }
+
+    const halfW = CFG.CELL / 2;
+    const left = -halfW - extLeft;
+    const right = halfW + extRight;
+
     // Build wall shape with window holes (extend below ground to match regular walls)
     const shape = new THREE.Shape();
-    shape.moveTo(-CFG.CELL / 2, -0.5);
-    shape.lineTo(CFG.CELL / 2, -0.5);
-    shape.lineTo(CFG.CELL / 2, cw.wallH);
-    shape.lineTo(-CFG.CELL / 2, cw.wallH);
+    shape.moveTo(left, -0.5);
+    shape.lineTo(right, -0.5);
+    shape.lineTo(right, cw.wallH);
+    shape.lineTo(left, cw.wallH);
     shape.closePath();
 
     // Deduplicate by floor, keep first entry's size
@@ -750,7 +846,7 @@ export function createWorldPhysicsBodies() {
     return (facesNS && facesEW) || (!facesNS && !facesEW);
   }
 
-  const ext = (CFG.CELL - CFG.WALL_T) / 2;
+  const ext = CFG.CELL / 2; // match buildWalls — extend to corner center
 
   // --- Wall + window cell bodies ---
   for (let x = 0; x < CFG.GRID; x++) {
@@ -794,15 +890,8 @@ export function createWorldPhysicsBodies() {
         sz += extN + extS;
         pz += (extS - extN) / 2;
       } else {
+        // Corner / thin post — keep as WALL_T × WALL_T (straight walls extend to cover)
         sx = CFG.WALL_T; sz = CFG.WALL_T;
-        const wallW = x > 0 && !grid[x - 1][z] ? ext : 0;
-        const wallE = x < CFG.GRID - 1 && !grid[x + 1][z] ? ext : 0;
-        const wallN = z > 0 && !grid[x][z - 1] ? ext : 0;
-        const wallS = z < CFG.GRID - 1 && !grid[x][z + 1] ? ext : 0;
-        sx += wallW + wallE;
-        sz += wallN + wallS;
-        px += (wallE - wallW) / 2;
-        pz += (wallS - wallN) / 2;
       }
 
       const bottom = -0.5;
@@ -823,15 +912,29 @@ export function createWorldPhysicsBodies() {
     for (const d of b.doors) {
       const p = g2w(d.gx, d.gz);
       const isNS = d.wall === 'south' || d.wall === 'north';
-      const sx = isNS ? CFG.CELL : CFG.WALL_T;
-      const sz = isNS ? CFG.WALL_T : CFG.CELL;
+      let sx = isNS ? CFG.CELL : CFG.WALL_T;
+      let sz = isNS ? CFG.WALL_T : CFG.CELL;
+      let px = p.x, pz = p.z;
+
+      // Extend toward thin posts (corners) — same as visual walls
+      if (isNS) {
+        const extW = isThinPost(d.gx - 1, d.gz) ? ext : 0;
+        const extE = isThinPost(d.gx + 1, d.gz) ? ext : 0;
+        sx += extW + extE;
+        px += (extE - extW) / 2;
+      } else {
+        const extN = isThinPost(d.gx, d.gz - 1) ? ext : 0;
+        const extS = isThinPost(d.gx, d.gz + 1) ? ext : 0;
+        sz += extN + extS;
+        pz += (extS - extN) / 2;
+      }
 
       const gapH = CFG.WALL_H - doorTopY;
       if (gapH > 0.01) {
-        createStaticBox(sx / 2, gapH / 2, sz / 2, p.x, doorTopY + gapH / 2, p.z);
+        createStaticBox(sx / 2, gapH / 2, sz / 2, px, doorTopY + gapH / 2, pz);
       }
       if (b.stories === 2) {
-        createStaticBox(sx / 2, CFG.WALL_H / 2, sz / 2, p.x, CFG.WALL_H + CFG.WALL_H / 2, p.z);
+        createStaticBox(sx / 2, CFG.WALL_H / 2, sz / 2, px, CFG.WALL_H + CFG.WALL_H / 2, pz);
       }
     }
   }

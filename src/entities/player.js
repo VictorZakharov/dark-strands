@@ -63,7 +63,6 @@ let playerBody = null;
 let _moving = false, _sprinting = false;
 let _boundaryShieldCD = 0; // frame cooldown for boundary shield spawns
 let _frozenY = null; // locked Y when standing still to eliminate terrain jitter
-
 export function getPlayerState() { return state; }
 export function getPlayerModel() { return playerModel; }
 export function getCamBlend() { return camBlend; } // 0 = fully 1st person, 1 = fully 3rd person
@@ -193,25 +192,37 @@ export function toggleCamera() {
     const localUp = new THREE.Vector3().crossVectors(localRight, fpFwd).normalize();
     _targetLocal.set(_toHit.dot(localRight), _toHit.dot(localUp), _toHit.dot(fpFwd));
   } else {
-    // 1→3: raycast from actual camera to find convergence distance
-    _trackWorldTarget = false;
-    camRay.set(_lastCamPos, _lastCamFwd);
+    // 1→3: raycast from actual 1st-person camera to find what crosshair is currently on
+    _trackWorldTarget = true;
+    camRay.set(fpEye, fpFwd);
     camRay.far = 200;
     camRay.near = 0;
     const scene = getScene();
     const hits = camRay.intersectObjects(scene.children, true);
 
-    convergenceDist = 30;
+    let found = false;
     for (const hit of hits) {
       let isPlayer = false;
       let obj = hit.object;
       while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
       if (isPlayer) continue;
       if (hit.object.userData && hit.object.userData.isGround) continue;
-      _toHit.subVectors(hit.point, fpEye);
-      convergenceDist = Math.max(15, _toHit.dot(fpFwd));
+      _crosshairTarget.copy(hit.point);
+      found = true;
       break;
     }
+    if (!found) {
+      _crosshairTarget.copy(fpEye).addScaledVector(fpFwd, 100);
+    }
+
+    // convergenceDist for after the transition ends
+    _toHit.subVectors(_crosshairTarget, fpEye);
+    convergenceDist = Math.max(15, _toHit.dot(fpFwd));
+
+    // Decompose target offset into player-local
+    const localRight = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+    const localUp = new THREE.Vector3().crossVectors(localRight, fpFwd).normalize();
+    _targetLocal.set(_toHit.dot(localRight), _toHit.dot(localUp), _toHit.dot(fpFwd));
   }
 }
 
@@ -428,13 +439,36 @@ export function updatePlayer(dt, camera, sunLight, keys) {
   // Third-person: over-the-shoulder behind player, pitch-aware orbit
   const tpDist = 3;
   const tpBaseHeight = 2.2;
-  const tpRight = 1.2;
+  const tpRightBase = 1.2;
   const rightVec = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
 
   // Camera orbits vertically using pitch (negated so mouse-up = look up)
   const tpPitch = Math.max(-1.0, Math.min(1.2, -state.pitch));
   const hDist = tpDist * Math.cos(tpPitch);   // horizontal distance shrinks as pitch increases
   const vOff = tpBaseHeight + tpDist * Math.sin(tpPitch); // height offset follows pitch
+
+  const scene = getScene();
+  const MARGIN = 0.35;
+
+  // Helper: test if a hit is valid (not player, not ground)
+  function isValidHit(hit) {
+    let obj = hit.object;
+    while (obj) { if (obj === playerModel) return false; obj = obj.parent; }
+    if (hit.object.userData && hit.object.userData.isGround) return false;
+    return true;
+  }
+
+  // Shoulder clearance: reduce right offset if a wall is to the player's right
+  let tpRight = tpRightBase;
+  camRay.set(_fpPos, rightVec);
+  camRay.far = tpRightBase + MARGIN;
+  camRay.near = 0;
+  const shoulderHits = camRay.intersectObjects(scene.children, true);
+  for (const hit of shoulderHits) {
+    if (!isValidHit(hit)) continue;
+    tpRight = Math.max(0, hit.distance - MARGIN);
+    break;
+  }
 
   const tpOff = new THREE.Vector3(
     Math.sin(state.yaw) * hDist + rightVec.x * tpRight,
@@ -445,57 +479,93 @@ export function updatePlayer(dt, camera, sunLight, keys) {
   const desiredCamY = Math.max(state.y + 0.5, state.y + tpOff.y);
   const desiredCam = new THREE.Vector3(state.x + tpOff.x, desiredCamY, state.z + tpOff.z);
 
-  // Raycast from player eye toward desired camera to prevent clipping through walls
-  // Cast center ray + lateral probes to catch corner clipping
+  // --- CAMERA COLLISION ---
+  // We use a single, highly robust physics raycast from the player's eye to the camera.
+  // Because physics handles solid volumes perfectly, the ray guarantees the center
+  // of the camera never enters a wall. To stop the *corners* of the camera from
+  // penetrating angled walls, we dynamically shrink (`squish`) the near-clipping plane.
+
   const toCamera = new THREE.Vector3().subVectors(desiredCam, _fpPos);
   const maxDist = toCamera.length();
-  toCamera.normalize();
 
-  _camRight.crossVectors(toCamera, new THREE.Vector3(0, 1, 0)).normalize();
+  // 1. Calculate the physical dimensions of the camera's near clipping plane
+  // targetNear = 0.3 (widest near plane in 3rd person)
+  const targetNear = 0.1 + camBlend * 0.2;
+  const fovRad = BASE_FOV * Math.PI / 180;
+  // Use a fixed aspect ratio for safety, assuming standard widescreen 16:9
+  const aspect = window.innerWidth / window.innerHeight || 16 / 9;
 
-  const scene = getScene();
-  let finalDist = maxDist;
-  const PULL_BACK = 0.4;
-  const PROBE_W = 0.6;
+  // Create coordinate frame for the near plane (camera looks at 'lookTarget')
+  const lookTarget = new THREE.Vector3().copy(_fpPos).addScaledVector(fpFwd, convergenceDist);
+  const camFwd = new THREE.Vector3().subVectors(lookTarget, desiredCam).normalize();
+  const camRight = new THREE.Vector3().crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize();
+  const camUp = new THREE.Vector3().crossVectors(camRight, camFwd).normalize();
 
-  // Probe offsets: center, left, right (catches walls at corners)
-  const offsets = [0, -PROBE_W, PROBE_W];
-  for (const off of offsets) {
-    _probeTarget.copy(desiredCam).addScaledVector(_camRight, off);
-    _probeDir.subVectors(_probeTarget, _fpPos);
-    const probeDist = _probeDir.length();
-    _probeDir.normalize();
+  // margin ensures the sweep is slightly fatter than the actual near plane
+  const frustumMargin = 0.1;
+  const halfH = Math.tan(fovRad / 2) * targetNear + frustumMargin;
+  const halfW = halfH * aspect + frustumMargin;
 
-    camRay.set(_fpPos, _probeDir);
-    camRay.far = probeDist;
-    camRay.near = 0;
+  // 2. Define the 5 target points precisely at the physical corners of the desired near plane
+  const offsets = [
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3().addScaledVector(camRight, halfW).addScaledVector(camUp, halfH),
+    new THREE.Vector3().addScaledVector(camRight, -halfW).addScaledVector(camUp, halfH),
+    new THREE.Vector3().addScaledVector(camRight, halfW).addScaledVector(camUp, -halfH),
+    new THREE.Vector3().addScaledVector(camRight, -halfW).addScaledVector(camUp, -halfH),
+  ];
 
-    const hits = camRay.intersectObjects(scene.children, true);
-    for (const hit of hits) {
-      // Skip player model
-      let isPlayer = false;
-      let obj = hit.object;
-      while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
-      if (isPlayer) continue;
-      // Skip ground/water planes (they clip camera near flat areas)
-      if (hit.object.userData && hit.object.userData.isGround) continue;
-      // Project hit distance onto main ray direction
-      const projDist = Math.max(0.5, hit.distance * _probeDir.dot(toCamera) - PULL_BACK);
-      if (projDist < finalDist) finalDist = projDist;
-      break;
+  // 3. Raycast ALL 5 sweep rays from the exact same safe origin (_fpPos).
+  // This creates a cone sweep. It never falsely hits adjacent walls like parallel rays do!
+  const world = getPhysicsWorld();
+  let minFraction = 1.0;
+
+  for (const offset of offsets) {
+    const target = desiredCam.clone().addScaledVector(camFwd, targetNear).add(offset);
+
+    _rayFrom.set(_fpPos.x, _fpPos.y, _fpPos.z);
+    _rayTo.set(target.x, target.y, target.z);
+    _rayResult.reset();
+
+    // collisionFilterMask ~2 excludes player body (group 2). Default hits solid walls (group 1).
+    world.raycastClosest(_rayFrom, _rayTo, { collisionFilterMask: ~2 }, _rayResult);
+
+    if (_rayResult.hasHit) {
+      const hitDist = _rayFrom.distanceTo(_rayResult.hitPointWorld);
+
+      // Pull back slightly (0.05 units) to prevent mathematical z-fighting with the AABB
+      const safeDist = Math.max(0, hitDist - 0.05);
+
+      const rayLen = _rayFrom.distanceTo(_rayTo);
+      const fraction = rayLen > 0.001 ? safeDist / rayLen : 0;
+      if (fraction < minFraction) {
+        minFraction = fraction;
+      }
     }
   }
 
-  _tpPos.copy(_fpPos).addScaledVector(toCamera, finalDist);
+  // 4. Final interpolation: Camera is pulled toward eye, and near plane is squeezed
+  // proportional to `minFraction`. This guarantees the corners shrink to track the safe ray paths.
+  const finalFraction = Math.max(0.05, minFraction);
+  _tpPos.copy(_fpPos).addScaledVector(toCamera, finalFraction);
 
   // Blend camera position
   camera.position.lerpVectors(_fpPos, _tpPos, camBlend);
 
-  // Camera look-at during 3→1: reconstruct world target from player-local coords
-  // using current yaw/pitch each frame. This lets mouse rotation work during the
-  // transition while still absorbing shoulder-offset parallax smoothly.
+  // Dynamic squish of near plane
+  const squishedNear = Math.max(0.02, targetNear * finalFraction);
+
+  if (Math.abs(camera.near - squishedNear) > 0.001) {
+    camera.near = squishedNear;
+    camera.updateProjectionMatrix();
+  }
+
+  // Camera look-at during transitions:
+  // To keep the crosshair perfectly still while the camera physically slides 
+  // between the center eye and the right shoulder, we must force the camera 
+  // to constantly look at the exact 3D world point the crosshair was resting on.
   if (_trackWorldTarget) {
-    if (camBlend > 0) {
+    if (camBlend > 0 && camBlend < 1) {
       // Reconstruct target from local coords using current orientation
       _toHit.crossVectors(rightVec, fpFwd); // local up (already unit length)
       _crosshairTarget.copy(_fpPos)
@@ -504,8 +574,8 @@ export function updatePlayer(dt, camera, sunLight, keys) {
         .addScaledVector(fpFwd, _targetLocal.z);
 
       _blendedLookAt.copy(_crosshairTarget);
-    } else {
-      // Transition complete: set yaw/pitch so fpFwd exactly matches direction to target
+    } else if (camBlend === 0) {
+      // 3→1 Transition complete: snap pitch/yaw
       const dir = _toHit.subVectors(_crosshairTarget, _fpPos).normalize();
       state.yaw = Math.atan2(-dir.x, -dir.z);
       state.pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
@@ -520,9 +590,18 @@ export function updatePlayer(dt, camera, sunLight, keys) {
 
       _blendedLookAt.copy(_fpPos).addScaledVector(newFwd, convergenceDist);
       _trackWorldTarget = false;
+    } else if (camBlend === 1) {
+      // 1→3 Transition complete
+      _blendedLookAt.copy(lookTarget);
+      _trackWorldTarget = false;
     }
   } else {
-    _blendedLookAt.copy(_fpPos).addScaledVector(fpFwd, convergenceDist);
+    // Normal gameplay (not transitioning)
+    if (camBlend === 0) {
+      _blendedLookAt.copy(_fpPos).addScaledVector(fpFwd, convergenceDist);
+    } else {
+      _blendedLookAt.copy(lookTarget);
+    }
   }
   camera.lookAt(_blendedLookAt);
 
