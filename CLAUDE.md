@@ -19,7 +19,7 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 - SHIFT - Sprint
 - SPACE - Jump
 - V - Toggle first/third person camera
-- E - Interact (doors, soldiers, flowers, rocks, torches)
+- E - Interact (doors, soldiers, flowers, rocks, torches, beds)
 - 1-5 - Select hotbar slot
 - Left-click - Use selected item (throw stone, place flower/torch)
 - Right-click (hold) - Zoom
@@ -64,6 +64,7 @@ src/
     torches.js             # Wall-mounted point lights, torch pickup/placement
     doors.js               # Door meshes with pivot rotation, open/close, kinematic bodies
     flowers.js             # Flower pickup, planting, preview system
+    furniture.js           # Procedural furniture (beds) geometry generation
   entities/
     models.js              # Model registry (data only — URLs, heights, counts, licenses)
     modelLoader.js         # GLTF loading, cloning, animation setup, places models in scene
@@ -73,6 +74,7 @@ src/
     touch.js               # Mobile touch input (joystick, look, long-press interact)
     hotbar.js              # Hotbar slots, ALT cursor drag-and-drop
     daynight.js            # Day/night cycle, sky color, fog, star visibility
+    sleep.js               # Time-skip mechanics when interacting with beds
     hud.js                 # FPS counter, minimap canvas, camera mode label
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
     projectiles.js         # Stone throwing with cannon-es dynamic bodies
@@ -94,8 +96,8 @@ src/
 - Player spawns at center; buildings avoid the center area
 
 ### Collision
-- **cannon-es** physics engine handles player movement, projectile physics, and door collisions
-- Player is a compound capsule body (2 spheres + cylinder, mass 80, fixedRotation)
+- **cannon-es** physics engine handles player movement, projectile physics, boundary shields, and door collisions
+- Player is a compound capsule body (2 spheres + cylinder, mass 80, fixedRotation, zero friction modifier)
 - Projectiles are dynamic sphere bodies with material-based friction/restitution
 - Static world bodies: wall boxes, floor slabs, stair steps, roof caps, rock spheres, terrain heightfield, boundary walls
 - Doors use kinematic box bodies synced to visual rotation each frame
@@ -131,6 +133,7 @@ To add more animations (attack, jump, die, reload, etc.) use **Mixamo** (https:/
 - Sun orbits, sky color lerps day→sunset→night
 - Stars appear at night, torches brighten at night
 - Shadow camera follows player position
+- **Sleeping**: Player can interact (`E`) with procedural beds spawned inside buildings to skip time to 08:00 the next morning.
 
 ### Camera
 - First person: camera at player eye height (1.7 units)

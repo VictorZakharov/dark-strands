@@ -9,6 +9,7 @@ A 3D first/third-person survival roguelite prototype built with Three.js. Explor
 - **Terrain** — Gentle rolling hills with automatic flat zones under buildings
 - **Stairs** — Climbable 8-step wood staircases in 2-story buildings, flush against walls, with proper collision (can't walk under)
 - **2nd floors** — Thick floor slabs with full wall-to-wall coverage and stairwell gaps
+- **Beds** — Procedurally generated inside buildings; sleep to advance time to morning
 - **Water** — Semi-transparent blue water plane with underwater effects (blue tint, slow movement)
 - **Vegetation** — Randomized fir/pine trees, boulders, and flowers; small rocks are jumpable, large rocks are climbable
 - **Wood house floors** — Ground floors use wood plank texture, wall-to-wall coverage sealing all light paths
@@ -42,8 +43,8 @@ A 3D first/third-person survival roguelite prototype built with Three.js. Explor
 
 ### Camera
 - **First-person** — Eye-height view with full pitch/yaw; player model hidden via layers (shadow still casts)
-- **Third-person** — Over-the-shoulder with pitch orbit, 3-ray wall collision probe, smooth 1-second toggle
-- **Seamless transitions** — Crosshair raycast convergence keeps aim locked on the exact world point during V toggle; mouse look works throughout; mid-transition re-toggle reverses smoothly
+- **Third-person** — Over-the-shoulder with pitch orbit, robust 5-ray dynamic cone sweep for mathematically perfect wall collision, smooth 1-second toggle
+- **Seamless transitions** — Locked local crosshair target raycast convergence keeps aim locked on the exact world point during V toggle; mouse look works throughout; mid-transition re-toggle reverses smoothly
 - **Game start** — Cinematic transition from 3rd to 1st person
 - **Player model** — Blue-tinted soldier with idle/walk/run animations (visible in 3rd person)
 
@@ -54,6 +55,7 @@ A 3D first/third-person survival roguelite prototype built with Three.js. Explor
 - Sun arcs across the sky during daytime, dips below horizon at night
 - Gradual dusk/dawn — sky, fog, stars, and torches all transition smoothly (smoothstep blending)
 - Stars fade in at dusk, interior torches glow brighter, door torches gradually ignite
+- **Sleeping** — interact with a bed to instantly fast-forward time to 08:00 the next morning
 - **Q key fast-forward** — hold Q to run the entire game at 3× speed
 
 ### Menu System
@@ -89,7 +91,7 @@ Open http://localhost:3000 in your browser and click to play.
 | Shift | Sprint |
 | Space | Jump |
 | V | Toggle first/third person |
-| E | Interact (doors, soldiers, flowers) |
+| E | Interact (doors, soldiers, flowers, beds to sleep) |
 | Right-click (hold) | Zoom (3x) |
 | Q (hold) | Fast-forward (3x game speed) |
 | 1-5 | Select hotbar slot |
@@ -102,6 +104,7 @@ Open http://localhost:3000 in your browser and click to play.
 ## Tech Stack
 
 - **Three.js 0.162.0** via ES module importmap (CDN, no bundler)
+- **cannon-es** for 3D physics (player movement, doors, dynamic projectiles)
 - Pure ES modules — `<script type="module" src="src/main.js">`
 - Zero npm dependencies (only `npx serve` for local HTTP)
 
