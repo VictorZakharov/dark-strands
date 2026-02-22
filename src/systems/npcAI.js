@@ -4,8 +4,8 @@ import { getPlayerState } from '../entities/player.js';
 import { getBuildings } from '../world/generator.js';
 import { CFG } from '../config.js';
 import { getTerrainHeight } from '../world/terrain.js';
-import { collidesWithRock } from '../world/vegetation.js';
-import { collidesWithDoorPanel } from '../world/doors.js';
+import { collidesWithRock, getRockPushback } from '../world/vegetation.js';
+import { collidesWithDoorPanel, getDoorPanelPushback } from '../world/doors.js';
 import { getCamera } from '../core/scene.js';
 
 const npcs = [];
@@ -301,6 +301,18 @@ export function updateNpcs(dt) {
     // Follow terrain height (clamped to ice level in snow mode)
     pos.y = getTerrainHeight(pos.x, pos.z);
     if (CFG.SNOW_MODE) pos.y = Math.max(pos.y, CFG.WATER_Y);
+
+    // Apply pushback from rocks and doors to prevent getting permanently stuck
+    const rockPush = getRockPushback(pos.x, pos.z, npc.radius);
+    if (rockPush) {
+      pos.x += rockPush.x;
+      pos.z += rockPush.z;
+    }
+    const doorPush = getDoorPanelPushback(pos.x, pos.z, npc.radius);
+    if (doorPush) {
+      pos.x += doorPush.x;
+      pos.z += doorPush.z;
+    }
 
     // Flee behavior (foxes)
     if (npc.fleeRange > 0) {

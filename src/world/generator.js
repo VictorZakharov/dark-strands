@@ -47,7 +47,7 @@ export function generateBuildings() {
     let ok = true;
     for (const b of buildings) {
       if (bx - 2 < b.x + b.w && bx + w + 2 > b.x &&
-          bz - 2 < b.z + b.h && bz + h + 2 > b.z) {
+        bz - 2 < b.z + b.h && bz + h + 2 > b.z) {
         ok = false;
         break;
       }
@@ -73,7 +73,7 @@ export function generateBuildings() {
     const fp1 = g2w(bx - 1, bz - 1);
     const fp2 = g2w(bx + w, bz + h);
     addFlatZone(fp1.x - CFG.CELL / 2, fp1.z - CFG.CELL / 2,
-                fp2.x + CFG.CELL / 2, fp2.z + CFG.CELL / 2);
+      fp2.x + CFG.CELL / 2, fp2.z + CFG.CELL / 2);
 
     // walls on perimeter
     for (let gx = bx; gx < bx + w; gx++) {
@@ -176,7 +176,19 @@ export function generateBuildings() {
     }
     for (let gz = bz + 1; gz < bz + h - 1; gz++) {
       if (!doorSet.has(`${bx},${gz}`)) wallCands.west.push({ gx: bx, gz, wall: 'west' });
-      if (!doorSet.has(`${bx + w - 1},${gz}`)) wallCands.east.push({ gx: bx + w - 1, gz, wall: 'east' });
+
+      // East wall is at bx + w - 1, directly adjacent to the stair at stairGx (bx + w - 2).
+      // Prevent windows on the east wall behind the stairs.
+      let behindStairs = false;
+      if (stairGx >= 0 && (bx + w - 1 === stairGx + 1)) {
+        if (gz >= building.stair.gzStart && gz <= building.stair.gzEnd) {
+          behindStairs = true;
+        }
+      }
+
+      if (!doorSet.has(`${bx + w - 1},${gz}`) && !behindStairs) {
+        wallCands.east.push({ gx: bx + w - 1, gz, wall: 'east' });
+      }
     }
 
     // Random window size: wFrac = width fraction of cell, hFrac = height fraction of wall

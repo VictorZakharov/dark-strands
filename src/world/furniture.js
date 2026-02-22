@@ -360,15 +360,25 @@ export function placeFurniture(scene) {
                 // Don't place on stair
                 if (b.stories === 2 && Math.abs(z - stairZ) <= 1) continue;
 
+                // Check for doors near this cell
+                let nearDoor = false;
+                for (const d of b.doors) {
+                    if (bedFloor === 1 && Math.abs(b.x + 1 - d.gx) <= 1 && Math.abs(z - d.gz) <= 1) nearDoor = true;
+                }
+
                 const hasWestWin = b.windows.some(w => w.floor === bedFloor && w.wall === 'west' && w.gz === z);
-                const hasWestDoor = bedFloor === 1 && b.doors.some(d => d.wall === 'west' && d.gz === z);
-                if (!hasWestWin && !hasWestDoor) {
+                if (!hasWestWin && !nearDoor) {
                     chosenBedCell = { gx: b.x + 1, gz: z, isWest: true, isNorth: false, isSouth: false, isEast: false };
                     break;
                 }
+
+                nearDoor = false;
+                for (const d of b.doors) {
+                    if (bedFloor === 1 && Math.abs(b.x + b.w - 2 - d.gx) <= 1 && Math.abs(z - d.gz) <= 1) nearDoor = true;
+                }
+
                 const hasEastWin = b.windows.some(w => w.floor === bedFloor && w.wall === 'east' && w.gz === z);
-                const hasEastDoor = bedFloor === 1 && b.doors.some(d => d.wall === 'east' && d.gz === z);
-                if (!hasEastWin && !hasEastDoor) {
+                if (!hasEastWin && !nearDoor) {
                     chosenBedCell = { gx: b.x + b.w - 2, gz: z, isEast: true, isNorth: false, isSouth: false, isWest: false };
                     break;
                 }
@@ -403,45 +413,88 @@ export function placeFurniture(scene) {
             createStaticBox(bed.length / 2, bed.height / 2, bed.width / 2, bed.group.position.x, yPos + bed.height / 2, bed.group.position.z);
 
             beds.push({ x: p.x + dx, y: yPos + bed.height, z: p.z + dz });
-            if (bedFloor === 1) chosenBedCell = p; // Mark the 1st floor bed coordinate so the table can avoid it
+            if (bedFloor === 1) chosenBedCell = { gx: chosenBedCell.gx, gz: chosenBedCell.gz }; // Keep gx, gz for table logic
         }
 
-        // --- First Floor Table (if space permits) ---
-        // Need at least a 3x3 open interior space to fit a central table comfortably
-        // Interior is (w-2) x (h-2). So we need w>=5, h>=5
-        if (b.w >= 5 && b.h >= 5) {
-            const tableX = Math.floor(b.x + b.w / 2);
-            const tableZ = Math.floor(b.z + b.h / 2);
-            const c = g2w(tableX, tableZ);
+        // --- First Floor Table ---
+        if (b.w >= 4 && b.h >= 4) {
+            let tableCell = null;
+            const candidates = [];
 
-            let blocked = false;
-            // Check if stairs are occupying the center or too close
-            if (stairZ !== -1 && Math.abs(stairZ - tableZ) <= 2) blocked = true;
-            // Check if a 1st floor bed is occupying the center or too close
-            if (chosenBedCell && Math.abs(chosenBedCell.gridX - tableX) <= 2 && Math.abs(chosenBedCell.gridZ - tableZ) <= 2) blocked = true;
+            // Try side walls (West, East) then back wall (North)
+            for (let z = b.z + 1; z < b.z + b.h - 1; z++) candidates.push({ gx: b.x + 1, gz: z, wall: 'west' });
+            for (let z = b.z + 1; z < b.z + b.h - 1; z++) candidates.push({ gx: b.x + b.w - 2, gz: z, wall: 'east' });
+            for (let x = b.x + 2; x < b.x + b.w - 2; x++) candidates.push({ gx: x, gz: b.z + 1, wall: 'north' });
 
-            if (!blocked) {
-                const yPos = 0.05; // Ground floor + slight slab offset
+            for (const cand of candidates) {
+                // Avoid stairs
+                if (b.stories === 2 && Math.abs(cand.gz - stairZ) <= 1) continue;
+
+                // Avoid bed
+                if (bedFloor === 1 && chosenBedCell && Math.abs(cand.gx - chosenBedCell.gx) <= 1 && Math.abs(cand.gz - chosenBedCell.gz) <= 1) continue;
+
+                // Avoid doors
+                let doorOverlap = false;
+                for (const d of b.doors) {
+                    if (Math.abs(d.gx - cand.gx) <= 1 && Math.abs(d.gz - cand.gz) <= 1) doorOverlap = true;
+                }
+                if (doorOverlap) continue;
+
+                tableCell = cand;
+                break;
+            }
+
+            if (tableCell) {
+                const c = g2w(tableCell.gx, tableCell.gz);
+                const yPos = 0.05;
 
                 const { group: tableGrp, width: tw, depth: td, height: th } = buildTable();
-                tableGrp.position.set(c.x, yPos, c.z);
+
+                // Flush offset against the wall
+                const wallOffset = CFG.CELL / 2 - td / 2 - 0.15;
+                let dx = 0, dz = 0, rot = 0;
+                let hx = tw / 2, hz = td / 2;
+
+                if (tableCell.wall === 'west') { rot = -Math.PI / 2; dx = -wallOffset; hx = td / 2; hz = tw / 2; }
+                else if (tableCell.wall === 'east') { rot = Math.PI / 2; dx = wallOffset; hx = td / 2; hz = tw / 2; }
+                else if (tableCell.wall === 'north') { rot = 0; dz = -wallOffset; }
+
+                tableGrp.position.set(c.x + dx, yPos, c.z + dz);
+                tableGrp.rotation.y = rot;
                 scene.add(tableGrp);
+                createStaticBox(hx, th / 2, hz, tableGrp.position.x, yPos + th / 2, tableGrp.position.z);
 
-                // Generate physics box using absolute world coordinates
-                createStaticBox(tw / 2, th / 2, td / 2, c.x, yPos + th / 2, c.z);
+                // Place 2 chairs at the ends of the table facing inward
+                let c1x = 0, c1z = 0, c1rot = 0;
+                let c2x = 0, c2z = 0, c2rot = 0;
 
-                // Add 2 chairs
+                // For oval/rectangular tables, 'tw' is the width (long dimension)
+                // and 'td' is the depth. The table is rotated when placed on West/East walls.
+                const chairDistX = tableGrp.rotation.y !== 0 ? 0 : tw / 2 + 0.15;
+                const chairDistZ = tableGrp.rotation.y !== 0 ? tw / 2 + 0.15 : 0;
+
+                if (tableCell.wall === 'west') {
+                    c1x = tableGrp.position.x; c1z = tableGrp.position.z - chairDistZ; c1rot = 0;
+                    c2x = tableGrp.position.x; c2z = tableGrp.position.z + chairDistZ; c2rot = Math.PI;
+                } else if (tableCell.wall === 'east') {
+                    c1x = tableGrp.position.x; c1z = tableGrp.position.z - chairDistZ; c1rot = 0;
+                    c2x = tableGrp.position.x; c2z = tableGrp.position.z + chairDistZ; c2rot = Math.PI;
+                } else if (tableCell.wall === 'north') {
+                    c1x = tableGrp.position.x - chairDistX; c1z = tableGrp.position.z; c1rot = Math.PI / 2;
+                    c2x = tableGrp.position.x + chairDistX; c2z = tableGrp.position.z; c2rot = -Math.PI / 2;
+                }
+
                 const chair1 = buildChair();
-                chair1.position.set(c.x - tw / 2 - 0.4, yPos, c.z);
-                chair1.rotation.y = Math.PI / 2; // Facing east towards table
+                chair1.position.set(c1x, yPos, c1z);
+                chair1.rotation.y = c1rot;
                 scene.add(chair1);
-                createStaticBox(0.25, 0.5, 0.25, chair1.position.x, yPos + 0.5, chair1.position.z);
+                createStaticBox(0.25, 0.5, 0.25, c1x, yPos + 0.5, c1z);
 
                 const chair2 = buildChair();
-                chair2.position.set(c.x + tw / 2 + 0.4, yPos, c.z);
-                chair2.rotation.y = -Math.PI / 2; // Facing west towards table
+                chair2.position.set(c2x, yPos, c2z);
+                chair2.rotation.y = c2rot;
                 scene.add(chair2);
-                createStaticBox(0.25, 0.5, 0.25, chair2.position.x, yPos + 0.5, chair2.position.z);
+                createStaticBox(0.25, 0.5, 0.25, c2x, yPos + 0.5, c2z);
             }
         }
     }
