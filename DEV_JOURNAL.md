@@ -414,3 +414,13 @@
 ### Complex Physics Refinement
 - **Coyote Time** (`player.js`): implemented a 150ms jump buffer. `isPlayerGrounded()` records `_lastGroundedTime`. Pressing space just after falling off a ledge correctly issues a full-strength jump, easing platforming latency.
 - **Hard Ground Overlap Clamp** (`player.js`): removed JS code that nullified positive upward `velocity.y` pulses to handle jitter. Fixed a game-breaking bug where the player would instantly fall entirely through the terrain on high-impact drops. Added a continuous check against `getTerrainHeight` that snaps the player to the surface if they punch through the physics shell between ticks.
+
+### Breaking Down `geometry.js`
+- **Modularization** (`geometry.js` DELETED): the monolithic 1000+ line visual and physics builder has been split by architectural feature into 5 highly-focused files within `src/world/`.
+- **Terrain** (`terrainMeshes.js` NEW): handles `buildGround()` (displaced planes) and `buildWater()` (translucent depths).
+- **Floors & Stairs** (`floors.js` NEW): manages `buildFloors()` (including complex stairway gap-filling logic for 2-story buildings) and `buildStairSteps()`.
+- **Walls & Roofs** (`walls.js` NEW): contains `buildWalls()` with its triplanar shader injection and thin-post corner extensions, as well as `buildRoofs()`.
+- **Windows** (`windows.js` NEW): houses the window extrusions with triplanar UVs, glass panes, wooden frames, and the `windowPanes` breakable state registry (`tryBreakWindow`, etc).
+- **Static Physics** (`staticPhysics.js` NEW): extracted `createWorldPhysicsBodies()` out of the visual pipeline. Translates the 2D grid into cannon-es bodies (heightfields, walls, lintels, roofs, slabs, steps).
+- **Kinematic Mask Fix** (`physics.js`, `doors.js`): updated `createKinematicBox()` to explicitly set `collisionFilterGroup = 1` and `collisionFilterMask = -1`. Previously, doors had no explicit filters, which caused projectiles (Group 8) to ghost through them even when closed. Rocks now bounce cleanly off swinging door panels.
+- **Documentation**: updated `ARCHITECTURE.md` file tree and file statistics to reflect the 5 new files and the removal of `geometry.js`.

@@ -6,7 +6,8 @@
     "start": "npx serve . -p 3000 --no-clipboard",
     "dev": "npx serve . -p 3000 --no-clipboard",
     "build": "node build.js",
-    "serve:prod": "node build.js && npx serve dist -p 3000 --no-clipboard"
+    "serve:prod": "node build.js && npx serve dist -p 3000 --no-clipboard",
+    "count": "node count_lines.mjs"
   },
   "dependencies": {
     "cannon-es": "^0.20.0",

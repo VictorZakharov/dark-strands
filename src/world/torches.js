@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { getGrid, isDoorCell, isWindowCell, isStairCell, isWalkable } from './grid.js';
 import { getBuildings, getWallHeightAt } from './generator.js';
-import { isInsideWindowOpening } from './geometry.js';
+import { isInsideWindowOpening } from './windows.js';
 import { collidesWithRock } from './vegetation.js';
 import { getDoorByCell } from './doors.js';
 import { g2w, w2g, rngInt } from '../utils/helpers.js';

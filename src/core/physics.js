@@ -150,6 +150,8 @@ export function createKinematicBox(hx, hy, hz, px, py, pz) {
     shape: new CANNON.Box(new CANNON.Vec3(hx, hy, hz)),
     position: new CANNON.Vec3(px, py, pz),
     material: doorMaterial,
+    collisionFilterGroup: 1, // static geometry group
+    collisionFilterMask: -1, // collide with everything
   });
   world.addBody(body);
   return body;

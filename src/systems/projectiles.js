@@ -4,7 +4,7 @@ import { getTerrainHeight } from '../world/terrain.js';
 import { getRockTexture, registerPickableRock, findRockSurface, getPickableRockNear, deactivateRock, getTreeFoliageDamping } from '../world/vegetation.js';
 import { isWalkable, isWindowCell } from '../world/grid.js';
 import { w2g } from '../utils/helpers.js';
-import { tryBreakWindow, isWindowBrokenAt } from '../world/geometry.js';
+import { tryBreakWindow, isWindowBrokenAt } from '../world/windows.js';
 import { getPlayerState, getPlayerBody } from '../entities/player.js';
 import { createProjectileSphere, removeBody } from '../core/physics.js';
 import { spawnBoundaryHit } from '../world/boundary.js';
