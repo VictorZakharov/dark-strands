@@ -309,11 +309,6 @@ export function updatePlayerMovement(dt, keys) {
     _frozenY = null;
   }
 
-  // Damp small terrain-contact bounces when walking on ground
-  if (_moving && grounded && playerBody.velocity.y > 0 && playerBody.velocity.y < 1.5) {
-    playerBody.velocity.y = 0;
-  }
-
   // Jump
   if (keys['Space'] && grounded) {
     playerBody.velocity.y = underwater ? CFG.JUMP * 0.5 : CFG.JUMP;
@@ -343,11 +338,6 @@ export function syncPlayerFromPhysics() {
     playerBody.velocity.y = 0;
   }
 
-  // Damp vertical micro-bounces from heightfield/floor contact resolution
-  if (playerBody.velocity.y > 0 && playerBody.velocity.y < 0.8) {
-    playerBody.velocity.y = 0;
-  }
-
   // Ceiling clamp — safety net: raycast upward to catch any floor/roof penetration
   const world = getPhysicsWorld();
   _rayFrom.set(state.x, state.y + 0.1, state.z);
@@ -362,6 +352,21 @@ export function syncPlayerFromPhysics() {
       playerBody.position.y = maxY;
       if (playerBody.velocity.y > 0) playerBody.velocity.y = 0;
     }
+  }
+
+  // Floor clamp — safety net: guarantee player never falls below the mathematical terrain height
+  // Since the Cannon-es heightfield represents an infinitely thin shell, a high downward velocity 
+  // (like landing a jump) can cause the player to completely punch through the shell between physics ticks.
+  const terrainY = getTerrainHeight(state.x, state.z);
+  if (state.y < terrainY) {
+    state.y = terrainY;
+    playerBody.position.y = terrainY;
+    // Only halt downward velocity; if an explosion sent them up while partially clipped, let it happen
+    if (playerBody.velocity.y < 0) {
+      playerBody.velocity.y = 0;
+    }
+    // Also reset freeze state so we immediately anchor to the surface
+    _frozenY = terrainY;
   }
 
   // Snow mode: water acts as ice floor
