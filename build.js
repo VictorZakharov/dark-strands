@@ -3,13 +3,16 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-// Plugin to resolve 'three/addons/' to 'three/examples/jsm/' (matches importmap)
-const threeAddonsPlugin = {
-  name: 'three-addons',
+// Plugin to resolve importmap aliases to real node_modules paths
+const importmapPlugin = {
+  name: 'importmap-resolve',
   setup(build) {
-    build.onResolve({ filter: /^three\/addons\// }, args => ({
-      path: path.resolve(__dirname, 'node_modules', args.path.replace('three/addons/', 'three/examples/jsm/')),
+    // 'babylonjs' → the babylon entry that re-exports @babylonjs/core + loaders + materials
+    build.onResolve({ filter: /^babylonjs$/ }, () => ({
+      path: path.resolve(__dirname, 'lib/babylon-entry.js'),
     }));
+    // '@babylonjs/havok' stays external — loaded via importmap (WASM needs correct relative path)
+    build.onResolve({ filter: /^@babylonjs\/havok$/ }, () => ({ path: '@babylonjs/havok', external: true }));
   },
 };
 
@@ -61,7 +64,7 @@ async function build() {
     sourcemap: true,
     format: 'esm',
     outfile: 'dist/_main.js',
-    plugins: [threeAddonsPlugin],
+    plugins: [importmapPlugin],
   });
 
   // Hash and rename JS
@@ -93,6 +96,33 @@ async function build() {
   const bodyMatch = srcHtml.match(/<body>([\s\S]*?)<script type="importmap">/);
   const bodyContent = bodyMatch ? bodyMatch[1].trim() : '';
 
+  fs.mkdirSync('dist/lib', { recursive: true });
+
+  // Copy and hash havok files
+  const havokDir = 'node_modules/@babylonjs/havok/lib/esm';
+  await esbuild.build({
+    entryPoints: [`${havokDir}/HavokPhysics_es.js`],
+    bundle: false,
+    minify: true,
+    outfile: 'dist/lib/_havok.js',
+    format: 'esm',
+    target: 'es2020',
+  });
+  const hkHash = contentHash('dist/lib/_havok.js');
+  const hkFile = `havok.${hkHash}.js`;
+  fs.renameSync('dist/lib/_havok.js', `dist/lib/${hkFile}`);
+
+  // Copy WASM (binary, no minification — just hash)
+  fs.copyFileSync(`${havokDir}/HavokPhysics.wasm`, 'dist/lib/_havok.wasm');
+  const wasmHash = contentHash('dist/lib/_havok.wasm');
+  const wasmFile = `havok.${wasmHash}.wasm`;
+  fs.renameSync('dist/lib/_havok.wasm', `dist/lib/${wasmFile}`);
+
+  // Rewrite WASM path inside the havok JS so it finds the hashed .wasm
+  let hkContent = fs.readFileSync(`dist/lib/${hkFile}`, 'utf8');
+  hkContent = hkContent.replaceAll('HavokPhysics.wasm', wasmFile);
+  fs.writeFileSync(`dist/lib/${hkFile}`, hkContent);
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -103,6 +133,13 @@ async function build() {
 </head>
 <body>
 ${bodyContent}
+<script type="importmap">
+{
+  "imports": {
+    "@babylonjs/havok": "./lib/${hkFile}"
+  }
+}
+</script>
 <script type="module" src="${jsFile}"></script>
 </body>
 </html>`;

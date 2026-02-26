@@ -39,9 +39,9 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 
 ## Tech Stack
 - **Babylon.js 8.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`, loaded via importmap as `'babylonjs'`
-- **Rapier 3D** (`@dimforge/rapier3d-compat`) — Rust/WASM physics engine
+- **Babylon.js Havok** (`@babylonjs/havok`) — Havok WASM physics engine via Babylon.js v2 physics plugin
 - Pure ES modules, no bundler for game code — `<script type="module" src="src/main.js">`
-- `npm install` required; `npm run bundle:babylon` to rebuild the Babylon.js bundle; `npx serve` for local HTTP server
+- `npm install` required; `npm run bundle:babylon` to rebuild the Babylon.js bundle; Havok WASM served from `node_modules/` via importmap; `npx serve` for local HTTP server
 
 ## Architecture
 
@@ -54,7 +54,7 @@ src/
   core/
     scene.js               # Engine, Scene, FreeCamera setup
     lighting.js            # DirectionalLight (CSM), HemisphericLight, sun glow
-    physics.js             # Rapier3D world, body helpers, step, raycast
+    physics.js             # Havok physics world, body helpers, step, raycast
   world/
     grid.js                # 2D collision grid, walkability checks
     generator.js           # Procedural building placement
@@ -62,7 +62,7 @@ src/
     walls.js               # Building walls (merged geometry with window holes, triplanar UV) and roofs
     floors.js              # Ground floor slabs, mid-floor pieces, stair steps
     windows.js             # Glass panes (breakable) and wooden window frames
-    staticPhysics.js       # Rapier static bodies for walls, floors, roofs, ceiling slabs, stairs
+    staticPhysics.js       # Havok static bodies for walls, floors, roofs, ceiling slabs, stairs
     vegetation.js          # Low-poly trees and rocks (with physics bodies)
     terrain.js             # Perlin noise terrain heightmap
     boundary.js            # World-edge hex-grid shield effect
@@ -82,7 +82,7 @@ src/
     sleep.js               # Time-skip mechanics when interacting with beds
     hud.js                 # FPS counter, minimap canvas, camera mode label
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
-    projectiles.js         # Stone throwing with Rapier dynamic bodies
+    projectiles.js         # Stone throwing with Havok dynamic bodies
     menu.js                # Procedural campfire menu scene
   utils/
     helpers.js             # Grid↔world coordinate conversion, rng utilities
@@ -101,12 +101,15 @@ src/
 - Player spawns at center; buildings avoid the center area
 
 ### Collision
-- **Rapier 3D** (Rust/WASM) physics engine handles player movement, projectile physics, boundary shields, and door collisions
-- Player is a native capsule body (mass 80, fixedRotation, CCD enabled)
-- Projectiles are dynamic sphere bodies with per-collider friction/restitution (CCD enabled)
-- Static world bodies: wall boxes, floor slabs, stair steps, ceiling slabs, roof slopes, ridge caps, rock spheres, terrain heightfield, boundary walls
+- **Babylon.js Havok** (WASM) physics engine handles player movement, projectile physics, boundary shields, and door collisions
+- Player is a capsule body (mass 80, zero inertia for locked rotation) via `PhysicsShapeCapsule`
+- Projectiles are dynamic sphere bodies with per-shape friction/restitution
+- Static world bodies: wall boxes, floor slabs, stair steps, ceiling slabs, roof slopes, ridge caps, rock spheres, terrain heightfield, boundary walls — each gets a lightweight `TransformNode` (no mesh)
+- Collision groups use `shape.filterMembershipMask` / `shape.filterCollideMask` bitmasks (not packed u32)
 - Ceiling slabs (CEILING_COLLISION_GROUP) prevent jumping into attic on slanted-roof buildings
-- Doors use kinematic box bodies synced to visual rotation each frame
+- Doors use ANIMATED (kinematic) box bodies with `disablePreStep = false` — moving the TransformNode auto-syncs to physics
+- Dynamic bodies (player, projectiles) use `disablePreStep = false` so position teleports work; static bodies use `disablePreStep = true` for zero overhead
+- Manual physics stepping: `scene.physicsEnabled = false` disables auto-step; accumulator calls `physicsEngine._step(1/60)` to preserve fast-forward mechanics
 - 2D boolean grid still used for: NPC pathfinding, placement validation, indoor/outdoor detection, torch/flower placement raycasts
 - NPCs use grid-based collision (not physics engine)
 

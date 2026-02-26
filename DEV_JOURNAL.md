@@ -538,3 +538,15 @@
 - **Roof mesh skip in camera collision** (`player.js`): camera collision raycasts skip `slantRoofs` and `flatRoofs` meshes. The ceiling Y-clamp already prevents the camera from entering the attic, so roof meshes don't need to block the camera.
 - **Camera ceiling Y-clamp** (`player.js`): upward Rapier raycast from player finds ceiling height; camera desired Y clamped to `ceilingY - 0.5` to prevent FOV from seeing above wall tops. Margin of 0.5 accounts for wide 75° FOV.
 - **Temporal smoothing on camera fraction** (`player.js`): added `_camFracSmooth` state variable. Camera collision fraction snaps in instantly but eases out slowly (`dt * 5`), eliminating oscillation where the camera would snap to first-person during one jump frame then snap back the next.
+
+### Physics Engine Migration: Rapier 3D → Babylon.js Havok
+- **Complete rewrite of `physics.js`**: replaced `@dimforge/rapier3d-compat` (Rust/WASM) with `@babylonjs/havok` (Havok WASM). Same `PhysicsBodyWrapper` proxy API — zero changes needed in consumer files (`player.js`, `staticPhysics.js`, `doors.js`, `projectiles.js`, `vegetation.js`, `furniture.js`, `main.js`).
+- **Dependencies**: installed `@babylonjs/havok`, uninstalled `@dimforge/rapier3d-compat`. Updated importmap in `index.html` to point to Havok ESM entry. Havok WASM served from `node_modules/` alongside JS.
+- **Init**: `HavokPhysics()` → `HavokPlugin` → `scene.enablePhysics()`. Auto-stepping disabled (`scene.physicsEnabled = false`), manual accumulator calls `physicsEngine._step(FIXED_STEP)` to preserve fast-forward (Q key) mechanics.
+- **Body types**: `RAPIER.RigidBodyDesc.fixed()` → `PhysicsMotionType.STATIC`, `.dynamic()` → `DYNAMIC`, `.kinematicPositionBased()` → `ANIMATED`. Each body gets a lightweight `TransformNode` (no mesh/draw calls).
+- **Shape mapping**: Rapier half-extents → Havok full-extents (`hx*2, hy*2, hz*2` for boxes). Capsule uses `pointA/pointB` endpoints instead of `halfHeight`. Cylinder uses endpoints too. Heightfield uses `{width, height}` size object.
+- **Collision groups**: changed from packed u32 `(membership << 16) | filter` to separate `shape.filterMembershipMask` / `shape.filterCollideMask` bitmasks. Exported constants changed from numbers to `{membership, filter}` objects.
+- **Raycasting**: `RAPIER.Ray` + `world.castRay` → `physicsEngine.raycastToRef()` with `PhysicsRaycastResult`. Player exclusion via `collideWith` mask instead of explicit collider exclude.
+- **Player capsule**: locked rotations via `setMassProperties({ mass: 80, inertia: Vector3.ZeroReadOnly })`. Friction combine mode `MINIMUM` via `PhysicsMaterialCombineMode.MINIMUM`.
+- **Dynamic bodies** (`disablePreStep = false`): player and projectiles can be teleported by writing to `TransformNode.position`; pre-step sync pushes changes to physics engine. Static bodies use `disablePreStep = true` for zero per-frame overhead.
+- **Kinematic doors** (`disablePreStep = false`): ANIMATED bodies auto-sync from node position/rotation. Consumer code sets `body.position.set()` and `body.quaternion.setFromEuler()` as before; now writes go directly to the TransformNode.
