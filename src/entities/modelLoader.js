@@ -5,7 +5,6 @@ import { registerFlower, setFlowerTemplate } from '../world/flowers.js';
 import { registerSoldier, registerFox } from '../systems/npcAI.js';
 import { getTerrainHeight } from '../world/terrain.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
-import { addTorchShadowCaster } from '../world/torches.js';
 
 // In Babylon.js, AnimationGroups are updated automatically by the scene.
 // We still expose animMixers array for compatibility — each entry has an update(dt) method
@@ -18,6 +17,23 @@ export function getAnimMixers() {
 
 // Asset containers per model ID — loaded once, instanced many times
 const _containers = new Map();
+
+/**
+ * Strip unused UV vertex data (uv2–uv6) from all meshes in a container.
+ * WebGPU limits pipelines to 8 vertex buffers; Soldier.glb ships with 7 UV
+ * channels (TEXCOORD_0–6) but materials only reference TEXCOORD_0.
+ * Without stripping, animated models exceed the 8-buffer limit on WebGPU.
+ */
+function stripExtraUVs(container) {
+  for (const mesh of container.meshes) {
+    if (!mesh.geometry) continue;
+    for (const kind of ['uv2', 'uv3', 'uv4', 'uv5', 'uv6']) {
+      if (mesh.isVerticesDataPresent(kind)) {
+        mesh.removeVerticesData(kind);
+      }
+    }
+  }
+}
 
 /**
  * Normalize model scale so it fits targetHeight.
@@ -40,11 +56,11 @@ function normalizeScale(rootNode, targetHeight) {
 
 /**
  * Enable shadow casting/receiving on all child meshes.
+ * @param {boolean} sunShadow — register with sun shadow generator (default true)
  */
-function enableShadows(rootNode) {
+function enableShadows(rootNode, sunShadow = true) {
   for (const mesh of rootNode.getChildMeshes()) {
-    addShadowCaster(mesh);
-    addTorchShadowCaster(mesh);
+    if (sunShadow) addShadowCaster(mesh);
     enableShadowReceiving(mesh);
   }
 }
@@ -150,7 +166,7 @@ function placeSoldier(scene, container) {
   const animGroups = instance.animationGroups;
 
   normalizeScale(rootNode, MODEL_REGISTRY.find(d => d.id === 'soldier').targetHeight);
-  enableShadows(rootNode);
+  enableShadows(rootNode); // sun shadows only — NPCs rarely near torches
 
   // Tint soldier meshes
   for (const mesh of rootNode.getChildMeshes()) {
@@ -193,7 +209,7 @@ function placeFox(scene, container) {
   const animGroups = instance.animationGroups;
 
   normalizeScale(rootNode, MODEL_REGISTRY.find(d => d.id === 'fox').targetHeight);
-  enableShadows(rootNode);
+  enableShadows(rootNode); // sun shadows only
 
   rootNode.position = new Vector3(pos.x, getTerrainHeight(pos.x, pos.z), pos.z);
   rootNode.rotation = new Vector3(0, Math.random() * Math.PI * 2, 0);
@@ -225,7 +241,8 @@ function placeClone(scene, container, def) {
   const animGroups = instance.animationGroups;
 
   normalizeScale(rootNode, def.targetHeight);
-  enableShadows(rootNode);
+  // Flowers are tiny — skip shadows entirely to save draw calls
+  enableShadows(rootNode, def.id !== 'flower');
 
   if (def.animated && animGroups.length > 0) {
     const mixer = createAnimMixer(animGroups);
@@ -252,6 +269,7 @@ export async function loadAllModels(scene, onModel) {
       const container = await SceneLoader.LoadAssetContainerAsync(
         '', def.url, scene
       );
+      stripExtraUVs(container);
       _containers.set(def.id, container);
 
       const fetchMs = (performance.now() - mt0).toFixed(0);

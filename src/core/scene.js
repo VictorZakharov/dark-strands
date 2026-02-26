@@ -1,28 +1,62 @@
-import { Engine, Scene, FreeCamera, Vector3, Color3, Color4,
+import { Engine, WebGPUEngine, Scene, FreeCamera, Vector3, Color3, Color4,
          ImageProcessingConfiguration } from 'babylonjs';
 
 let engine, scene, camera;
+let _useWebGPU = false;
 
 export function getEngine() { return engine; }
 export function getScene() { return scene; }
 export function getCamera() { return camera; }
+export function isWebGPU() { return _useWebGPU; }
 
 // Compat shim — old code calls getRenderer().domElement for pointer lock / canvas access
+let _rendererShim = null;
 export function getRenderer() {
-  return {
-    domElement: engine.getRenderingCanvas(),
-    render() { scene.render(); },
-    compile() { /* no-op — Babylon compiles on first render */ },
-  };
+  if (!_rendererShim) {
+    _rendererShim = {
+      get domElement() { return engine.getRenderingCanvas(); },
+      render() { scene.render(); },
+      compile() {},
+    };
+  }
+  return _rendererShim;
 }
 
-export function initScene() {
+export async function initScene() {
   const canvas = document.createElement('canvas');
   canvas.id = 'game';
   document.body.prepend(canvas);
 
-  engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false });
-  engine.setHardwareScalingLevel(1 / Math.min(window.devicePixelRatio, 2));
+  // Try WebGPU first, fall back to WebGL2
+  if (navigator.gpu) {
+    try {
+      engine = new WebGPUEngine(canvas, {
+        antialias: true,
+        stencil: true,
+        adaptToDeviceRatio: false,
+        setMaximumLimits: true,
+        powerPreference: 'high-performance',
+      });
+      await engine.initAsync();
+      engine.compatibilityMode = false;
+      _useWebGPU = true;
+      console.log('Using WebGPU');
+    } catch (e) {
+      console.warn('WebGPU init failed, falling back to WebGL2:', e);
+      engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false });
+    }
+  } else {
+    engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false });
+    console.log('Using WebGL2');
+  }
+
+  // Render at native device resolution for sharp visuals on any DPI.
+  // adaptToDeviceRatio:false means canvas is sized in CSS pixels;
+  // setHardwareScalingLevel(1/DPR) scales up to physical pixel resolution.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  engine.setHardwareScalingLevel(1 / dpr);
+  const rw = engine.getRenderWidth(), rh = engine.getRenderHeight();
+  console.log(`Render: ${rw}×${rh}, DPR: ${dpr}, engine: ${engine.constructor.name}`);
 
   scene = new Scene(engine);
   scene.useRightHandedSystem = true; // match Three.js coordinate conventions

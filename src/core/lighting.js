@@ -2,6 +2,7 @@ import { HemisphericLight, DirectionalLight, Vector3,
          Color3, MeshBuilder, ShaderMaterial, Effect,
          TransformNode, LensFlareSystem, LensFlare,
          ShadowGenerator } from 'babylonjs';
+import { isWebGPU } from './scene.js';
 
 let sunLight, hemiLight, sunCSM;
 let stars = null, sunGroup = null, sunLensflare = null;
@@ -97,13 +98,15 @@ export function initLighting(scene) {
   sunMesh.isPickable = false;
   sunMesh.applyFog = false;
 
-  // --- Lens flare system ---
-  sunLensflare = new LensFlareSystem('sunFlares', sunGroup, scene);
-  new LensFlare(0.5, 0, new Color3(1, 0.95, 0.8), null, sunLensflare);
-  new LensFlare(0.1, 0.3, new Color3(0.8, 0.6, 0.2), null, sunLensflare);
-  new LensFlare(0.15, 0.5, new Color3(0.5, 0.8, 1.0), null, sunLensflare);
-  new LensFlare(0.08, 0.7, new Color3(1.0, 0.5, 0.3), null, sunLensflare);
-  new LensFlare(0.2, 1.0, new Color3(0.6, 0.4, 0.2), null, sunLensflare);
+  // --- Lens flare system (skip on WebGPU — null texture binding crash) ---
+  if (!isWebGPU()) {
+    sunLensflare = new LensFlareSystem('sunFlares', sunGroup, scene);
+    new LensFlare(0.5, 0, new Color3(1, 0.95, 0.8), null, sunLensflare);
+    new LensFlare(0.1, 0.3, new Color3(0.8, 0.6, 0.2), null, sunLensflare);
+    new LensFlare(0.15, 0.5, new Color3(0.5, 0.8, 1.0), null, sunLensflare);
+    new LensFlare(0.08, 0.7, new Color3(1.0, 0.5, 0.3), null, sunLensflare);
+    new LensFlare(0.2, 1.0, new Color3(0.6, 0.4, 0.2), null, sunLensflare);
+  }
 }
 
 /**

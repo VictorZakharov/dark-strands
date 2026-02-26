@@ -550,3 +550,40 @@
 - **Player capsule**: locked rotations via `setMassProperties({ mass: 80, inertia: Vector3.ZeroReadOnly })`. Friction combine mode `MINIMUM` via `PhysicsMaterialCombineMode.MINIMUM`.
 - **Dynamic bodies** (`disablePreStep = false`): player and projectiles can be teleported by writing to `TransformNode.position`; pre-step sync pushes changes to physics engine. Static bodies use `disablePreStep = true` for zero per-frame overhead.
 - **Kinematic doors** (`disablePreStep = false`): ANIMATED bodies auto-sync from node position/rotation. Consumer code sets `body.position.set()` and `body.quaternion.setFromEuler()` as before; now writes go directly to the TransformNode.
+
+## 2026-02-26
+
+### Window Breaking — SolidParticleSystem Glass Shards
+- **SPS digest approach** (`windows.js`): replaced ParticleSystem with `SolidParticleSystem.digest()`. Creates a subdivided plane (6×6 = 72 triangles) at the window, digests into solid triangular shards that fly in the rock's direction with gravity and tumble rotation. Single draw call for all shards, auto-cleanup after 3s.
+- **Rock velocity pass-through** (`projectiles.js` → `windows.js`): `tryBreakWindow()` now accepts `vx,vy,vz` velocity params so shards fly in the correct direction.
+- **Hit detection margins** (`windows.js`): added 0.3 margin to both Y and horizontal bounds in `tryBreakWindow` and `isWindowBrokenAt` — stones no longer fly through windows without breaking.
+- **TODO**: Glass shard flight direction/spread needs tuning — shards don't look fully natural yet.
+- Added `SolidParticleSystem` export to babylon bundle (`lib/babylon-entry.js`).
+
+### Torch Shadows — Player & Doors
+- **Player torch shadows** (`player.js`): added `addTorchShadowCaster(mesh)` in player model loading callback so the player casts shadows from the 3 nearest torch shadow slot lights.
+- **Door torch shadows** (`doors.js`): added `addTorchShadowCaster(merged)` after door mesh merging so doors cast torch shadows.
+
+### Corner Z-Fighting Fix
+- **Skip corner posts entirely** (`walls.js`): removed corner post geometry — adjacent wall extensions (ext = CELL/2 + WALL_T/2 = 1.35) fully cover the corner area visually. Physics corner boxes in `staticPhysics.js` kept since physics extensions are smaller (CELL/2 = 1.0).
+
+### Cleanup
+- Removed unused `createShardBody` from `physics.js` (was for Havok-based glass shards, replaced by SPS approach).
+- Removed `particle.png` texture (no longer needed).
+
+### WebGPU Engine
+- Switched from `Engine` (WebGL2) to `WebGPUEngine` with async init and automatic WebGL2 fallback (`scene.js`).
+- **Workarounds for Babylon.js 8.x WebGPU issues**: strip unused UV channels (uv2–uv6) from GLTF models to stay within 8 vertex buffer limit; skip `LensFlareSystem` on WebGPU (null texture binding crash); defer menu scene cleanup instead of explicit dispose (prevents "destroyed texture" swap chain errors).
+- `engine.compatibilityMode = false` enables full WebGPU pipeline optimizations.
+- `powerPreference: 'high-performance'` requested (currently ignored on Windows Chrome).
+
+### Performance Optimizations
+- **Draw call reduction** (~4000→~2500): removed small meshes from shadow caster lists — torch sticks, flowers, pickable rocks, thrown stones no longer register as sun shadow casters; NPC/flower models removed from torch shadow casters; inactive torch shadow slots set `shadowEnabled = false` to skip 6-face cube map rendering.
+- **Torch embers** (`torches.js`): replaced ~150 individual sphere meshes (each with a cloned material and per-frame JS position/alpha updates) with Babylon.js `ParticleSystem` per torch. Each system emits 3 particles/sec with GPU-driven lifetime, color fade, and additive blending. Ember texture generated at runtime via `DynamicTexture` (32×32 radial gradient). Distance-based start/stop within 30 units.
+- **Torch pickup freeze fix**: no longer removes lights from clustered container (was triggering WebGPU pipeline recompilation). Parks picked torch lights at y=-200 with intensity 0 instead.
+- **Stone material caching** (`projectiles.js`): reuse single PBR material across all thrown stones (was creating new material per throw, causing WebGPU pipeline stall).
+- **Pre-warm meshes**: held torch and stone material pipelines compiled during loading screen, not on first use.
+- **Static mesh freeze**: `freezeWorldMatrix()` on 12 merged static meshes (ground, walls, floors, roofs, vegetation).
+- **Pointer-move picking disabled**: `scene.skipPointerMovePicking = true` — game uses custom raycasting.
+- Added `t._lit` flag to track torch visibility before shadow slot zeroing — fixes old bug where embers were hidden for the nearest torches (shadow slot assignment zeroed their clustered light intensity).
+- **Shadow torches reduced from 3 to 1** — each point light shadow = 6 cube face passes. 1 shadow torch is sufficient for indoor atmosphere.

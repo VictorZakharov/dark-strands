@@ -9,6 +9,7 @@ import { getTerrainHeight } from '../world/terrain.js';
 import { spawnBoundaryHit, setBoundaryContact } from '../world/boundary.js';
 import { getContainer, createAnimMixer } from './modelLoader.js';
 import { addShadowCaster, enableShadowReceiving, getSunCSM } from '../core/lighting.js';
+import { addTorchShadowCaster } from '../world/torches.js';
 
 let playerModel; // TransformNode root
 let mixer, idleAction, walkAction, runAction;
@@ -111,6 +112,14 @@ export function initPlayer(scene) {
     const animGroups = result.animationGroups;
     const rootMesh = meshes[0]; // __root__ node
 
+    // Strip unused UV channels (uv2–uv6) to stay within WebGPU's 8 vertex buffer limit
+    for (const m of meshes) {
+      if (!m.geometry) continue;
+      for (const kind of ['uv2', 'uv3', 'uv4', 'uv5', 'uv6']) {
+        if (m.isVerticesDataPresent(kind)) m.removeVerticesData(kind);
+      }
+    }
+
     // Parent to playerModel TransformNode
     rootMesh.parent = playerModel;
 
@@ -136,6 +145,7 @@ export function initPlayer(scene) {
         }
       }
       addShadowCaster(mesh);
+      addTorchShadowCaster(mesh);
       enableShadowReceiving(mesh);
     }
 

@@ -1,10 +1,12 @@
-import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Color4, Vector3, ParticleSystem } from 'babylonjs';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3,
+         SolidParticleSystem } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getGrid, isDoorCell, isWindowCell, isStairCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 
 let _scene = null;
+let _glassMat = null; // shared material for glass shards
 
 function loadTex(path, uScale, vScale, scene) {
     const tex = new Texture(path, scene);
@@ -18,20 +20,22 @@ const windowPanes = new Map();
 let glassMergedMesh = null; // merged mesh for all glass panes
 
 /** Try to break a window at cell (gx,gz) at world position (wx,wz,wy). Returns true if glass broke. */
-export function tryBreakWindow(gx, gz, wx, wz, wy) {
+export function tryBreakWindow(gx, gz, wx, wz, wy, vx, vy, vz) {
     const key = `${gx},${gz}`;
     const wins = windowPanes.get(key);
     if (!wins) return false;
     const p = g2w(gx, gz);
+    const MARGIN_Y = 0.3;
+    const MARGIN_H = 0.3;
     for (const w of wins) {
         if (w.broken) continue;
         const baseY = (w.floor - 1) * CFG.WALL_H + CFG.WALL_H * 0.5;
         const winH = CFG.WALL_H * w.hFrac;
         const winW = CFG.CELL * w.wFrac;
-        if (wy < baseY - winH / 2 || wy > baseY + winH / 2) continue;
+        if (wy < baseY - winH / 2 - MARGIN_Y || wy > baseY + winH / 2 + MARGIN_Y) continue;
         const isNS = w.wall === 'south' || w.wall === 'north';
-        if (isNS) { if (Math.abs(wx - p.x) > winW / 2) continue; }
-        else { if (Math.abs(wz - p.z) > winW / 2) continue; }
+        if (isNS) { if (Math.abs(wx - p.x) > winW / 2 + MARGIN_H) continue; }
+        else { if (Math.abs(wz - p.z) > winW / 2 + MARGIN_H) continue; }
         w.broken = true;
         // Zero out this pane's vertices in the merged mesh (degenerate triangles = invisible)
         if (glassMergedMesh) {
@@ -44,7 +48,7 @@ export function tryBreakWindow(gx, gz, wx, wz, wy) {
             glassMergedMesh.updateVerticesData('position', positions);
         }
         // Glass shard particle burst
-        if (_scene) spawnGlassShards(wx, wy, wz, w.wall);
+        if (_scene) spawnGlassShards(wx, wy, wz, vx || 0, vy || 0, vz || 0);
         return true;
     }
     return false;
@@ -56,15 +60,17 @@ export function isWindowBrokenAt(gx, gz, wx, wz, wy) {
     const wins = windowPanes.get(key);
     if (!wins) return false;
     const p = g2w(gx, gz);
+    const MARGIN_Y = 0.3;
+    const MARGIN_H = 0.3;
     for (const w of wins) {
         if (!w.broken) continue;
         const baseY = (w.floor - 1) * CFG.WALL_H + CFG.WALL_H * 0.5;
         const winH = CFG.WALL_H * w.hFrac;
         const winW = CFG.CELL * w.wFrac;
-        if (wy < baseY - winH / 2 || wy > baseY + winH / 2) continue;
+        if (wy < baseY - winH / 2 - MARGIN_Y || wy > baseY + winH / 2 + MARGIN_Y) continue;
         const isNS = w.wall === 'south' || w.wall === 'north';
-        if (isNS) { if (Math.abs(wx - p.x) > winW / 2) continue; }
-        else { if (Math.abs(wz - p.z) > winW / 2) continue; }
+        if (isNS) { if (Math.abs(wx - p.x) > winW / 2 + MARGIN_H) continue; }
+        else { if (Math.abs(wz - p.z) > winW / 2 + MARGIN_H) continue; }
         return true;
     }
     return false;
@@ -291,41 +297,82 @@ export function buildWindows(scene) {
     }
 }
 
-/** Spawn a burst of glass shard particles at the break point */
-function spawnGlassShards(wx, wy, wz, wall) {
-    const isNS = wall === 'south' || wall === 'north';
-    const outSign = (wall === 'south' || wall === 'east') ? 1 : -1;
+/** Spawn SPS-digested glass shards at the break point */
+function spawnGlassShards(wx, wy, wz, vx, vy, vz) {
+    if (!_glassMat) {
+        _glassMat = new StandardMaterial('glassShardMat', _scene);
+        _glassMat.diffuseColor = new Color3(0.7, 0.85, 0.95);
+        _glassMat.alpha = 0.5;
+        _glassMat.specularPower = 128;
+        _glassMat.backFaceCulling = false;
+        _glassMat.freeze();
+    }
 
-    const ps = new ParticleSystem('glassShards', 200, _scene);
-    ps.createPointEmitter(new Vector3(-0.4, -0.3, -0.4), new Vector3(0.4, 0.6, 0.4));
-    ps.emitter = new Vector3(wx, wy, wz);
-    ps.minSize = 0.04;
-    ps.maxSize = 0.18;
-    ps.minLifeTime = 1.0;
-    ps.maxLifeTime = 2.5;
-    ps.emitRate = 0;       // burst only
-    ps.manualEmitCount = 120;
-    ps.gravity = new Vector3(0, -6, 0);
+    // Create a subdivided plane at origin, then digest into triangular shards
+    const winW = CFG.CELL * 0.6;
+    const winH = CFG.WALL_H * 0.4;
+    const model = MeshBuilder.CreatePlane('glassModel', {
+        width: winW, height: winH,
+        sideOrientation: Mesh.DOUBLESIDE,
+        subdivisions: 6, // 6×6 = 36 quads = 72 triangles
+    }, _scene);
 
-    // Outward velocity along wall normal
-    const outX = isNS ? 0 : outSign * 3;
-    const outZ = isNS ? outSign * 3 : 0;
-    ps.direction1 = new Vector3(outX - 2, 0.5, outZ - 2);
-    ps.direction2 = new Vector3(outX + 2, 4.0, outZ + 2);
-    ps.minEmitPower = 2;
-    ps.maxEmitPower = 6;
+    const sps = new SolidParticleSystem('glassSPS', _scene, { updatable: true });
+    sps.digest(model, { facetNb: 1 });
+    model.dispose();
 
-    // Glass colors: bright, high alpha for visibility
-    ps.color1 = new Color4(0.8, 0.95, 1.0, 1.0);
-    ps.color2 = new Color4(0.6, 0.8, 1.0, 0.9);
-    ps.colorDead = new Color4(0.5, 0.6, 0.7, 0.0);
+    const mesh = sps.buildMesh();
+    mesh.material = _glassMat;
+    mesh.position.set(wx, wy, wz);        // position SPS mesh at window
+    mesh.alwaysSelectAsActiveMesh = true;  // never frustum-cull (particles fly far)
 
-    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
-    ps.addSizeGradient(0, 0.15);
-    ps.addSizeGradient(0.5, 0.10);
-    ps.addSizeGradient(1.0, 0.03);
+    // Normalize rock velocity for direction
+    const speed = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+    const dx = vx / speed, dy = vy / speed, dz = vz / speed;
 
-    ps.start();
-    // Auto-dispose after particles die
-    setTimeout(() => { ps.stop(); ps.dispose(); }, 3500);
+    const GRAVITY = -0.015;
+    const FLOOR_Y = -wy - 0.5; // ground level in local space (mesh is at wy)
+    const SPEED = 0.15;
+
+    // Initialize particle velocities
+    sps.initParticles = function () {
+        for (let i = 0; i < sps.nbParticles; i++) {
+            const p = sps.particles[i];
+            p.velocity.x = dx * SPEED + (Math.random() - 0.5) * SPEED * 0.6;
+            p.velocity.y = dy * SPEED + (Math.random() - 0.3) * SPEED * 0.4;
+            p.velocity.z = dz * SPEED + (Math.random() - 0.5) * SPEED * 0.6;
+            p.rand = Math.random() / 50;
+        }
+    };
+
+    sps.updateParticle = function (p) {
+        if (p.position.y < FLOOR_Y) {
+            p.velocity.x = 0;
+            p.velocity.y = 0;
+            p.velocity.z = 0;
+        } else {
+            p.velocity.y += GRAVITY;
+            p.position.x += p.velocity.x;
+            p.position.y += p.velocity.y;
+            p.position.z += p.velocity.z;
+            p.rotation.x += p.velocity.z * p.rand;
+            p.rotation.y += p.velocity.x * p.rand;
+            p.rotation.z += p.velocity.y * p.rand;
+        }
+        return p;
+    };
+
+    sps.initParticles();
+    sps.setParticles();
+    sps.refreshVisibleSize();
+
+    const obs = _scene.onBeforeRenderObservable.add(() => {
+        sps.setParticles();
+    });
+
+    setTimeout(() => {
+        _scene.onBeforeRenderObservable.remove(obs);
+        mesh.dispose();
+        sps.dispose();
+    }, 3000);
 }

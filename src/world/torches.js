@@ -1,7 +1,7 @@
 import { MeshBuilder, Mesh, StandardMaterial, PointLight,
-         ShadowGenerator, Texture, Color3,
+         ShadowGenerator, Texture, Color3, Color4,
          Vector3, TransformNode, Ray, ParticleSystem,
-         ClusteredLightContainer } from 'babylonjs';
+         ClusteredLightContainer, DynamicTexture } from 'babylonjs';
 import { getGrid, isDoorCell, isWindowCell, isStairCell, isWalkable } from './grid.js';
 import { getBuildings, getWallHeightAt } from './generator.js';
 import { isInsideWindowOpening } from './windows.js';
@@ -13,7 +13,7 @@ import { getPlayerState, getCamBlend } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
 import { getTerrainHeight } from './terrain.js';
 import { getInventory } from './flowers.js';
-import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
+// addShadowCaster removed from torch sticks — too small for visible shadows
 
 const torchLights = [];
 const doorTorchLights = [];
@@ -32,7 +32,7 @@ const playerDoorTorches = [];
 let _container = null;
 let _scene = null;
 
-const MAX_SHADOW_TORCHES = 3;
+const MAX_SHADOW_TORCHES = 1;
 const shadowSlots = [];
 const _shadowGenerators = [];
 
@@ -143,8 +143,8 @@ function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ) {
     stick.rotation.x = normalZ > 0 ? TILT : -TILT;
   }
   stick.isPickable = false;
-  addShadowCaster(stick); // CSM shadow caster
-  addTorchShadowCaster(stick); // point-light shadow caster
+  // Torch sticks are too small for visible shadows — skip shadow caster registration
+  // to reduce draw calls (~40 sticks × 8 passes = 320 draw calls saved).
 
   return { light, flame, stick, wx: tipX, wz: tipZ };
 }
@@ -178,8 +178,7 @@ function createGroundTorch(scene, x, groundY, z) {
   stick.material = _stickMat;
   stick.position = new Vector3(x, groundY + STICK_LEN / 2, z);
   stick.isPickable = false;
-  addShadowCaster(stick);
-  addTorchShadowCaster(stick);
+  // Torch sticks are too small for visible shadows — skip to save draw calls.
 
   return { light, flame, stick, wx: x, wz: z };
 }
@@ -295,10 +294,15 @@ export function pickNearestTorch(inventory) {
   t.active = false;
   t.stick.isVisible = false;
   t.flame.isVisible = false;
-  t.light.intensity = 0;
   t.light.metadata.picked = true;
-  // Remove from clustered container
-  if (_container) _container.removeLight(t.light);
+  // Park the light far away with zero intensity — keep it in the clustered
+  // container so the light count stays stable (avoids WebGPU pipeline recompilation).
+  t.light.intensity = 0;
+  t.light.position.y = -200;
+  // Defer particle disposal to avoid synchronous GPU buffer teardown stall
+  const ps = t.particles;
+  t.particles = null;
+  if (ps) setTimeout(() => ps.dispose(), 100);
   // Remove from door-torch tracking if it was door-parented
   const dIdx = playerDoorTorches.indexOf(t);
   if (dIdx >= 0) playerDoorTorches.splice(dIdx, 1);
@@ -538,6 +542,7 @@ export function placeTorchAtPreview(scene) {
     const entry = { ...t, active: true, doorGroup };
     pickableTorches.push(entry);
     playerDoorTorches.push(entry);
+    torchLights.push(t.light); // register for daynight intensity management
     addTorchEmbers(entry);
     inv.torches--;
     return true;
@@ -548,6 +553,7 @@ export function placeTorchAtPreview(scene) {
   }
   if (!t) return false;
   const entry = { ...t, active: true };
+  torchLights.push(t.light); // register for daynight intensity management
   pickableTorches.push(entry);
   addTorchEmbers(entry);
   inv.torches--;
@@ -598,11 +604,11 @@ export function initHeldTorch(scene) {
 
   heldGroup.setEnabled(false);
 
-  // Held torch light — always enabled, intensity=0 when inactive.
-  // Never toggle setEnabled() to avoid shader recompilation flicker.
+  // Held torch light — always enabled, tiny intensity when inactive.
+  // Keeps WebGPU shader pipelines pre-compiled (avoids 2s freeze on first equip).
   heldLight = new PointLight('heldTorchLight', new Vector3(0, -100, 0), scene);
   heldLight.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
-  heldLight.intensity = 0;
+  heldLight.intensity = 0.001;
   heldLight.range = 6;
   heldLight.metadata = {};
 }
@@ -612,13 +618,13 @@ export function updateHeldTorch(camera, active, playerState) {
 
   if (!active) {
     heldGroup.setEnabled(false);
-    heldLight.intensity = 0;
+    heldLight.intensity = 0.001; // tiny — keeps WebGPU pipeline warm
     heldLight.position.y = -100; // park far away so it doesn't affect any mesh
     return;
   }
 
   heldGroup.setEnabled(true);
-  heldLight.intensity = 2;
+  heldLight.intensity = 1.5;
 
   let px, py, pz;
 
@@ -654,69 +660,77 @@ export function updateHeldTorch(camera, active, playerState) {
 export function hideHeldTorch() {
   if (heldGroup) heldGroup.setEnabled(false);
   if (heldLight) {
-    heldLight.intensity = 0;
+    heldLight.intensity = 0.001;
     heldLight.position.y = -100;
   }
 }
 
-// ---- Torch ember particles ----
+/** Pre-warm held torch for WebGPU pipeline compilation (call before first scene.render) */
+export function prewarmHeldTorch(playerPos) {
+  if (!heldGroup || !heldLight) return;
+  heldGroup.setEnabled(true);
+  heldLight.intensity = 1.5;
+  heldLight.position = new Vector3(playerPos.x, playerPos.y + 1.0, playerPos.z);
+  heldGroup.position = new Vector3(playerPos.x, playerPos.y + 1.0, playerPos.z);
+}
 
-const EMBERS_PER_TORCH = 3;
-const EMBER_VIS_DIST = 30; // only animate embers near player
-let torchEmbers = []; // { mesh, torch, vel, life, maxLife }
+// ---- Torch ember particles (GPU ParticleSystem per torch) ----
 
-let _emberMat = null;
+const EMBER_VIS_DIST = 30;
+let _emberTex = null;
 let _emberScene = null;
 
-function getEmberMaterial(scene) {
-  if (_emberMat) return _emberMat;
-  _emberMat = new StandardMaterial('emberMat', scene);
-  _emberMat.disableLighting = true;
-  _emberMat.emissiveColor = new Color3(1, 0.6, 0.15); // warm ember glow
-  _emberMat.alpha = 0;
-  // Additive blending in Babylon.js
-  _emberMat.alphaMode = 1; // ALPHA_ADD
-  _emberMat.disableDepthWrite = true;
-  return _emberMat;
+function getEmberTexture(scene) {
+  if (_emberTex) return _emberTex;
+  const dt = new DynamicTexture('emberTex', 32, scene, false);
+  dt.hasAlpha = true;
+  const ctx = dt.getContext();
+  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.4, 'rgba(255,180,80,0.6)');
+  grad.addColorStop(1, 'rgba(255,80,0,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 32, 32);
+  dt.update();
+  _emberTex = dt;
+  return dt;
+}
+
+function createEmberSystem(scene, torch) {
+  const ps = new ParticleSystem(`embers_${torch.light.name}`, 8, scene);
+  ps.particleTexture = getEmberTexture(scene);
+  ps.emitter = torch.flame; // auto-follows mesh (handles door-parented torches)
+  ps.minEmitBox = new Vector3(-0.04, 0, -0.04);
+  ps.maxEmitBox = new Vector3(0.04, 0.02, 0.04);
+
+  ps.minLifeTime = 0.6;
+  ps.maxLifeTime = 1.8;
+  ps.emitRate = 3;
+
+  ps.minSize = 0.02;
+  ps.maxSize = 0.06;
+
+  ps.direction1 = new Vector3(-0.12, 0.4, -0.12);
+  ps.direction2 = new Vector3(0.12, 1.0, 0.12);
+  ps.gravity = new Vector3(0, 0.05, 0);
+
+  ps.color1 = new Color4(1, 0.6, 0.15, 0.7);
+  ps.color2 = new Color4(1, 0.35, 0.08, 0.5);
+  ps.colorDead = new Color4(0.3, 0.1, 0, 0);
+
+  ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+  torch.particles = ps;
 }
 
 export function initTorchEmbers(scene) {
   _emberScene = scene;
-  getEmberMaterial(scene);
-
-  // Create ember meshes for all active torches (pickable list covers all)
   for (const t of pickableTorches) {
     if (!t.active) continue;
-    for (let i = 0; i < EMBERS_PER_TORCH; i++) {
-      const mesh = MeshBuilder.CreateSphere(`ember_${torchEmbers.length}`, {
-        diameter: 0.04, segments: 3,
-      }, scene);
-      mesh.material = _emberMat.clone(`emberMat_${torchEmbers.length}`);
-      mesh.isPickable = false;
-      mesh.isVisible = false;
-      torchEmbers.push({
-        mesh, torch: t,
-        vel: new Vector3(0, 0, 0), life: 0, maxLife: rnd(0.8, 2.0),
-      });
-    }
+    createEmberSystem(scene, t);
   }
 }
 
-function rnd(a, b) { return a + Math.random() * (b - a); }
-
-function resetEmber(e) {
-  // Use wx/wz (world coords, updated for door-parented torches) + flame local Y (unaffected by door rotation)
-  const fx = e.torch.wx;
-  const fy = e.torch.flame.position.y;
-  const fz = e.torch.wz;
-  e.mesh.position = new Vector3(fx + rnd(-0.05, 0.05), fy, fz + rnd(-0.05, 0.05));
-  e.vel = new Vector3(rnd(-0.15, 0.15), rnd(0.5, 1.2), rnd(-0.15, 0.15));
-  e.maxLife = rnd(0.8, 2.0);
-  e.life = e.maxLife;
-}
-
 export function updateTorchEmbers(dt) {
-  if (!torchEmbers.length) return;
   const p = getPlayerState();
   const px = p.x, py = p.y, pz = p.z;
   const pg = w2g(px, pz);
@@ -748,6 +762,7 @@ export function updateTorchEmbers(dt) {
       if (Math.abs(torchFloor - _stablePlayerFloor) >= 1) targetIntensity = 0;
     }
     t.light.intensity = targetIntensity;
+    t._lit = targetIntensity > 0; // track before shadow slot zeroes intensity
 
     // Track distance for shadow slot assignment
     if (targetIntensity > 0) {
@@ -756,7 +771,7 @@ export function updateTorchEmbers(dt) {
     }
   }
 
-  // Assign 3 nearest visible torches to shadow slot lights
+  // Assign nearest visible torches to shadow slot lights
   torchDistances.sort((a, b) => a.dist2 - b.dist2);
   for (let i = 0; i < shadowSlots.length; i++) {
     const slot = shadowSlots[i];
@@ -764,71 +779,33 @@ export function updateTorchEmbers(dt) {
       const { t } = torchDistances[i];
       slot.position.copyFrom(t.light.position);
       slot.intensity = t.light.intensity;
+      slot.shadowEnabled = true; // enable shadow map rendering
       // Zero out clustered light — shadow slot handles this torch's illumination
       t.light.intensity = 0;
     } else {
       slot.position.y = -100;
       slot.intensity = 0;
+      slot.shadowEnabled = false; // skip 6-face shadow map when no torch nearby
     }
   }
 
-  for (const e of torchEmbers) {
-    // Skip inactive or unlit torches (door torches off during day or occluded)
-    if (!e.torch.active || Math.abs(e.torch.light.intensity) < 0.1 || !e.torch.flame.isVisible) {
-      e.mesh.isVisible = false;
-      e.life = 0;
-      continue;
+  // Start/stop ember particle systems based on distance and visibility
+  for (const t of pickableTorches) {
+    if (!t.particles) continue;
+    const lit = t.active && t._lit && t.flame.isVisible && !t.light.metadata.picked;
+    const dx = t.wx - px, dz = t.wz - pz;
+    const inRange = dx * dx + dz * dz < EMBER_VIS_DIST * EMBER_VIS_DIST;
+
+    if (lit && inRange) {
+      if (!t.particles.isStarted()) t.particles.start();
+    } else {
+      if (t.particles.isStarted()) t.particles.stop();
     }
-
-    // Distance culling
-    const dx = e.torch.wx - px, dz = e.torch.wz - pz;
-    if (dx * dx + dz * dz > EMBER_VIS_DIST * EMBER_VIS_DIST) {
-      e.mesh.isVisible = false;
-      e.life = 0;
-      continue;
-    }
-
-    e.mesh.isVisible = true;
-    e.life -= dt;
-    if (e.life <= 0) {
-      resetEmber(e);
-    }
-
-    e.mesh.position.x += e.vel.x * dt;
-    e.mesh.position.y += e.vel.y * dt;
-    e.mesh.position.z += e.vel.z * dt;
-    e.vel.x += rnd(-1.5, 1.5) * dt; // wind wobble
-
-    // Capping maximum ember height strictly to the room ceiling bounds
-    const flameY = e.torch.flame.position.y;
-    const floorIndex = Math.floor(flameY / CFG.WALL_H);
-    const ceilingY = (floorIndex + 1) * CFG.WALL_H - 0.1;
-
-    if (e.mesh.position.y > flameY + 1.0 || e.mesh.position.y > ceilingY) {
-      e.life = 0;
-    }
-
-    const frac = Math.max(0, e.life / e.maxLife);
-    e.mesh.material.alpha = frac * 0.7;
-    const sc = 0.03 + 0.05 * frac;
-    e.mesh.scaling = new Vector3(sc / 0.04, sc / 0.04, sc / 0.04); // base diameter is 0.04, scale relative
   }
 }
 
 /** Add embers for a newly placed torch */
 export function addTorchEmbers(torch) {
   if (!_emberScene) return;
-  getEmberMaterial(_emberScene);
-  for (let i = 0; i < EMBERS_PER_TORCH; i++) {
-    const mesh = MeshBuilder.CreateSphere(`ember_${torchEmbers.length}`, {
-      diameter: 0.04, segments: 3,
-    }, _emberScene);
-    mesh.material = _emberMat.clone(`emberMat_${torchEmbers.length}`);
-    mesh.isPickable = false;
-    mesh.isVisible = false;
-    torchEmbers.push({
-      mesh, torch,
-      vel: new Vector3(0, 0, 0), life: 0, maxLife: rnd(0.8, 2.0),
-    });
-  }
+  createEmberSystem(_emberScene, torch);
 }

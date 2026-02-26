@@ -779,6 +779,8 @@ export function initMenuScene() {
   const engine = getEngine();
   menuScene = new Scene(engine);
   menuScene.useRightHandedSystem = true;
+  menuScene.skipPointerMovePicking = true;
+  menuScene.pointerMovePredicate = () => false;
   // PBR materials need an environment texture to show colors properly (not grey)
   menuScene.createDefaultEnvironment({ createGround: false, createSkybox: false });
 
@@ -821,6 +823,14 @@ export function initMenuScene() {
       const meshes = result.meshes;
       const animGroups = result.animationGroups;
       const rootMesh = meshes[0];
+
+      // Strip unused UV channels (uv2–uv6) to stay within WebGPU's 8 vertex buffer limit
+      for (const m of meshes) {
+        if (!m.geometry) continue;
+        for (const kind of ['uv2', 'uv3', 'uv4', 'uv5', 'uv6']) {
+          if (m.isVerticesDataPresent(kind)) m.removeVerticesData(kind);
+        }
+      }
 
       // Normalize scale
       rootMesh.scaling = new Vector3(1, 1, 1);
@@ -900,10 +910,10 @@ export function disposeMenu() {
   const panel = document.getElementById('menu-panel');
   if (panel) panel.style.transform = '';
 
-  if (menuScene) {
-    menuScene.dispose();
-    menuScene = null;
-  }
+  // Don't call menuScene.dispose() — WebGPU may still reference textures in
+  // in-flight command buffers, causing "Destroyed texture" errors.  Just stop
+  // rendering; the scene and its resources will be GC'd when all refs are cleared.
+  menuScene = null;
   menuCamera = null;
   menuMixer = null;
   menuCharModel = null;

@@ -9,9 +9,21 @@ import { getPlayerState, getPlayerBody } from '../entities/player.js';
 import { createProjectileSphere, removeBody } from '../core/physics.js';
 import { spawnBoundaryHit } from '../world/boundary.js';
 import { getScene, getCamera } from '../core/scene.js';
-import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
+// Shadow caster registration removed for stones — too small for visible shadows
 
 const projectiles = [];
+
+// Cached stone material — reused for all projectiles (avoids WebGPU pipeline recompilation)
+let _stoneMat = null;
+function getStoneMat(scene) {
+  if (_stoneMat) return _stoneMat;
+  _stoneMat = new PBRMaterial('stoneMat', scene);
+  const rockTex = getRockTexture();
+  if (rockTex) _stoneMat.albedoTexture = rockTex;
+  _stoneMat.roughness = 0.95;
+  _stoneMat.metallic = 0;
+  return _stoneMat;
+}
 
 export function spawnProjectile(camera, scene) {
   const camPos = camera.position.clone();
@@ -45,15 +57,10 @@ export function spawnProjectile(camera, scene) {
     radius: CFG.THROWN_STONE_SIZE,
     subdivisions: 2,
   }, scene);
-  const mat = new PBRMaterial('stoneMat', scene);
-  const rockTex = getRockTexture();
-  if (rockTex) mat.albedoTexture = rockTex;
-  mat.roughness = 0.95;
-  mat.metallic = 0;
-  mesh.material = mat;
+  mesh.material = getStoneMat(scene);
   mesh.rotationQuaternion = Quaternion.Identity();
-  addShadowCaster(mesh);
-  enableShadowReceiving(mesh);
+  // Thrown stones are tiny — skip shadow caster to save draw calls
+  mesh.isPickable = false;
 
   const spawnPos = eyePos.add(dir.scale(0.5));
   spawnPos.y -= 0.3;
@@ -81,15 +88,9 @@ function spawnDroppingRock(x, y, z, scene) {
     radius: s,
     subdivisions: 2,
   }, scene);
-  const mat = new PBRMaterial('stoneMat', scene);
-  const rockTex = getRockTexture();
-  if (rockTex) mat.albedoTexture = rockTex;
-  mat.roughness = 0.95;
-  mat.metallic = 0;
-  mesh.material = mat;
+  mesh.material = getStoneMat(scene);
   mesh.rotationQuaternion = Quaternion.Identity();
-  addShadowCaster(mesh);
-  enableShadowReceiving(mesh);
+  mesh.isPickable = false;
   mesh.position = new Vector3(x, y, z);
 
   const body = createProjectileSphere(s, x, y, z, 0, 0, 0);
@@ -152,7 +153,7 @@ export function updateProjectiles(dt) {
           const cgz = gc.z + (dg === 3 ? -1 : dg === 4 ? 1 : 0);
           if (isWindowCell(cgx, cgz)) {
             if (!isWindowBrokenAt(cgx, cgz, swx, swz, swy)) {
-              if (tryBreakWindow(cgx, cgz, swx, swz, swy)) {
+              if (tryBreakWindow(cgx, cgz, swx, swz, swy, p.body.velocity.x, p.body.velocity.y, p.body.velocity.z)) {
                 broken = true;
                 p.body.velocity.x *= 0.8;
                 p.body.velocity.y *= 0.8;
@@ -388,6 +389,16 @@ export function initRockPreview(scene) {
   rockPreviewMesh.material = mat;
   rockPreviewMesh.setEnabled(false);
   rockPreviewMesh.isPickable = false;
+
+  // Pre-warm the PBR stone material so WebGPU compiles the pipeline during loading
+  // (not on first throw). Create a temp mesh, it'll be included in the first render.
+  // Keep it alive (hidden at y=-100) to avoid "destroyed texture" WebGPU errors.
+  const warmMesh = MeshBuilder.CreateIcoSphere('stoneWarm', {
+    radius: CFG.THROWN_STONE_SIZE, subdivisions: 2,
+  }, scene);
+  warmMesh.material = getStoneMat(scene);
+  warmMesh.position = new Vector3(0, -100, 0);
+  warmMesh.isPickable = false;
 }
 
 function findRockPlacementTarget(camera) {

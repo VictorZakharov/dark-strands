@@ -10,6 +10,7 @@ import { getCamera, getScene } from '../core/scene.js';
 import { collidesWithRock } from './vegetation.js';
 import { createKinematicBox } from '../core/physics.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
+import { addTorchShadowCaster } from '../world/torches.js';
 
 const doors = [];
 const INTERACT_DIST = 3.5;
@@ -135,6 +136,7 @@ function buildFancyDoorLeaf(scene, w, h, thick, leafIndex) {
   merged.name = `doorMerged_${leafIndex}`;
   merged.parent = leaf;
   addShadowCaster(merged);
+  addTorchShadowCaster(merged);
   enableShadowReceiving(merged);
 
   return leaf;

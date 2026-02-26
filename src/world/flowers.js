@@ -6,7 +6,7 @@ import { getTerrainHeight } from './terrain.js';
 import { isInsideBuilding } from './generator.js';
 import { collidesWithRock } from './vegetation.js';
 import { CFG } from '../config.js';
-import { addShadowCaster } from '../core/lighting.js';
+// Shadow caster registration removed for flowers — too small for visible shadows
 
 const flowers = [];
 const PICK_DIST = 2.5;
@@ -135,9 +135,7 @@ export function plantFlower(scene) {
     if (mesh) {
       mesh.position = new Vector3(wx, ty, wz);
       mesh.rotation = new Vector3(0, Math.random() * Math.PI * 2, 0);
-      for (const m of mesh.getChildMeshes ? mesh.getChildMeshes() : [mesh]) {
-        addShadowCaster(m);
-      }
+      // Flowers are too small for visible shadows — skip to save draw calls
     }
   }
   if (!mesh) {
@@ -152,7 +150,6 @@ export function plantFlower(scene) {
     mat.diffuseColor = new Color3(1.0, 0.412, 0.706); // #ff69b4
     mesh.material = mat;
     mesh.position = new Vector3(wx, ty + 0.15, wz);
-    addShadowCaster(mesh);
   }
   registerFlower(mesh, wx, wz);
 

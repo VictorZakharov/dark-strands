@@ -1,4 +1,4 @@
-import { Vector3, Matrix, MeshBuilder, StandardMaterial, Color3 } from 'babylonjs';
+import { Vector3, Matrix, MeshBuilder, StandardMaterial, Color3, SceneInstrumentation } from 'babylonjs';
 import { CFG } from './config.js';
 import { initScene, initRenderer, getRenderer, getScene, getCamera, getEngine } from './core/scene.js';
 import { initLighting } from './core/lighting.js';
@@ -10,7 +10,7 @@ import { buildWalls, buildRoofs } from './world/walls.js';
 import { buildWindows } from './world/windows.js';
 import { createWorldPhysicsBodies } from './world/staticPhysics.js';
 import { placeTrees, placeRocks, getNearestPickableRock } from './world/vegetation.js';
-import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initTorchEmbers, updateTorchEmbers, updateDoorTorchPositions, addTorchShadowCaster } from './world/torches.js';
+import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initTorchEmbers, updateTorchEmbers, updateDoorTorchPositions, addTorchShadowCaster, prewarmHeldTorch, hideHeldTorch, getTorchShadowGenerators } from './world/torches.js';
 import { placeDoors, updateDoors, getNearestDoor, getDoorPanelCenter } from './world/doors.js';
 import { placeFurniture, getNearestBed } from './world/furniture.js';
 import { loadAllModels, getAnimMixers } from './entities/modelLoader.js';
@@ -40,6 +40,7 @@ function getDelta(time) {
 
 let minimapTick = 0;
 let menuMode = true;
+let pendingMenuDispose = 0; // countdown frames before disposal (0 = none)
 let altBlend = 0;
 const _projVec = new Vector3();
 let _hintSx = 0, _hintSy = 0, _hintActive = false;
@@ -198,12 +199,22 @@ window.addEventListener('sleep-requested', (e) => {
 
 function gameLoop(time) {
   requestAnimationFrame(gameLoop);
+  const engine = getEngine();
+
+  // Deferred menu disposal — wait 3 frames after last menu render so all
+  // in-flight WebGPU command buffers finish before textures are destroyed.
+  if (pendingMenuDispose > 0) {
+    pendingMenuDispose--;
+    if (pendingMenuDispose === 0) disposeMenu();
+  }
+
+  engine.beginFrame();
   const dt = getDelta(time);
 
   if (isGameActive()) {
     if (menuMode) {
       menuMode = false;
-      disposeMenu();
+      pendingMenuDispose = 10; // wait extra frames for WebGPU command buffers to fully drain
       const blocker = document.getElementById('blocker');
       if (blocker) { blocker.dataset.mode = 'game'; blocker.style.display = 'none'; }
       const loadingBar = document.getElementById('menu-loading');
@@ -371,10 +382,11 @@ function gameLoop(time) {
     if (minimapTick % 10 === 0) updateMinimap();
 
   } else if (menuMode) {
-    renderMenu(getEngine(), dt);
+    renderMenu(engine, dt);
   } else {
     getScene().render();
   }
+  engine.endFrame();
 }
 
 function setLoadProgress(pct) {
@@ -391,7 +403,10 @@ async function buildWorld() {
   await yieldFrame();
   await initPhysics();
   initLighting(scene);
-  console.warn('[BUILD v7] Full world restored with shadow fix');
+
+  // Skip Babylon's per-frame pointer-move picking — we use our own raycasting
+  scene.skipPointerMovePicking = true;
+  scene.pointerMovePredicate = () => false;
 
   initGrid();
   generateBuildings();
@@ -470,12 +485,52 @@ async function buildWorld() {
   const _sunLight = getSunLight();
   if (_sunLight) _sunLight.shadowEnabled = true;
 
-  // NOTE: Do NOT freeze world matrices or materials — both break shadow receiving.
-  // Frozen materials skip BindLights() (shadow texture never bound).
-  // Frozen world matrices may prevent shadow map culling updates.
-
   await yieldFrame();
-  scene.render(); // first render — slot lights + held light are always enabled, shaders compile once
+  // Pre-warm held torch so WebGPU compiles the pipeline during loading (not on first equip)
+  const ps = getPlayerState();
+  prewarmHeldTorch(ps);
+  scene.render(); // first render — all lights active, WebGPU pipelines compile once
+  hideHeldTorch(); // park held torch far away after pipeline is warm
+
+  // Freeze world matrices on static meshes — saves CPU per frame by skipping
+  // matrix recalculation and bounding info updates for geometry that never moves.
+  // NOTE: Do NOT freeze materials — frozen materials skip BindLights() which
+  // breaks shadow receiving.
+  // Freeze world matrices on static meshes — saves per-frame matrix recalculation.
+  const staticMeshNames = new Set([
+    'ground', 'water', 'walls', 'mergedFloors', 'mergedStairs',
+    'flatRoofs', 'slantRoofs', 'windowFrames', 'windowGlass',
+    'mergedTrunks', 'mergedCanopy', 'mergedRocks',
+  ]);
+  let frozenCount = 0;
+  for (const mesh of scene.meshes) {
+    if (staticMeshNames.has(mesh.name)) {
+      mesh.freezeWorldMatrix();
+      frozenCount++;
+    }
+  }
+  // Log shadow caster counts for draw call analysis
+  const sunSG = getSunLight()?.getShadowGenerator?.();
+  const sunCasters = sunSG?.getShadowMap?.()?.renderList?.length ?? '?';
+  const torchSGs = getTorchShadowGenerators();
+  const torchCasters = torchSGs[0]?.getShadowMap?.()?.renderList?.length ?? '?';
+  console.log(`Scene: ${scene.meshes.length} meshes, ${frozenCount} frozen, ${scene.lights.length} lights, ${scene.materials.length} materials, sunShadowCasters:${sunCasters}, torchShadowCasters:${torchCasters}`);
+
+  // Performance instrumentation — log breakdown every 5s to find bottleneck
+  const _instr = new SceneInstrumentation(scene);
+  _instr.captureFrameTime = true;
+  _instr.captureRenderTime = true;
+  _instr.captureActiveMeshesEvaluationTime = true;
+  _instr.captureRenderTargetsRenderTime = true;
+  setInterval(() => {
+    const e = getEngine();
+    const ft = _instr.frameTimeCounter.lastSecAverage.toFixed(1);
+    const rt = _instr.renderTimeCounter.lastSecAverage.toFixed(1);
+    const am = _instr.activeMeshesEvaluationTimeCounter.lastSecAverage.toFixed(1);
+    const shadow = _instr.renderTargetsRenderTimeCounter.lastSecAverage.toFixed(1);
+    const draws = e._drawCalls?.current ?? '?';
+    console.log(`[PERF] frame:${ft}ms render:${rt}ms activeMesh:${am}ms shadows:${shadow}ms draws:${draws}`);
+  }, 5000);
 
   const fill = document.getElementById('menu-load-fill');
   if (fill) {
@@ -534,7 +589,7 @@ function setupPlayButton() {
 }
 
 async function init() {
-  initScene();
+  await initScene();
   await initRenderer();
 
   initMenuScene();

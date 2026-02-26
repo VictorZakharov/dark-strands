@@ -286,7 +286,7 @@ export function placeRocks(scene) {
       rock.position = new Vector3(p0.x + ox, ty + s * 0.4, p0.z + oz);
       rock.rotation = new Vector3(rx, ry, 0);
       rock.material = rockMat;
-      addShadowCaster(rock);
+      // Pickable rocks are tiny — skip sun shadow to save draw calls
       enableShadowReceiving(rock);
 
       const rc = {
