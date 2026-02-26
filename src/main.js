@@ -5,12 +5,12 @@ import { initLighting } from './core/lighting.js';
 import { initGrid } from './world/grid.js';
 import { generateBuildings } from './world/generator.js';
 import { buildGround, buildWater } from './world/terrainMeshes.js';
-import { buildFloors } from './world/floors.js';
+import { buildFloors, getMergedFloors } from './world/floors.js';
 import { buildWalls, buildRoofs } from './world/walls.js';
 import { buildWindows } from './world/windows.js';
 import { createWorldPhysicsBodies } from './world/staticPhysics.js';
 import { placeTrees, placeRocks, getNearestPickableRock } from './world/vegetation.js';
-import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initPlacementLightPool, initTorchEmbers, updateTorchEmbers, updateDoorTorchPositions } from './world/torches.js';
+import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initTorchEmbers, updateTorchEmbers, updateDoorTorchPositions, addTorchShadowCaster } from './world/torches.js';
 import { placeDoors, updateDoors, getNearestDoor, getDoorPanelCenter } from './world/doors.js';
 import { placeFurniture, getNearestBed } from './world/furniture.js';
 import { loadAllModels, getAnimMixers } from './entities/modelLoader.js';
@@ -404,6 +404,10 @@ async function buildWorld() {
   buildRoofs(scene);
   placeTrees(scene);
   placeRocks(scene);
+  initTorchLightPool(scene); // must precede placeTorches — creates clustered container
+  // Register mid-floor slab as torch shadow caster (blocks light between floors)
+  const floorMesh = getMergedFloors();
+  if (floorMesh) addTorchShadowCaster(floorMesh);
   placeTorches(scene);
   placeDoors(scene);
   placeDoorTorches(scene);
@@ -444,8 +448,6 @@ async function buildWorld() {
   await yieldFrame();
   initFlowerPreview(scene);
   initHeldTorch(scene);
-  initTorchLightPool(scene);
-  initPlacementLightPool(scene);
   initTorchPreview(scene);
   initTorchEmbers(scene);
   initRockPreview(scene);

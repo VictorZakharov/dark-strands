@@ -4,6 +4,9 @@ import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
+let _mergedFloors = null;
+export function getMergedFloors() { return _mergedFloors; }
+
 function loadTex(path, scene) {
     const tex = new Texture(path, scene);
     tex.uScale = 1;
@@ -143,6 +146,7 @@ export function buildFloors(scene) {
             merged.material = floorMat;
             addShadowCaster(merged);
             enableShadowReceiving(merged);
+            _mergedFloors = merged;
         }
     }
 

@@ -222,25 +222,25 @@ export function createWorldPhysicsBodies() {
             const p1w = stairLeft - intLeft;
             const p1d = intFront - intBack;
             if (p1w > 0.1 && p1d > 0.1) {
-                createStaticBox(p1w / 2, PHYS_FLOOR_THICK / 2, p1d / 2, intLeft + p1w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p1d / 2);
+                createStaticBox(p1w / 2, PHYS_FLOOR_THICK / 2, p1d / 2, intLeft + p1w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p1d / 2, 'ceiling');
             }
             // Piece 2: above stairwell
             const p2w = stairRight - stairLeft;
             const p2d = intFront - stairFront;
             if (p2w > 0.1 && p2d > 0.1) {
-                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p2d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, stairFront + p2d / 2);
+                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p2d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, stairFront + p2d / 2, 'ceiling');
             }
             // Piece 3: right of stairwell
             const p3w = intRight - stairRight;
             const p3d = intFront - intBack;
             if (p3w > 0.1 && p3d > 0.1) {
-                createStaticBox(p3w / 2, PHYS_FLOOR_THICK / 2, p3d / 2, stairRight + p3w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p3d / 2);
+                createStaticBox(p3w / 2, PHYS_FLOOR_THICK / 2, p3d / 2, stairRight + p3w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p3d / 2, 'ceiling');
             }
             // Piece 4: behind stairwell
             const stairBack = stairP.z - CFG.CELL / 2;
             const p4d = stairBack - intBack;
             if (p2w > 0.1 && p4d > 0.1) {
-                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p4d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p4d / 2);
+                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p4d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p4d / 2, 'ceiling');
             }
 
             // --- Stair steps ---
@@ -280,7 +280,7 @@ export function createWorldPhysicsBodies() {
             // Full floor, no stairwell
             const fullW = (b.w - 1) * CFG.CELL + CFG.WALL_T - 0.06;
             const fullH = (b.h - 1) * CFG.CELL + CFG.WALL_T - 0.06;
-            createStaticBox(fullW / 2, PHYS_FLOOR_THICK / 2, fullH / 2, c.x, CFG.WALL_H + FLOOR_TOP_OFFSET, c.z);
+            createStaticBox(fullW / 2, PHYS_FLOOR_THICK / 2, fullH / 2, c.x, CFG.WALL_H + FLOOR_TOP_OFFSET, c.z, 'ceiling');
         }
     }
 
@@ -309,7 +309,7 @@ export function createWorldPhysicsBodies() {
             // Uses CEILING group so camera raycasts ignore it (prevents camera snap-in).
             const CEIL_THICK = 0.15;
             createStaticBox(bw / 2, CEIL_THICK / 2, bh / 2, c.x, topY + CEIL_THICK / 2, c.z,
-                undefined, CEILING_COLLISION_GROUP);
+                'ceiling', CEILING_COLLISION_GROUP);
 
             // Two tilted boxes matching the visual gable roof slopes
             const longAxis = bw >= bh;
@@ -342,16 +342,16 @@ export function createWorldPhysicsBodies() {
             // Prevents player from jumping through the roof from a bed below.
             if (longAxis) {
                 createStaticBox(roofLen / 2, 0.6, 0.5, c.x, topY + RIDGE_H - 0.6, c.z,
-                    undefined, CEILING_COLLISION_GROUP);
+                    'ceiling', CEILING_COLLISION_GROUP);
             } else {
                 createStaticBox(0.5, 0.6, roofLen / 2, c.x, topY + RIDGE_H - 0.6, c.z,
-                    undefined, CEILING_COLLISION_GROUP);
+                    'ceiling', CEILING_COLLISION_GROUP);
             }
         } else {
             // Flat roof — thin slab aligned with visual roof bottom
             const CEIL_THICK = 0.3;
             const roofTopY = topY + 0.25;
-            createStaticBox((bw + overhang) / 2, CEIL_THICK / 2, (bh + overhang) / 2, c.x, roofTopY - CEIL_THICK / 2, c.z);
+            createStaticBox((bw + overhang) / 2, CEIL_THICK / 2, (bh + overhang) / 2, c.x, roofTopY - CEIL_THICK / 2, c.z, 'ceiling');
         }
     }
 }

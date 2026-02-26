@@ -294,6 +294,7 @@ function buildChair(scene) {
 
     const parent = new Mesh('chairParent', scene);
     tempMeshes.forEach(m => m.parent = parent);
+    parent.scaling.setAll(1.4);
 
     return { parent, tempMeshes };
 }
@@ -363,8 +364,9 @@ function buildTable(scene) {
 
     const parent = new Mesh('tableParent', scene);
     tempMeshes.forEach(m => m.parent = parent);
+    parent.scaling.setAll(1.4);
 
-    return { parent, tempMeshes, width: tableW, depth: tableD, height: tableH };
+    return { parent, tempMeshes, width: tableW * 1.4, depth: tableD * 1.4, height: tableH * 1.4 };
 }
 
 // Bake all child meshes from a parent into final merged meshes, applying world transforms
@@ -575,8 +577,8 @@ export function placeFurniture(scene) {
                 let c1x = 0, c1z = 0, c1rot = 0;
                 let c2x = 0, c2z = 0, c2rot = 0;
 
-                const chairDistX = rot !== 0 ? 0 : tw / 2 + 0.15;
-                const chairDistZ = rot !== 0 ? tw / 2 + 0.15 : 0;
+                const chairDistX = rot !== 0 ? 0 : tw / 2 + 0.21;
+                const chairDistZ = rot !== 0 ? tw / 2 + 0.21 : 0;
 
                 if (tableCell.wall === 'west') {
                     c1x = c.x + dx; c1z = c.z + dz - chairDistZ; c1rot = 0;
@@ -593,13 +595,13 @@ export function placeFurniture(scene) {
                 chair1.parent.position = new Vector3(c1x, yPos, c1z);
                 chair1.parent.rotation.y = c1rot;
                 mergeAndAddToScene(chair1.parent, chair1.tempMeshes, scene);
-                createStaticBox(0.25, 0.5, 0.25, c1x, yPos + 0.5, c1z);
+                createStaticBox(0.35, 0.7, 0.35, c1x, yPos + 0.7, c1z);
 
                 const chair2 = buildChair(scene);
                 chair2.parent.position = new Vector3(c2x, yPos, c2z);
                 chair2.parent.rotation.y = c2rot;
                 mergeAndAddToScene(chair2.parent, chair2.tempMeshes, scene);
-                createStaticBox(0.25, 0.5, 0.25, c2x, yPos + 0.5, c2z);
+                createStaticBox(0.35, 0.7, 0.35, c2x, yPos + 0.7, c2z);
             }
         }
     }

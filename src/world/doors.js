@@ -48,94 +48,94 @@ function ensureMaterials(scene) {
 /* ── Fancy door leaf builder ─────────────────────────────────────── */
 // Knob always at +X (the free swinging edge).
 // Orientation is handled entirely by the placement rotation below.
+// All sub-meshes merged into one mesh with multi-material for performance.
 function buildFancyDoorLeaf(scene, w, h, thick, leafIndex) {
   const leaf = new TransformNode(`doorLeaf_${leafIndex}`, scene);
 
-  // Base thin panel (darker wood)
-  const baseMesh = MeshBuilder.CreateBox(`doorBase_${leafIndex}`,
-    { width: w, height: h, depth: thick * 0.3 }, scene);
-  baseMesh.material = baseMat;
-  baseMesh.parent = leaf;
-  addShadowCaster(baseMesh);
-
-  // Frame and stiles
   const stileW = 0.45;
-
-  const leftStile = MeshBuilder.CreateBox(`doorLStile_${leafIndex}`,
-    { width: stileW, height: h, depth: thick }, scene);
-  leftStile.material = doorMat;
-  leftStile.position.x = -w / 2 + stileW / 2;
-  leftStile.parent = leaf;
-  addShadowCaster(leftStile);
-
-  const rightStile = MeshBuilder.CreateBox(`doorRStile_${leafIndex}`,
-    { width: stileW, height: h, depth: thick }, scene);
-  rightStile.material = doorMat;
-  rightStile.position.x = w / 2 - stileW / 2;
-  rightStile.parent = leaf;
-  addShadowCaster(rightStile);
-
-  // Rails (horizontal)
   const railH = 0.25;
-
-  const topRail = MeshBuilder.CreateBox(`doorTopRail_${leafIndex}`,
-    { width: w, height: railH, depth: thick }, scene);
-  topRail.material = doorMat;
-  topRail.position.y = h / 2 - railH / 2;
-  topRail.parent = leaf;
-  addShadowCaster(topRail);
-
-  const bottomRail = MeshBuilder.CreateBox(`doorBotRail_${leafIndex}`,
-    { width: w, height: railH, depth: thick }, scene);
-  bottomRail.material = doorMat;
-  bottomRail.position.y = -h / 2 + railH / 2;
-  bottomRail.parent = leaf;
-  addShadowCaster(bottomRail);
-
-  const midRail1 = MeshBuilder.CreateBox(`doorMidRail1_${leafIndex}`,
-    { width: w, height: railH, depth: thick }, scene);
-  midRail1.material = doorMat;
-  midRail1.position.y = h / 6;
-  midRail1.parent = leaf;
-  addShadowCaster(midRail1);
-
-  const midRail2 = MeshBuilder.CreateBox(`doorMidRail2_${leafIndex}`,
-    { width: w, height: railH, depth: thick }, scene);
-  midRail2.material = doorMat;
-  midRail2.position.y = -h / 4;
-  midRail2.parent = leaf;
-  addShadowCaster(midRail2);
-
-  // Knob on both sides at the free edge (+X = opposite hinge at -X)
   const knobZ = thick / 2 + 0.10;
   const knobX = w / 2 - stileW / 2;
 
-  const knobR = MeshBuilder.CreateSphere(`doorKnobR_${leafIndex}`,
-    { diameter: 0.24, segments: 8 }, scene);
-  knobR.material = knobMat;
-  knobR.position = new Vector3(knobX, 0, knobZ);
-  knobR.parent = leaf;
+  // Build all sub-parts as temp meshes, bake positions, then merge
+  const baseParts = [];  // baseMat
+  const frameParts = []; // doorMat
+  const knobParts = [];  // knobMat
 
-  const knobL = MeshBuilder.CreateSphere(`doorKnobL_${leafIndex}`,
-    { diameter: 0.24, segments: 8 }, scene);
-  knobL.material = knobMat;
-  knobL.position = new Vector3(knobX, 0, -knobZ);
-  knobL.parent = leaf;
+  // Base thin panel
+  const base = MeshBuilder.CreateBox('_db', { width: w, height: h, depth: thick * 0.3 }, scene);
+  base.bakeCurrentTransformIntoVertices();
+  baseParts.push(base);
 
-  // Backplates (cylinders rotated along X to face Z)
-  const plateR = MeshBuilder.CreateCylinder(`doorPlateR_${leafIndex}`,
-    { diameter: 0.12, height: 0.04, tessellation: 8 }, scene);
-  plateR.material = knobMat;
-  plateR.rotation.x = Math.PI / 2;
-  plateR.position = new Vector3(knobX, 0, thick / 2 + 0.02);
-  plateR.parent = leaf;
+  // Stiles
+  const ls = MeshBuilder.CreateBox('_dls', { width: stileW, height: h, depth: thick }, scene);
+  ls.position.x = -w / 2 + stileW / 2;
+  ls.bakeCurrentTransformIntoVertices();
+  frameParts.push(ls);
 
-  const plateL = MeshBuilder.CreateCylinder(`doorPlateL_${leafIndex}`,
-    { diameter: 0.12, height: 0.04, tessellation: 8 }, scene);
-  plateL.material = knobMat;
-  plateL.rotation.x = Math.PI / 2;
-  plateL.position = new Vector3(knobX, 0, -thick / 2 - 0.02);
-  plateL.parent = leaf;
+  const rs = MeshBuilder.CreateBox('_drs', { width: stileW, height: h, depth: thick }, scene);
+  rs.position.x = w / 2 - stileW / 2;
+  rs.bakeCurrentTransformIntoVertices();
+  frameParts.push(rs);
+
+  // Rails
+  const tr = MeshBuilder.CreateBox('_dtr', { width: w, height: railH, depth: thick }, scene);
+  tr.position.y = h / 2 - railH / 2;
+  tr.bakeCurrentTransformIntoVertices();
+  frameParts.push(tr);
+
+  const br = MeshBuilder.CreateBox('_dbr', { width: w, height: railH, depth: thick }, scene);
+  br.position.y = -h / 2 + railH / 2;
+  br.bakeCurrentTransformIntoVertices();
+  frameParts.push(br);
+
+  const mr1 = MeshBuilder.CreateBox('_dmr1', { width: w, height: railH, depth: thick }, scene);
+  mr1.position.y = h / 6;
+  mr1.bakeCurrentTransformIntoVertices();
+  frameParts.push(mr1);
+
+  const mr2 = MeshBuilder.CreateBox('_dmr2', { width: w, height: railH, depth: thick }, scene);
+  mr2.position.y = -h / 4;
+  mr2.bakeCurrentTransformIntoVertices();
+  frameParts.push(mr2);
+
+  // Knobs
+  const kR = MeshBuilder.CreateSphere('_dkr', { diameter: 0.24, segments: 8 }, scene);
+  kR.position = new Vector3(knobX, 0, knobZ);
+  kR.bakeCurrentTransformIntoVertices();
+  knobParts.push(kR);
+
+  const kL = MeshBuilder.CreateSphere('_dkl', { diameter: 0.24, segments: 8 }, scene);
+  kL.position = new Vector3(knobX, 0, -knobZ);
+  kL.bakeCurrentTransformIntoVertices();
+  knobParts.push(kL);
+
+  // Backplates
+  const pR = MeshBuilder.CreateCylinder('_dpr', { diameter: 0.12, height: 0.04, tessellation: 8 }, scene);
+  pR.rotation.x = Math.PI / 2;
+  pR.position = new Vector3(knobX, 0, thick / 2 + 0.02);
+  pR.bakeCurrentTransformIntoVertices();
+  knobParts.push(pR);
+
+  const pL = MeshBuilder.CreateCylinder('_dpl', { diameter: 0.12, height: 0.04, tessellation: 8 }, scene);
+  pL.rotation.x = Math.PI / 2;
+  pL.position = new Vector3(knobX, 0, -thick / 2 - 0.02);
+  pL.bakeCurrentTransformIntoVertices();
+  knobParts.push(pL);
+
+  // Merge each material group, then merge groups with multiMaterial
+  const mBase = Mesh.MergeMeshes(baseParts, true, true, undefined, false, false);
+  mBase.material = baseMat;
+  const mFrame = Mesh.MergeMeshes(frameParts, true, true, undefined, false, false);
+  mFrame.material = doorMat;
+  const mKnob = Mesh.MergeMeshes(knobParts, true, true, undefined, false, false);
+  mKnob.material = knobMat;
+
+  const merged = Mesh.MergeMeshes([mBase, mFrame, mKnob], true, true, undefined, true, false);
+  merged.name = `doorMerged_${leafIndex}`;
+  merged.parent = leaf;
+  addShadowCaster(merged);
+  enableShadowReceiving(merged);
 
   return leaf;
 }

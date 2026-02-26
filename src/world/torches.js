@@ -1,6 +1,7 @@
 import { MeshBuilder, Mesh, StandardMaterial, PointLight,
-         ShadowGenerator, Texture, Color3, Vector3, TransformNode,
-         Ray, ParticleSystem } from 'babylonjs';
+         ShadowGenerator, Texture, Color3,
+         Vector3, TransformNode, Ray, ParticleSystem,
+         ClusteredLightContainer } from 'babylonjs';
 import { getGrid, isDoorCell, isWindowCell, isStairCell, isWalkable } from './grid.js';
 import { getBuildings, getWallHeightAt } from './generator.js';
 import { isInsideWindowOpening } from './windows.js';
@@ -24,21 +25,23 @@ const pickableTorches = [];
 // Player-placed door torches — need wx/wz updates when door rotates
 const playerDoorTorches = [];
 
-// Fixed pool of always-enabled "slot" PointLights for torch illumination.
-// These lights are NEVER toggled with setEnabled() — only their position and
-// intensity change each frame. This avoids shader recompilation (which causes
-// the entire world to flicker invisible while new shaders compile).
-const MAX_ENABLED_TORCHES = 5;
-const slotLights = []; // always-enabled PointLights (length = MAX_ENABLED_TORCHES)
+// Clustered lighting: all torch PointLights are managed by a ClusteredLightContainer
+// (GPU tile-based pipeline, unlimited count). They are removed from the scene's
+// standard light list so they don't count against maxSimultaneousLights.
+// 3 shadow slot lights remain in the scene for shadow-casting (clustering can't shadow).
+let _container = null;
+let _scene = null;
 
-// Limit shadow-casting point lights to avoid GPU cost (cube maps = 6 passes each)
 const MAX_SHADOW_TORCHES = 3;
-
-// Shadow generators for point-light torches (one per shadow-casting slot light)
+const shadowSlots = [];
 const _shadowGenerators = [];
 
+// Hysteresis for player floor detection — prevents torch flicker when jumping
+let _stablePlayerFloor = 0;
+let _floorChangeTimer = 0;
+
 /** Register a mesh as a shadow caster for all torch shadow generators */
-function addTorchShadowCaster(mesh) {
+export function addTorchShadowCaster(mesh) {
   for (const sg of _shadowGenerators) {
     sg.addShadowCaster(mesh, true);
   }
@@ -47,62 +50,26 @@ function addTorchShadowCaster(mesh) {
 export function getTorchShadowGenerators() { return _shadowGenerators; }
 
 export function initTorchLightPool(scene) {
-  // Create fixed slot lights — always enabled, intensity=0 until assigned to a torch
-  for (let i = 0; i < MAX_ENABLED_TORCHES; i++) {
-    const light = new PointLight(`torchSlot_${i}`, new Vector3(0, -100, 0), scene);
-    light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
-    light.intensity = 0;
-    light.range = 6;
-    light.metadata = {};
-    // Attach shadow generators to first MAX_SHADOW_TORCHES slots
-    if (i < MAX_SHADOW_TORCHES) {
-      const sg = new ShadowGenerator(256, light);
-      sg.usePercentageCloserFiltering = true;
-      sg.bias = 0.001;
-      sg.normalBias = 0.01;
-      light.shadowMinZ = 0.1;
-      light.shadowMaxZ = 8;
-      light.metadata.shadowGen = sg;
-      _shadowGenerators.push(sg);
-    }
-    slotLights.push(light);
-  }
-}
+  _scene = scene;
+  // Clustered container — manages all torch PointLights via GPU tiling
+  _container = new ClusteredLightContainer("torchCluster", [], scene);
 
-// Placement light pool — separate from the culling slot lights.
-// Player-placed torches acquire from here; these start disabled and are enabled
-// ONE TIME on acquire (the single setEnabled call happens at placement, not per-frame).
-const PLACE_POOL_SIZE = 15;
-const placePool = [];
-
-export function initPlacementLightPool(scene) {
-  for (let i = 0; i < PLACE_POOL_SIZE; i++) {
-    const light = new PointLight(`torchPlacePool_${i}`, Vector3.Zero(), scene);
+  // Shadow slot lights — in the scene (not clustered), for shadow-casting
+  for (let i = 0; i < MAX_SHADOW_TORCHES; i++) {
+    const light = new PointLight(`torchShadow_${i}`, new Vector3(0, -100, 0), scene);
     light.diffuse = new Color3(1, 0.533, 0.2);
     light.intensity = 0;
     light.range = 6;
-    light.setEnabled(false);
     light.metadata = {};
-    placePool.push({ light, inUse: false });
-  }
-}
-
-function acquirePoolLight() {
-  for (const entry of placePool) {
-    if (!entry.inUse) {
-      entry.inUse = true;
-      entry.light.setEnabled(true);
-      return entry.light;
-    }
-  }
-  return null;
-}
-
-function releasePoolLight(light) {
-  light.intensity = 0;
-  light.setEnabled(false);
-  for (const entry of placePool) {
-    if (entry.light === light) { entry.inUse = false; return; }
+    const sg = new ShadowGenerator(256, light);
+    sg.usePercentageCloserFiltering = true;
+    sg.bias = 0.001;
+    sg.normalBias = 0.01;
+    light.shadowMinZ = 0.1;
+    light.shadowMaxZ = 8;
+    light.metadata.shadowGen = sg;
+    _shadowGenerators.push(sg);
+    shadowSlots.push(light);
   }
 }
 
@@ -133,30 +100,27 @@ const TIP_OUT = Math.sin(TILT) * STICK_LEN;
 const TIP_UP = Math.cos(TILT) * STICK_LEN;
 
 /** Create a wall-mounted torch at given position, returns { light, flame, stick } */
-function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ, usePool) {
+function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ) {
   ensureMaterials(scene);
 
-  // Actual tip = stick center + half-length projection
+  // Tip = mount point + tilt projection (base flush with wall)
   const tipX = mountX + normalX * TIP_OUT;
   const tipZ = mountZ + normalZ * TIP_OUT;
   const tipY = mountY + TIP_UP;
 
-  let light;
-  if (usePool) {
-    light = acquirePoolLight();
-    if (!light) return null;
-  } else {
-    // World-gen torch: create a permanently-disabled data-only light.
-    // Actual illumination is handled by the fixed slot lights in updateTorchEmbers.
-    const name = `torchLight_${torchLights.length + doorTorchLights.length}`;
-    light = new PointLight(name, Vector3.Zero(), scene);
-    light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
-    light.range = 6;
-    light.setEnabled(false); // permanently disabled — slot lights do the rendering
-    light.metadata = {};
-  }
+  const name = `torchLight_${torchLights.length + doorTorchLights.length}_${pickableTorches.length}`;
+  const light = new PointLight(name, Vector3.Zero(), scene);
+  light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
+  light.range = 6;
+  light.metadata = {};
   light.intensity = 2;
   light.position = new Vector3(tipX, tipY + 0.06, tipZ);
+
+  // Move from standard pipeline to clustered pipeline
+  if (_container) {
+    scene.removeLight(light);
+    _container.addLight(light);
+  }
 
   const flame = MeshBuilder.CreateSphere('torchFlame', { diameter: 0.16, segments: 5 }, scene);
   flame.material = _flameMat;
@@ -182,27 +146,26 @@ function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ, usePoo
   addShadowCaster(stick); // CSM shadow caster
   addTorchShadowCaster(stick); // point-light shadow caster
 
-  return { light, flame, stick, wx: tipX, wz: tipZ, pooled: !!usePool };
+  return { light, flame, stick, wx: tipX, wz: tipZ };
 }
 
 /** Create a vertical ground torch, returns { light, flame, stick } */
-function createGroundTorch(scene, x, groundY, z, usePool) {
+function createGroundTorch(scene, x, groundY, z) {
   ensureMaterials(scene);
 
-  let light;
-  if (usePool) {
-    light = acquirePoolLight();
-    if (!light) return null;
-  } else {
-    const name = `groundTorchLight_${torchLights.length}`;
-    light = new PointLight(name, Vector3.Zero(), scene);
-    light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
-    light.range = 6;
-    light.setEnabled(false); // permanently disabled — slot lights do the rendering
-    light.metadata = {};
-  }
+  const name = `groundTorchLight_${torchLights.length}_${pickableTorches.length}`;
+  const light = new PointLight(name, Vector3.Zero(), scene);
+  light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
+  light.range = 6;
+  light.metadata = {};
   light.intensity = 2;
   light.position = new Vector3(x, groundY + STICK_LEN + 0.12, z);
+
+  // Move from standard pipeline to clustered pipeline
+  if (_container) {
+    scene.removeLight(light);
+    _container.addLight(light);
+  }
 
   const flame = MeshBuilder.CreateSphere('groundTorchFlame', { diameter: 0.16, segments: 5 }, scene);
   flame.material = _flameMat;
@@ -218,14 +181,14 @@ function createGroundTorch(scene, x, groundY, z, usePool) {
   addShadowCaster(stick);
   addTorchShadowCaster(stick);
 
-  return { light, flame, stick, wx: x, wz: z, pooled: !!usePool };
+  return { light, flame, stick, wx: x, wz: z };
 }
 
 // ---- World generation ----
 
 export function placeTorches(scene) {
   const grid = getGrid();
-  const wallOffset = CFG.CELL - CFG.WALL_T / 2 - 0.1;
+  const wallOffset = CFG.CELL - CFG.WALL_T / 2;
 
   for (const b of getBuildings()) {
     const candidates = [];
@@ -262,7 +225,7 @@ export function placeTorches(scene) {
 export function placeDoorTorches(scene) {
   const grid = getGrid();
   const torchY = 2.2;
-  const sideOff = CFG.CELL - CFG.WALL_T / 2 - 0.1; // flush with adjacent wall surface
+  const sideOff = CFG.CELL - CFG.WALL_T / 2; // flush with adjacent wall surface
   const normOff = CFG.WALL_T / 2 + 0.08;
 
   for (const b of getBuildings()) {
@@ -332,14 +295,10 @@ export function pickNearestTorch(inventory) {
   t.active = false;
   t.stick.isVisible = false;
   t.flame.isVisible = false;
-  if (t.pooled) {
-    // Return placement pool light for reuse
-    releasePoolLight(t.light);
-  } else {
-    // World-gen light: mark as picked (already permanently disabled)
-    t.light.intensity = 0;
-    t.light.metadata.picked = true;
-  }
+  t.light.intensity = 0;
+  t.light.metadata.picked = true;
+  // Remove from clustered container
+  if (_container) _container.removeLight(t.light);
   // Remove from door-torch tracking if it was door-parented
   const dIdx = playerDoorTorches.indexOf(t);
   if (dIdx >= 0) playerDoorTorches.splice(dIdx, 1);
@@ -457,7 +416,7 @@ function findPlacementTarget(camera) {
           else if (hitZ2 && !hitX2) nz2 = dir.z > 0 ? -1 : 1;
           else return null;
           const wc = g2w(g.x, g.z);
-          const wallSurf = CFG.CELL / 2 - CFG.WALL_T / 2 - 0.1;
+          const wallSurf = CFG.WALL_T / 2;
           const mountX = nx2 !== 0 ? wc.x + nx2 * wallSurf : prevX;
           const mountZ = nz2 !== 0 ? wc.z + nz2 * wallSurf : prevZ;
           if (isTooCloseToTorch(mountX, y, mountZ)) return null;
@@ -487,9 +446,9 @@ function findPlacementTarget(camera) {
       if (hitX && !hitZ) { nx = dir.x > 0 ? -1 : 1; }
       else if (hitZ && !hitX) { nz = dir.z > 0 ? -1 : 1; }
       else { return null; } // corner hit — reject, no clean wall surface
-      // Snap mount point to wall surface, pushed 0.1 inside (matches world-gen)
+      // Snap mount point to wall surface (flush)
       const wc = g2w(g.x, g.z);
-      const wallSurf = CFG.CELL / 2 - CFG.WALL_T / 2 - 0.1;
+      const wallSurf = CFG.WALL_T / 2;
       const mountX = nx !== 0 ? wc.x + nx * wallSurf : prevX;
       const mountZ = nz !== 0 ? wc.z + nz * wallSurf : prevZ;
 
@@ -531,7 +490,7 @@ export function updateTorchPreview(camera, active) {
   previewFlame.position = new Vector3(0, 0.3, 0);
 
   if (hit.type === 'wall' || hit.type === 'door') {
-    // Wall/door-mounted — position at surface, tilted away
+    // Wall/door-mounted — tilted away from wall, base flush
     const mx = hit.x, mz = hit.z, my = hit.y;
     previewGroup.position = new Vector3(
       mx + hit.nx * TIP_OUT / 2,
@@ -563,7 +522,7 @@ export function placeTorchAtPreview(scene) {
   let t;
   if (placementHit.type === 'door') {
     // Place torch on door panel — parent meshes to door group so they rotate with it
-    t = createWallTorch(scene, placementHit.x, placementHit.z, placementHit.y, placementHit.nx, placementHit.nz, true);
+    t = createWallTorch(scene, placementHit.x, placementHit.z, placementHit.y, placementHit.nx, placementHit.nz);
     if (!t) return false;
     const door = placementHit.door;
     // Re-parent flame + stick into door group (convert to door-local coords)
@@ -583,11 +542,11 @@ export function placeTorchAtPreview(scene) {
     inv.torches--;
     return true;
   } else if (placementHit.type === 'wall') {
-    t = createWallTorch(scene, placementHit.x, placementHit.z, placementHit.y, placementHit.nx, placementHit.nz, true);
+    t = createWallTorch(scene, placementHit.x, placementHit.z, placementHit.y, placementHit.nx, placementHit.nz);
   } else {
-    t = createGroundTorch(scene, placementHit.x, placementHit.y, placementHit.z, true);
+    t = createGroundTorch(scene, placementHit.x, placementHit.y, placementHit.z);
   }
-  if (!t) return false; // pool exhausted
+  if (!t) return false;
   const entry = { ...t, active: true };
   pickableTorches.push(entry);
   addTorchEmbers(entry);
@@ -763,37 +722,51 @@ export function updateTorchEmbers(dt) {
   const pg = w2g(px, pz);
   const grid = getGrid();
   const isInside = pg.x >= 0 && pg.x < CFG.GRID && pg.z >= 0 && pg.z < CFG.GRID && !!grid[pg.x][pg.z];
-  const playerFloor = Math.floor(Math.max(0, py) / CFG.WALL_H);
 
-  // Distance-based light culling via fixed slot lights.
-  // Slot lights are ALWAYS enabled — we only move their position and set intensity.
-  // This avoids setEnabled() toggling which triggers shader recompilation flicker.
+  // Stable player floor with hysteresis — prevents flicker when jumping
+  const rawFloor = Math.floor(Math.max(0, py) / CFG.WALL_H);
+  if (rawFloor === _stablePlayerFloor) {
+    _floorChangeTimer = 0;
+  } else {
+    _floorChangeTimer += dt;
+    if (_floorChangeTimer > 0.4) {
+      _stablePlayerFloor = rawFloor;
+      _floorChangeTimer = 0;
+    }
+  }
+
+  // Update intensity on all clustered torch lights and find nearest for shadow slots
   const torchDistances = [];
   for (const t of pickableTorches) {
     if (!t.active || t.light.metadata.picked) continue;
     if (t.light.metadata.baseIntensity === undefined) t.light.metadata.baseIntensity = 2.0;
-    const dx = t.wx - px, dz = t.wz - pz;
-    torchDistances.push({ t, dist2: dx * dx + dz * dz });
-  }
-  torchDistances.sort((a, b) => a.dist2 - b.dist2);
 
-  // Move slot lights to the nearest torch positions
-  for (let i = 0; i < slotLights.length; i++) {
-    const slot = slotLights[i];
+    // Floor-cull clustered lights (only shadow slot lights cast real floor shadows)
+    let targetIntensity = t.light.metadata.baseIntensity;
+    if (isInside) {
+      const torchFloor = Math.floor(t.flame.position.y / CFG.WALL_H);
+      if (Math.abs(torchFloor - _stablePlayerFloor) >= 1) targetIntensity = 0;
+    }
+    t.light.intensity = targetIntensity;
+
+    // Track distance for shadow slot assignment
+    if (targetIntensity > 0) {
+      const dx = t.wx - px, dz = t.wz - pz;
+      torchDistances.push({ t, dist2: dx * dx + dz * dz });
+    }
+  }
+
+  // Assign 3 nearest visible torches to shadow slot lights
+  torchDistances.sort((a, b) => a.dist2 - b.dist2);
+  for (let i = 0; i < shadowSlots.length; i++) {
+    const slot = shadowSlots[i];
     if (i < torchDistances.length) {
       const { t } = torchDistances[i];
-      const flameY = t.flame.position.y;
-      const torchFloor = Math.floor(flameY / CFG.WALL_H);
-      const floorDiff = Math.abs(torchFloor - playerFloor);
-
-      // Move slot light to this torch's position
       slot.position.copyFrom(t.light.position);
-
-      let targetIntensity = t.light.metadata.baseIntensity;
-      if (isInside && floorDiff >= 1) targetIntensity = 0;
-      slot.intensity = targetIntensity;
+      slot.intensity = t.light.intensity;
+      // Zero out clustered light — shadow slot handles this torch's illumination
+      t.light.intensity = 0;
     } else {
-      // No torch for this slot — park it far away with zero intensity
       slot.position.y = -100;
       slot.intensity = 0;
     }

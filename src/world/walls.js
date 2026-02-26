@@ -248,7 +248,8 @@ export function buildWalls(scene) {
                 const isCorner = cornerCells.has(`${x},${z}`);
                 let sx, sz, px = p.x, pz = p.z;
                 if (isCorner) {
-                    sx = CFG.WALL_T; sz = CFG.WALL_T;
+                    // Shrink corner post slightly so it sits inside adjacent wall extensions (avoid z-fighting)
+                    sx = CFG.WALL_T - 0.02; sz = CFG.WALL_T - 0.02;
                 } else if (facesNS && !facesEW) {
                     sx = CFG.CELL; sz = CFG.WALL_T;
                     const extW = isThinPost(x - 1, z) ? ext : 0;

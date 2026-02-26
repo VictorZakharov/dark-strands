@@ -187,6 +187,7 @@ export function getPhysicsWorld() { return physicsEngine; }
 /* ── Material helpers (friction / restitution presets) ───── */
 const MAT = {
   ground:     { friction: 0.5,  restitution: 0.0  },
+  ceiling:    { friction: 0.0,  restitution: 0.5  },
   player:     { friction: 0.0,  restitution: 0.0,  frictionCombine: PhysicsMaterialCombineMode.MINIMUM },
   projectile: { friction: 1.0,  restitution: 0.15 },
   door:       { friction: 0.0,  restitution: 0.0  },

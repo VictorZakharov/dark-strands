@@ -1,8 +1,10 @@
-import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3 } from 'babylonjs';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Color4, Vector3, ParticleSystem } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getGrid, isDoorCell, isWindowCell, isStairCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
+
+let _scene = null;
 
 function loadTex(path, uScale, vScale, scene) {
     const tex = new Texture(path, scene);
@@ -41,6 +43,8 @@ export function tryBreakWindow(gx, gz, wx, wz, wy) {
             }
             glassMergedMesh.updateVerticesData('position', positions);
         }
+        // Glass shard particle burst
+        if (_scene) spawnGlassShards(wx, wy, wz, w.wall);
         return true;
     }
     return false;
@@ -95,6 +99,7 @@ export function isInsideWindowOpening(gx, gz, wy, wx, wz) {
  * Wall geometry with window holes is now handled by buildWalls() in walls.js.
  */
 export function buildWindows(scene) {
+    _scene = scene;
     // --- Materials ---
 
     // Wooden frame material (bark texture, same as doors)
@@ -284,4 +289,43 @@ export function buildWindows(scene) {
             glassMergedMesh = merged;
         }
     }
+}
+
+/** Spawn a burst of glass shard particles at the break point */
+function spawnGlassShards(wx, wy, wz, wall) {
+    const isNS = wall === 'south' || wall === 'north';
+    const outSign = (wall === 'south' || wall === 'east') ? 1 : -1;
+
+    const ps = new ParticleSystem('glassShards', 200, _scene);
+    ps.createPointEmitter(new Vector3(-0.4, -0.3, -0.4), new Vector3(0.4, 0.6, 0.4));
+    ps.emitter = new Vector3(wx, wy, wz);
+    ps.minSize = 0.04;
+    ps.maxSize = 0.18;
+    ps.minLifeTime = 1.0;
+    ps.maxLifeTime = 2.5;
+    ps.emitRate = 0;       // burst only
+    ps.manualEmitCount = 120;
+    ps.gravity = new Vector3(0, -6, 0);
+
+    // Outward velocity along wall normal
+    const outX = isNS ? 0 : outSign * 3;
+    const outZ = isNS ? outSign * 3 : 0;
+    ps.direction1 = new Vector3(outX - 2, 0.5, outZ - 2);
+    ps.direction2 = new Vector3(outX + 2, 4.0, outZ + 2);
+    ps.minEmitPower = 2;
+    ps.maxEmitPower = 6;
+
+    // Glass colors: bright, high alpha for visibility
+    ps.color1 = new Color4(0.8, 0.95, 1.0, 1.0);
+    ps.color2 = new Color4(0.6, 0.8, 1.0, 0.9);
+    ps.colorDead = new Color4(0.5, 0.6, 0.7, 0.0);
+
+    ps.blendMode = ParticleSystem.BLENDMODE_ADD;
+    ps.addSizeGradient(0, 0.15);
+    ps.addSizeGradient(0.5, 0.10);
+    ps.addSizeGradient(1.0, 0.03);
+
+    ps.start();
+    // Auto-dispose after particles die
+    setTimeout(() => { ps.stop(); ps.dispose(); }, 3500);
 }

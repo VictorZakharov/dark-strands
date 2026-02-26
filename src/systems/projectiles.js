@@ -13,47 +13,6 @@ import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
 const projectiles = [];
 
-// Glass shard particles
-const glassShards = [];
-const SHARD_COUNT = 8;
-const SHARD_LIFE = 2.0;
-
-function spawnGlassShards(x, y, z, scene) {
-  for (let i = 0; i < SHARD_COUNT; i++) {
-    const size = 0.03 + Math.random() * 0.06;
-    const shard = MeshBuilder.CreatePlane('shard', {
-      width: size,
-      height: size * (0.5 + Math.random()),
-      sideOrientation: 2 // DOUBLESIDE
-    }, scene);
-    const mat = new StandardMaterial('shardMat' + i, scene);
-    mat.diffuseColor = new Color3(0.533, 0.8, 0.933); // #88ccee
-    mat.alpha = 0.6;
-    mat.disableLighting = true;
-    shard.material = mat;
-
-    shard.position = new Vector3(
-      x + (Math.random() - 0.5) * 0.3,
-      y + (Math.random() - 0.5) * 0.3,
-      z + (Math.random() - 0.5) * 0.3
-    );
-    shard.rotation = new Vector3(
-      Math.random() * Math.PI,
-      Math.random() * Math.PI,
-      Math.random() * Math.PI
-    );
-
-    glassShards.push({
-      mesh: shard,
-      vx: (Math.random() - 0.5) * 2,
-      vy: Math.random() * 2 + 1,
-      vz: (Math.random() - 0.5) * 2,
-      life: SHARD_LIFE,
-      spin: Math.random() * 5,
-    });
-  }
-}
-
 export function spawnProjectile(camera, scene) {
   const camPos = camera.position.clone();
   // Babylon FreeCamera: forward = target - position
@@ -111,6 +70,7 @@ export function spawnProjectile(camera, scene) {
   projectiles.push({
     mesh, body, alive: true, age: 0, restTime: 0,
     sx: spawnPos.x, sz: spawnPos.z,
+    prevX: spawnPos.x, prevY: spawnPos.y, prevZ: spawnPos.z,
   });
 }
 
@@ -137,6 +97,7 @@ function spawnDroppingRock(x, y, z, scene) {
   projectiles.push({
     mesh, body, alive: true, age: 0, restTime: 0,
     sx: x, sz: z, dropping: true,
+    prevX: x, prevY: y, prevZ: z,
   });
 }
 
@@ -173,17 +134,35 @@ export function updateProjectiles(dt) {
       }
     }
 
-    // Window breaking
-    const gHit = w2g(bx, bz);
-    if (isWindowCell(gHit.x, gHit.z)) {
-      if (!isWindowBrokenAt(gHit.x, gHit.z, bx, bz, by)) {
-        if (tryBreakWindow(gHit.x, gHit.z, bx, bz, by)) {
-          spawnGlassShards(bx, by, bz, scene);
-          p.body.velocity.x *= 0.8;
-          p.body.velocity.y *= 0.8;
-          p.body.velocity.z *= 0.8;
+    // Window breaking — fine-grained sweep from previous to current position
+    {
+      const ddx = bx - p.prevX, ddz = bz - p.prevZ;
+      const dist = Math.sqrt(ddx * ddx + ddz * ddz);
+      const steps = Math.max(1, Math.ceil(dist / 0.5));
+      let broken = false;
+      for (let si = 0; si <= steps && !broken; si++) {
+        const t = si / steps;
+        const swx = p.prevX + ddx * t;
+        const swy = p.prevY + (by - p.prevY) * t;
+        const swz = p.prevZ + ddz * t;
+        const gc = w2g(swx, swz);
+        // Check this cell and 4 neighbors to handle boundary cases
+        for (let dg = 0; dg < 5 && !broken; dg++) {
+          const cgx = gc.x + (dg === 1 ? -1 : dg === 2 ? 1 : 0);
+          const cgz = gc.z + (dg === 3 ? -1 : dg === 4 ? 1 : 0);
+          if (isWindowCell(cgx, cgz)) {
+            if (!isWindowBrokenAt(cgx, cgz, swx, swz, swy)) {
+              if (tryBreakWindow(cgx, cgz, swx, swz, swy)) {
+                broken = true;
+                p.body.velocity.x *= 0.8;
+                p.body.velocity.y *= 0.8;
+                p.body.velocity.z *= 0.8;
+              }
+            }
+          }
         }
       }
+      p.prevX = bx; p.prevY = by; p.prevZ = bz;
     }
 
     // Water damping
@@ -291,23 +270,6 @@ export function updateProjectiles(dt) {
     }
   }
 
-  // Update glass shards
-  for (let i = glassShards.length - 1; i >= 0; i--) {
-    const sh = glassShards[i];
-    sh.life -= dt;
-    if (sh.life <= 0) {
-      sh.mesh.dispose();
-      glassShards.splice(i, 1);
-      continue;
-    }
-    sh.vy -= 8 * dt;
-    sh.mesh.position.x += sh.vx * dt;
-    sh.mesh.position.y += sh.vy * dt;
-    sh.mesh.position.z += sh.vz * dt;
-    sh.mesh.rotation.x += sh.spin * dt;
-    sh.mesh.rotation.z += sh.spin * 0.7 * dt;
-    sh.mesh.material.alpha = Math.min(0.6, sh.life / SHARD_LIFE * 0.6);
-  }
 }
 
 /** Returns the nearest in-flight projectile within pickup range, or null. */

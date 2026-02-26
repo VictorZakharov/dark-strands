@@ -468,6 +468,17 @@ export function updatePlayer(dt, camera, sunLight, keys) {
 
   // First-person: camera at eye height
   _fpPos.set(state.x, state.y + CFG.PLAYER_H, state.z);
+
+  // Clamp 1st-person eye below ceiling so FOV can't peek into attic when jumping
+  const fpCeil = raycastClosest(
+    { x: state.x, y: state.y + 0.5, z: state.z },
+    { x: state.x, y: state.y + CFG.PLAYER_H + 2.0, z: state.z }
+  );
+  if (fpCeil.hasHit) {
+    const maxEyeY = fpCeil.hitPointWorld.y - 0.15;
+    if (_fpPos.y > maxEyeY) _fpPos.y = maxEyeY;
+  }
+
   const fpFwd = new Vector3(
     -Math.sin(state.yaw) * Math.cos(state.pitch),
     Math.sin(state.pitch),
