@@ -538,7 +538,16 @@ async function buildWorld() {
     fill.style.transform = 'scaleX(1)';
   }
   step(100);
-  await new Promise(r => setTimeout(r, 400));
+
+  // WARM-UP RENDERING: Render multiple frames while covered to ensure 
+  // WebGPU pipelines are fully compiled and the viewport is stable.
+  // This prevents the "cyan screen" or "NPCs in air" flash.
+  for (let i = 0; i < 5; i++) {
+    scene.render();
+    await yieldFrame();
+  }
+
+  await new Promise(r => setTimeout(r, 200));
 }
 
 function setupPlayButton() {
@@ -571,7 +580,6 @@ function setupPlayButton() {
 
     await buildWorld();
 
-    if (loading) loading.style.display = 'none';
     const blocker = document.getElementById('blocker');
     if (isTouchDevice) {
       if (blocker) blocker.style.display = 'none';
@@ -585,8 +593,16 @@ function setupPlayButton() {
       try {
         await canvas.requestPointerLock();
       } catch {
-        // Gesture expired — user clicks canvas to lock
+        // Gesture expired
       }
+    }
+
+    // Final fade out of the heavy loading screen
+    if (loading) {
+      loading.style.opacity = '0';
+      setTimeout(() => {
+        loading.style.display = 'none';
+      }, 800);
     }
   });
 }
