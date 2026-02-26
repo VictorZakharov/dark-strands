@@ -391,12 +391,15 @@ export function buildRoofs(scene) {
         const bh = (b.h - 1) * CFG.CELL + CFG.WALL_T;
         const c = getBuildingCenter(b);
 
+        // Overlap roof into wall top by 0.15 to eliminate light strip at junction
+        const ROOF_OVERLAP = 0.15;
+
         if (b.roofType === 'flat') {
-            const rw = bw + overhang, rh = 0.25, rd = bh + overhang;
+            const rw = bw + overhang, rh = 0.25 + ROOF_OVERLAP, rd = bh + overhang;
             const box = MeshBuilder.CreateBox('rf', {
                 width: rw, height: rh, depth: rd,
             }, scene);
-            box.position = new Vector3(c.x, topY + 0.125, c.z);
+            box.position = new Vector3(c.x, topY + 0.125 - ROOF_OVERLAP / 2, c.z);
             applyWorldUVs(box);
             flatMeshes.push(box);
         } else {
@@ -480,7 +483,7 @@ export function buildRoofs(scene) {
             if (longAxis) {
                 mesh.rotation.y = Math.PI / 2;
             }
-            mesh.position = new Vector3(c.x, topY, c.z);
+            mesh.position = new Vector3(c.x, topY - ROOF_OVERLAP, c.z);
             slantMeshes.push(mesh);
         }
     }

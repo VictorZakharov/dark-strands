@@ -587,3 +587,12 @@
 - **Pointer-move picking disabled**: `scene.skipPointerMovePicking = true` — game uses custom raycasting.
 - Added `t._lit` flag to track torch visibility before shadow slot zeroing — fixes old bug where embers were hidden for the nearest torches (shadow slot assignment zeroed their clustered light intensity).
 - **Shadow torches reduced from 3 to 1** — each point light shadow = 6 cube face passes. 1 shadow torch is sufficient for indoor atmosphere.
+
+## 2026-02-26
+
+### Torch floor-cull and lighting fixes
+- **Floor-cull keeps embers/flames visible** (`torches.js`): floor-cull now only zeros PointLight intensity for torches on a different floor than the player. `_lit` flag stays true (based on `baseIntensity`) so ember particles and emissive flame meshes remain visually active even when the light is culled. Previously embers stopped and torches looked "dead" on floor transitions.
+- **Robust floor-cull trigger** (`torches.js`): changed condition from `if (isInside)` to `if (isInside || _stablePlayerFloor > 0)` — ensures floor-cull always activates when player is on any upper floor, even if the grid cell check fails near wall edges.
+- **Shadow slot warm-keeping** (`torches.js`): inactive shadow slots now keep `shadowEnabled=true` with `intensity=0.001` instead of toggling `shadowEnabled=false`. Prevents ~1 second WebGPU pipeline recompilation freeze when transitioning between floors.
+- **Sun shadow bias tightened** (`lighting.js`): reduced `normalBias` from 0.02 to 0.01 and `bias` from 0.005 to 0.003. Reduces light strips at wall-ceiling junctions caused by shadow sampling pushed along surface normals at 90° corners.
+- **Roof-wall overlap** (`walls.js`): both flat and slant roofs now extend 0.15 units below the wall top. Eliminates the visible light strip at the interior wall-ceiling junction where sun shadow bias created a gap.

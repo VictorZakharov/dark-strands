@@ -749,20 +749,24 @@ export function updateTorchEmbers(dt) {
     }
   }
 
-  // Update intensity on all clustered torch lights and find nearest for shadow slots
+  // Update intensity on all clustered torch lights and find nearest for shadow slots.
+  // Floor-cull zeros clustered light intensity for torches on a different floor
+  // (clustered lights have no shadow support, so they'd leak through floors).
+  // Embers/flames stay visually active (_lit always true) — only the PointLight is culled.
   const torchDistances = [];
   for (const t of pickableTorches) {
     if (!t.active || t.light.metadata.picked) continue;
     if (t.light.metadata.baseIntensity === undefined) t.light.metadata.baseIntensity = 2.0;
 
-    // Floor-cull clustered lights (only shadow slot lights cast real floor shadows)
     let targetIntensity = t.light.metadata.baseIntensity;
-    if (isInside) {
+    if (isInside || _stablePlayerFloor > 0) {
       const torchFloor = Math.floor(t.flame.position.y / CFG.WALL_H);
       if (Math.abs(torchFloor - _stablePlayerFloor) >= 1) targetIntensity = 0;
     }
     t.light.intensity = targetIntensity;
-    t._lit = targetIntensity > 0; // track before shadow slot zeroes intensity
+    // Keep _lit true for all active torches — embers/flames stay visible even
+    // when light is floor-culled. Only the PointLight intensity changes.
+    t._lit = t.light.metadata.baseIntensity > 0;
 
     // Track distance for shadow slot assignment
     if (targetIntensity > 0) {
@@ -784,8 +788,9 @@ export function updateTorchEmbers(dt) {
       t.light.intensity = 0;
     } else {
       slot.position.y = -100;
-      slot.intensity = 0;
-      slot.shadowEnabled = false; // skip 6-face shadow map when no torch nearby
+      slot.intensity = 0.001; // tiny — keeps WebGPU shadow pipeline warm
+      // Keep shadowEnabled=true to prevent WebGPU pipeline recompilation freeze
+      // when transitioning between floors (~100 extra draws but avoids 1s stall)
     }
   }
 
