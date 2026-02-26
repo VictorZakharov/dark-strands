@@ -4,7 +4,7 @@ import { initScene, initRenderer, getRenderer, getScene, getCamera, getEngine } 
 import { initLighting } from './core/lighting.js';
 import { initGrid } from './world/grid.js';
 import { generateBuildings } from './world/generator.js';
-import { buildGround, buildWater } from './world/terrainMeshes.js';
+import { buildGround, buildWater, getWaterMaterial } from './world/terrainMeshes.js';
 import { buildFloors, getMergedFloors } from './world/floors.js';
 import { buildWalls, buildRoofs } from './world/walls.js';
 import { buildWindows } from './world/windows.js';
@@ -18,7 +18,7 @@ import { initPlayer, updatePlayer, updatePlayerMovement, syncPlayerFromPhysics, 
 import { initPhysics, stepPhysics, createTerrainBody } from './core/physics.js';
 import { initControls, isGameActive, getKeys, doInteract, doUseItem, getThrowCooldownFrac, isTimeStopped } from './systems/controls.js';
 import { isTouchDevice, getTouchMove, consumeTouchLook, consumeJump, consumeInteract, consumeUse, consumeSlotTap, setMobileGameActive, updateTouchProgress } from './systems/touch.js';
-import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH, isCycleEnabled } from './systems/daynight.js';
+import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH, isCycleEnabled, getSkyColor } from './systems/daynight.js';
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
 import { updateFlowers, getNearestFlower, initFlowerPreview, updateFlowerPreview } from './world/flowers.js';
 import { getTerrainHeight } from './world/terrain.js';
@@ -39,6 +39,7 @@ function getDelta(time) {
 }
 
 let minimapTick = 0;
+let _waterTime = 0;
 let menuMode = true;
 let pendingMenuDispose = 0; // countdown frames before disposal (0 = none)
 let altBlend = 0;
@@ -294,6 +295,22 @@ function gameLoop(time) {
       updateSunShadow(player.x, player.y, player.z);
     }
 
+    // Update ocean water shader uniforms
+    const _wm = getWaterMaterial();
+    if (_wm) {
+      _waterTime += gdt;
+      _wm.setFloat('uTime', _waterTime);
+      _wm.setVector3('uCameraPos', camera.position);
+      if (_sl) {
+        _wm.setVector3('uSunDir', _sl.direction);
+        _wm.setColor3('uSunColor', _sl.diffuse);
+      }
+      _wm.setColor3('uSkyColor', getSkyColor());
+      _wm.setColor3('uFogColor', scene.fogColor);
+      _wm.setFloat('uFogStart', scene.fogStart);
+      _wm.setFloat('uFogEnd', scene.fogEnd);
+    }
+
     // Greyscale transition or Sleep Darkening
     const isSleeping = targetSleepTime > 0;
     const canvas = getEngine().getRenderingCanvas();
@@ -498,7 +515,7 @@ async function buildWorld() {
   // breaks shadow receiving.
   // Freeze world matrices on static meshes — saves per-frame matrix recalculation.
   const staticMeshNames = new Set([
-    'ground', 'water', 'walls', 'mergedFloors', 'mergedStairs',
+    'ground', 'walls', 'mergedFloors', 'mergedStairs',
     'flatRoofs', 'slantRoofs', 'windowFrames', 'windowGlass',
     'mergedTrunks', 'mergedCanopy', 'mergedRocks',
   ]);

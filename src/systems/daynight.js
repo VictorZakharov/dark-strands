@@ -8,6 +8,7 @@ import { getScene } from '../core/scene.js';
 let dayTime = 8 / 24; // Start at 08:00 (overridden to 10:00 for snow biome)
 let cycleEnabled = false;
 let _sunH = 1; // current sun height (-1 to +1)
+let _currentSky = new Color3(0.424, 0.706, 0.933); // current sky color for water reflections
 
 // Sun offset from target — used by player.js shadow follow
 let _sunOff = { x: 40, y: 50, z: 20 };
@@ -15,6 +16,7 @@ let _sunOff = { x: 40, y: 50, z: 20 };
 export function getDayTime() { return dayTime; }
 export function getSunOffset() { return _sunOff; }
 export function getSunH() { return _sunH; }
+export function getSkyColor() { return _currentSky; }
 export function isCycleEnabled() { return cycleEnabled; }
 
 export function getHoursUntilDawn() {
@@ -115,6 +117,10 @@ export function updateDayNight(dt, scene) {
   } else {
     sky = night.clone();
   }
+
+  _currentSky.r = sky.r;
+  _currentSky.g = sky.g;
+  _currentSky.b = sky.b;
 
   // Babylon.js: clearColor is Color4, fogColor is Color3
   scene.clearColor = new Color4(sky.r, sky.g, sky.b, 1);
