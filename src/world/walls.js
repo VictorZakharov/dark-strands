@@ -372,6 +372,7 @@ export function buildRoofs(scene) {
     flatMat.diffuseTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
     flatMat.diffuseColor = new Color3(0.4, 0.4, 0.4); // tint stone darker for flat roof
     flatMat.specularColor = new Color3(0.02, 0.02, 0.02);
+    flatMat.backFaceCulling = false; // visible from inside (looking up at ceiling)
 
     const slantMat = new StandardMaterial('slantRoofMat', scene);
     slantMat.diffuseTexture = loadTex('./assets/textures/bark.jpg', 1, 1, scene);

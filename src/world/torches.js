@@ -1,9 +1,11 @@
-import { MeshBuilder, Mesh, StandardMaterial, PointLight,
-         ShadowGenerator, Texture, Color3, Color4,
-         Vector3, TransformNode, Ray, ParticleSystem,
-         ClusteredLightContainer, DynamicTexture } from 'babylonjs';
+import {
+  MeshBuilder, Mesh, StandardMaterial, PointLight,
+  ShadowGenerator, Texture, Color3, Color4,
+  Vector3, TransformNode, Ray, ParticleSystem,
+  ClusteredLightContainer, DynamicTexture
+} from 'babylonjs';
 import { getGrid, isDoorCell, isWindowCell, isStairCell, isWalkable } from './grid.js';
-import { getBuildings, getWallHeightAt } from './generator.js';
+import { getBuildings, getWallHeightAt, isInsideBuilding } from './generator.js';
 import { isInsideWindowOpening } from './windows.js';
 import { collidesWithRock } from './vegetation.js';
 import { getDoorByCell } from './doors.js';
@@ -32,13 +34,11 @@ const playerDoorTorches = [];
 let _container = null;
 let _scene = null;
 
-const MAX_SHADOW_TORCHES = 1;
+const MAX_SHADOW_TORCHES = 2;
 const shadowSlots = [];
 const _shadowGenerators = [];
 
-// Hysteresis for player floor detection — prevents torch flicker when jumping
-let _stablePlayerFloor = 0;
-let _floorChangeTimer = 0;
+
 
 /** Register a mesh as a shadow caster for all torch shadow generators */
 export function addTorchShadowCaster(mesh) {
@@ -117,8 +117,8 @@ function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ) {
   light.position = new Vector3(tipX, tipY + 0.06, tipZ);
 
   // Move from standard pipeline to clustered pipeline
+  // NOTE: do NOT call scene.removeLight — addLight handles it internally
   if (_container) {
-    scene.removeLight(light);
     _container.addLight(light);
   }
 
@@ -162,8 +162,8 @@ function createGroundTorch(scene, x, groundY, z) {
   light.position = new Vector3(x, groundY + STICK_LEN + 0.12, z);
 
   // Move from standard pipeline to clustered pipeline
+  // NOTE: do NOT call scene.removeLight — addLight handles it internally
   if (_container) {
-    scene.removeLight(light);
     _container.addLight(light);
   }
 
@@ -373,6 +373,10 @@ function findPlacementTarget(camera) {
   const p = getPlayerState();
   const px = p.x, pz = p.z;
 
+  // Indoor floor placement: use building floor level instead of terrain height
+  const isPlayerInside = isInsideBuilding(px, pz);
+  const playerFloorY = Math.floor(Math.max(0, p.y) / CFG.WALL_H) * CFG.WALL_H;
+
   let prevX = origin.x, prevZ = origin.z;
   let prevWalkable = true;
   let groundDone = false;
@@ -382,18 +386,20 @@ function findPlacementTarget(camera) {
     const y = origin.y + dir.y * t;
     const z = origin.z + dir.z * t;
     const groundY = getTerrainHeight(x, z);
+    // Inside buildings, use the building floor level (handles 2nd floor)
+    const effectiveGroundY = isPlayerInside ? Math.max(groundY, playerFloorY) : groundY;
 
     // Distance from player to this point (horizontal)
     const dxp = x - px, dzp = z - pz;
     const distPlayer = Math.sqrt(dxp * dxp + dzp * dzp);
 
     // Ground hit (only within shorter range from player)
-    if (!groundDone && y <= groundY + 0.05) {
+    if (!groundDone && y <= effectiveGroundY + 0.05) {
       if (distPlayer <= PLACE_MAX_DIST_GROUND) {
-        const valid = isWalkable(x, z) && (CFG.SNOW_MODE || groundY >= CFG.WATER_Y)
+        const valid = isWalkable(x, z) && (CFG.SNOW_MODE || effectiveGroundY >= CFG.WATER_Y)
           && !collidesWithRock(x, z, 0.15)
-          && !isTooCloseToTorch(x, groundY + STICK_LEN, z);
-        return valid ? { type: 'ground', x, z, y: groundY } : null;
+          && !isTooCloseToTorch(x, effectiveGroundY + STICK_LEN, z);
+        return valid ? { type: 'ground', x, z, y: effectiveGroundY } : null;
       }
       groundDone = true; // past ground range, keep scanning for walls
     }
@@ -424,6 +430,8 @@ function findPlacementTarget(camera) {
           const mountX = nx2 !== 0 ? wc.x + nx2 * wallSurf : prevX;
           const mountZ = nz2 !== 0 ? wc.z + nz2 * wallSurf : prevZ;
           if (isTooCloseToTorch(mountX, y, mountZ)) return null;
+          // Reject if torch tip would clip through ceiling
+          if (y + TIP_UP > CFG.WALL_H - 0.05) return null;
           return { type: 'wall', x: mountX, z: mountZ, y, nx: nx2, nz: nz2 };
         }
         // On door panel itself
@@ -434,6 +442,7 @@ function findPlacementTarget(camera) {
         else if (hitZ2 && !hitX2) nz2 = dir.z > 0 ? -1 : 1;
         else return null;
         if (y < 0.3 || y > doorTopY) return null;
+        if (y + TIP_UP > CFG.WALL_H - 0.05) return null;
         if (isTooCloseToTorch(prevX, y, prevZ)) return null;
         return { type: 'door', x: prevX, z: prevZ, y, nx: nx2, nz: nz2, door };
       }
@@ -443,6 +452,9 @@ function findPlacementTarget(camera) {
       // Reject if Y is above the wall height (torch would be on/above roof)
       const maxWallY = getWallHeightAt(g.x, g.z);
       if (y > maxWallY || y < 0) return null;
+      // Per-floor ceiling check — prevent torch tip from clipping through ceiling
+      const floorCeilY = Math.min((Math.floor(y / CFG.WALL_H) + 1) * CFG.WALL_H, maxWallY);
+      if (y + TIP_UP > floorCeilY - 0.05) return null;
 
       const hitX = !isWalkable(x, prevZ);
       const hitZ = !isWalkable(prevX, z);
@@ -733,39 +745,19 @@ export function initTorchEmbers(scene) {
 export function updateTorchEmbers(dt) {
   const p = getPlayerState();
   const px = p.x, py = p.y, pz = p.z;
-  const pg = w2g(px, pz);
-  const grid = getGrid();
-  const isInside = pg.x >= 0 && pg.x < CFG.GRID && pg.z >= 0 && pg.z < CFG.GRID && !!grid[pg.x][pg.z];
-
-  // Stable player floor with hysteresis — prevents flicker when jumping
-  const rawFloor = Math.floor(Math.max(0, py) / CFG.WALL_H);
-  if (rawFloor === _stablePlayerFloor) {
-    _floorChangeTimer = 0;
-  } else {
-    _floorChangeTimer += dt;
-    if (_floorChangeTimer > 0.4) {
-      _stablePlayerFloor = rawFloor;
-      _floorChangeTimer = 0;
-    }
-  }
 
   // Update intensity on all clustered torch lights and find nearest for shadow slots.
-  // Floor-cull zeros clustered light intensity for torches on a different floor
-  // (clustered lights have no shadow support, so they'd leak through floors).
-  // Embers/flames stay visually active (_lit always true) — only the PointLight is culled.
+  // All torches stay lit — clustered lighting handles unlimited count efficiently.
   const torchDistances = [];
   for (const t of pickableTorches) {
     if (!t.active || t.light.metadata.picked) continue;
     if (t.light.metadata.baseIntensity === undefined) t.light.metadata.baseIntensity = 2.0;
 
     let targetIntensity = t.light.metadata.baseIntensity;
-    if (isInside || _stablePlayerFloor > 0) {
-      const torchFloor = Math.floor(t.flame.position.y / CFG.WALL_H);
-      if (Math.abs(torchFloor - _stablePlayerFloor) >= 1) targetIntensity = 0;
-    }
+    // Clustered lighting handles unlimited lights — never cull torch intensity.
+    // Shadow slots handle per-floor shadow casting separately.
     t.light.intensity = targetIntensity;
-    // Keep _lit true for all active torches — embers/flames stay visible even
-    // when light is floor-culled. Only the PointLight intensity changes.
+    // All active torches with positive baseIntensity are considered lit (embers + flames visible).
     t._lit = t.light.metadata.baseIntensity > 0;
 
     // Track distance for shadow slot assignment

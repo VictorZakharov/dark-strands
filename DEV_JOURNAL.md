@@ -596,3 +596,13 @@
 - **Shadow slot warm-keeping** (`torches.js`): inactive shadow slots now keep `shadowEnabled=true` with `intensity=0.001` instead of toggling `shadowEnabled=false`. Prevents ~1 second WebGPU pipeline recompilation freeze when transitioning between floors.
 - **Sun shadow bias tightened** (`lighting.js`): reduced `normalBias` from 0.02 to 0.01 and `bias` from 0.005 to 0.003. Reduces light strips at wall-ceiling junctions caused by shadow sampling pushed along surface normals at 90° corners.
 - **Roof-wall overlap** (`walls.js`): both flat and slant roofs now extend 0.15 units below the wall top. Eliminates the visible light strip at the interior wall-ceiling junction where sun shadow bias created a gap.
+
+### Clustered lighting fix and torch placement improvements
+- **Fix clustered lighting** (`torches.js`): removed redundant `scene.removeLight(light)` before `_container.addLight(light)`. The `ClusteredLightContainer.addLight()` already handles removing lights from the scene's standard list — our extra call was stripping `mesh._lightSources` references, causing non-shadow-slot torches to produce no visible light. Torches no longer "turn off" when the player walks away.
+- **Removed floor-cull** (`torches.js`): with clustered lighting working properly, floor-cull logic (`_stablePlayerFloor`, `_floorChangeTimer`, `isInside` check) removed entirely. Clustered lighting handles unlimited lights efficiently.
+- **MAX_SHADOW_TORCHES increased to 2** (`torches.js`): two nearest torches get shadow-casting PointLights for proper wall occlusion.
+- **Indoor floor torch placement** (`torches.js`): added `isInsideBuilding` check — when player is inside a building, uses building floor level (`playerFloorY`) instead of terrain height for ground placement. Enables placing torches on 2nd floor surfaces.
+- **Ceiling height check** (`torches.js`): wall and door torch placement now rejects positions where the torch tip (`y + TIP_UP`) would clip through the per-floor ceiling. Prevents placing torches that emit no visible light because they're above the ceiling plane.
+- **Flat roof backface culling** (`walls.js`): set `flatMat.backFaceCulling = false` so flat roof bottom face is visible from inside buildings (looking up at ceiling no longer shows sky).
+- **Camera eye clamp** (`player.js`): increased first-person ceiling margin from 0.15 to 0.35 to prevent camera clipping into attic space.
+- **Double-click guard** (`main.js`): added `building` flag to prevent Play button double-click from building the world twice (was causing 800+ meshes and 9000+ draw calls).

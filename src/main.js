@@ -545,8 +545,11 @@ function setupPlayButton() {
   const playBtn = document.getElementById('menu-play');
   if (!playBtn) return;
 
+  let building = false;
   playBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
+    if (building) return; // guard against double-click
+    building = true;
 
     const snowCheckbox = document.getElementById('snow-checkbox');
     CFG.SNOW_MODE = snowCheckbox ? snowCheckbox.checked : false;

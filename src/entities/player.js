@@ -485,7 +485,7 @@ export function updatePlayer(dt, camera, sunLight, keys) {
     { x: state.x, y: state.y + CFG.PLAYER_H + 2.0, z: state.z }
   );
   if (fpCeil.hasHit) {
-    const maxEyeY = fpCeil.hitPointWorld.y - 0.15;
+    const maxEyeY = fpCeil.hitPointWorld.y - 0.35;
     if (_fpPos.y > maxEyeY) _fpPos.y = maxEyeY;
   }
 
