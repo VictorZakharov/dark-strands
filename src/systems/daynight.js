@@ -139,14 +139,16 @@ export function updateDayNight(dt, scene) {
   // Interior torches (always on, brighter at night)
   const torchIntensity = Math.min(3.5, 1.0 + Math.max(0, -sunH) * 2.5);
   for (const t of torchLights) {
-    if (t.metadata && t.metadata.picked) continue;
-    if (!t.metadata) t.metadata = {};
-    t.metadata.baseIntensity = torchIntensity;
+    try {
+      if (!t || (t.metadata && t.metadata.picked)) continue;
+      if (!t.metadata) t.metadata = {};
+      t.metadata.baseIntensity = torchIntensity;
+    } catch (e) { }
   }
 
   // Door torches — on 1h before sunset, off 1h after sunrise, 30min fade
-  const doorLights = getDoorTorchLights();
-  const doorFlames = getDoorTorchFlames();
+  const doorLights = getDoorTorchLights() || [];
+  const doorFlames = getDoorTorchFlames() || [];
   const h = dayTime * 24;
   const onH = set * 24 - 1;
   const offH = rise * 24 + 1;
@@ -168,11 +170,17 @@ export function updateDayNight(dt, scene) {
 
   const doorIntensity = Math.min(3.5, doorFade * (1.5 + Math.max(0, -sunH) * 2.0));
   for (const dl of doorLights) {
-    if (dl.metadata && dl.metadata.picked) continue;
-    if (!dl.metadata) dl.metadata = {};
-    dl.metadata.baseIntensity = doorIntensity;
+    try {
+      if (!dl || (dl.metadata && dl.metadata.picked)) continue;
+      if (!dl.metadata) dl.metadata = {};
+      dl.metadata.baseIntensity = doorIntensity;
+    } catch (e) { }
   }
-  for (const df of doorFlames) df.setEnabled(doorFade > 0.01);
+  for (const df of doorFlames) {
+    try {
+      if (df) df.setEnabled(doorFade > 0.01);
+    } catch (e) { }
+  }
 
   // HUD time display
   const hours = Math.floor(dayTime * 24);
