@@ -153,6 +153,7 @@ export function isHelpVisible() { return helpVisible; }
 
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
+export function setGameStarted(v) { gameStarted = v; }
 export function isGameActive() {
   if (simPause || timeStopped) return false;
   // Game keeps running even when pointer lock is lost (ESC frees cursor, game continues)

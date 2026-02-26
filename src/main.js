@@ -16,7 +16,7 @@ import { placeFurniture, getNearestBed } from './world/furniture.js';
 import { loadAllModels, getAnimMixers } from './entities/modelLoader.js';
 import { initPlayer, updatePlayer, updatePlayerMovement, syncPlayerFromPhysics, getPlayerState, getPlayerBody } from './entities/player.js';
 import { initPhysics, stepPhysics, createTerrainBody } from './core/physics.js';
-import { initControls, isGameActive, getKeys, doInteract, doUseItem, getThrowCooldownFrac, isTimeStopped } from './systems/controls.js';
+import { initControls, isGameActive, setGameStarted, getKeys, doInteract, doUseItem, getThrowCooldownFrac, isTimeStopped } from './systems/controls.js';
 import { isTouchDevice, getTouchMove, consumeTouchLook, consumeJump, consumeInteract, consumeUse, consumeSlotTap, setMobileGameActive, updateTouchProgress } from './systems/touch.js';
 import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH, isCycleEnabled, getSkyColor } from './systems/daynight.js';
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
@@ -595,23 +595,33 @@ function setupPlayButton() {
       fill.style.transform = 'scaleX(0)';
     }
 
-    await buildWorld();
+    try {
+      await buildWorld();
+    } catch (err) {
+      console.error('[BUILD] World build failed:', err);
+      // Restore menu so user isn't stuck
+      if (panel) panel.style.display = 'flex';
+      if (keys) keys.style.display = 'flex';
+      if (loading) loading.style.display = 'none';
+      building = false;
+      return;
+    }
 
     const blocker = document.getElementById('blocker');
     if (isTouchDevice) {
       if (blocker) blocker.style.display = 'none';
       setMobileGameActive(true);
     } else {
+      // Mark game as started so the game loop activates immediately
+      setGameStarted(true);
       if (blocker) {
         blocker.dataset.mode = 'game';
         blocker.style.display = 'none';
       }
+      // Try to acquire pointer lock (may fail if gesture expired during async build)
+      // If it fails, game still runs — clicking the canvas will lock via tryRelock
       const canvas = getEngine().getRenderingCanvas();
-      try {
-        await canvas.requestPointerLock();
-      } catch {
-        // Gesture expired
-      }
+      try { await canvas.requestPointerLock(); } catch { }
     }
 
     // Final fade out of the heavy loading screen
