@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import { Vector3, Matrix } from 'babylonjs';
 import { canMoveToR } from '../world/grid.js';
 import { getPlayerState } from '../entities/player.js';
 import { getBuildings } from '../world/generator.js';
@@ -6,12 +6,11 @@ import { CFG } from '../config.js';
 import { getTerrainHeight } from '../world/terrain.js';
 import { collidesWithRock, getRockPushback } from '../world/vegetation.js';
 import { collidesWithDoorPanel, getDoorPanelPushback } from '../world/doors.js';
-import { getCamera } from '../core/scene.js';
+import { getCamera, getScene, getEngine } from '../core/scene.js';
 
 const npcs = [];
 const NPC_RADIUS = 0.5;
 const TALK_DIST = 3.5;
-const _projNpc = new THREE.Vector3();
 
 const SOLDIER_LINES = [
   // Original 20
@@ -127,8 +126,9 @@ export function getNpcs() { return npcs; }
  */
 export function getNpcCollision(px, pz, playerRadius) {
   for (const npc of npcs) {
-    const dx = px - npc.model.position.x;
-    const dz = pz - npc.model.position.z;
+    const pos = npc.model.position;
+    const dx = px - pos.x;
+    const dz = pz - pos.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     const minDist = playerRadius + NPC_RADIUS;
     if (dist < minDist && dist > 0) {
@@ -140,12 +140,13 @@ export function getNpcCollision(px, pz, playerRadius) {
 
 /**
  * Register a soldier NPC with wandering behavior.
+ * In Babylon.js, clips are AnimationGroups (not Three.js AnimationClips).
  */
 export function registerSoldier(model, mixer, clips) {
   const idleAction = mixer.clipAction(clips.idle);
   const walkAction = mixer.clipAction(clips.walk);
 
-  walkAction.timeScale = 0.9;
+  if (walkAction) walkAction.timeScale = 0.9;
   idleAction.play();
 
   npcs.push({
@@ -195,6 +196,9 @@ export function registerFox(model, mixer, clips) {
     fleeRange: 15,
     fleeSpeed: 5.0,
     facingOffset: 0,
+    stuckTimer: 0,
+    lastFleeX: 0,
+    lastFleeZ: 0,
   });
 }
 
@@ -212,8 +216,9 @@ function crossfade(from, to, duration = 0.3) {
 
 function distToPlayer(npc) {
   const p = getPlayerState();
-  const dx = npc.model.position.x - p.x;
-  const dz = npc.model.position.z - p.z;
+  const pos = npc.model.position;
+  const dx = pos.x - p.x;
+  const dz = pos.z - p.z;
   return Math.sqrt(dx * dx + dz * dz);
 }
 
@@ -232,11 +237,6 @@ function isInsideBuilding(x, z) {
   return false;
 }
 
-/**
- * Smart flee: sample multiple directions, pick the best walkable one
- * that moves away from player. Inside buildings, bias toward directions
- * that lead outside.
- */
 function smartFleeDirection(npc) {
   const p = getPlayerState();
   const pos = npc.model.position;
@@ -247,30 +247,35 @@ function smartFleeDirection(npc) {
 
   let bestAngle = awayAngle;
   let bestScore = -Infinity;
-  const step = 2.0;
 
-  for (let i = 0; i < 12; i++) {
-    const angle = awayAngle + ((i * Math.PI * 2) / 12);
-    const testX = pos.x + Math.sin(angle) * step;
-    const testZ = pos.z + Math.cos(angle) * step;
+  const steps = [2.0, 1.0, 0.5];
 
-    if (!canNpcMove(testX, testZ, npc.radius)) continue;
+  for (const step of steps) {
+    for (let i = 0; i < 12; i++) {
+      const angle = awayAngle + ((i * Math.PI * 2) / 12);
+      const testX = pos.x + Math.sin(angle) * step;
+      const testZ = pos.z + Math.cos(angle) * step;
 
-    const newDx = testX - p.x;
-    const newDz = testZ - p.z;
-    let score = Math.sqrt(newDx * newDx + newDz * newDz);
+      if (!canNpcMove(testX, testZ, npc.radius)) continue;
 
-    if (inBuilding && !isInsideBuilding(testX, testZ)) {
-      score += 20;
+      const newDx = testX - p.x;
+      const newDz = testZ - p.z;
+      let score = Math.sqrt(newDx * newDx + newDz * newDz);
+
+      if (inBuilding && !isInsideBuilding(testX, testZ)) {
+        score += 20;
+      }
+
+      const angleDiff = Math.abs(angle - awayAngle);
+      score -= angleDiff * 0.5;
+      score += step * 0.5;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestAngle = angle;
+      }
     }
-
-    const angleDiff = Math.abs(angle - awayAngle);
-    score -= angleDiff * 0.5;
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestAngle = angle;
-    }
+    if (bestScore > -Infinity) break;
   }
 
   npc.dirX = Math.sin(bestAngle);
@@ -279,14 +284,10 @@ function smartFleeDirection(npc) {
 
 function canNpcMove(x, z, r) {
   if (!canMoveToR(x, z, r) || collidesWithRock(x, z, r) || collidesWithDoorPanel(x, z, r)) return false;
-  // NPCs avoid water (unless snow mode where water is ice)
   if (!CFG.SNOW_MODE && getTerrainHeight(x, z) < CFG.WATER_Y) return false;
   return true;
 }
 
-/**
- * Move NPC with per-axis wall sliding (split X and Z).
- */
 function moveNpc(npc, mx, mz) {
   const pos = npc.model.position;
   const r = npc.radius;
@@ -298,11 +299,11 @@ export function updateNpcs(dt) {
   for (const npc of npcs) {
     const pos = npc.model.position;
 
-    // Follow terrain height (clamped to ice level in snow mode)
+    // Follow terrain height
     pos.y = getTerrainHeight(pos.x, pos.z);
     if (CFG.SNOW_MODE) pos.y = Math.max(pos.y, CFG.WATER_Y);
 
-    // Apply pushback from rocks and doors to prevent getting permanently stuck
+    // Pushback from rocks and doors
     const rockPush = getRockPushback(pos.x, pos.z, npc.radius);
     if (rockPush) {
       pos.x += rockPush.x;
@@ -323,10 +324,9 @@ export function updateNpcs(dt) {
           const prev = npc.state === 'walking' ? npc.walkAction : npc.idleAction;
           crossfade(prev, npc.runAction);
           npc.state = 'fleeing';
-          npc.fleeTimer = 0; // recalc immediately on enter
+          npc.fleeTimer = 0;
         }
 
-        // Only recalculate direction periodically or when blocked
         npc.fleeTimer -= dt;
         const mx = npc.dirX * npc.fleeSpeed * dt;
         const mz = npc.dirZ * npc.fleeSpeed * dt;
@@ -338,7 +338,41 @@ export function updateNpcs(dt) {
         }
 
         moveNpc(npc, npc.dirX * npc.fleeSpeed * dt, npc.dirZ * npc.fleeSpeed * dt);
-        npc.model.rotation.y = Math.atan2(npc.dirX, npc.dirZ) + npc.facingOffset;
+        // Babylon.js rotation: set Y rotation directly
+        npc.model.rotation = new Vector3(0, Math.atan2(npc.dirX, npc.dirZ) + npc.facingOffset, 0);
+
+        // Stuck detection
+        if (npc.stuckTimer !== undefined) {
+          const movedDx = pos.x - npc.lastFleeX;
+          const movedDz = pos.z - npc.lastFleeZ;
+          const movedDist = Math.sqrt(movedDx * movedDx + movedDz * movedDz);
+          if (movedDist < 0.1) {
+            npc.stuckTimer += dt;
+          } else {
+            npc.stuckTimer = 0;
+            npc.lastFleeX = pos.x;
+            npc.lastFleeZ = pos.z;
+          }
+          if (npc.stuckTimer > 3.0 && isInsideBuilding(pos.x, pos.z)) {
+            for (let r = 2; r <= 20; r += 2) {
+              let found = false;
+              for (let a = 0; a < 8; a++) {
+                const angle = a * Math.PI / 4;
+                const tx = pos.x + Math.cos(angle) * r;
+                const tz = pos.z + Math.sin(angle) * r;
+                if (canNpcMove(tx, tz, npc.radius) && !isInsideBuilding(tx, tz)) {
+                  pos.x = tx;
+                  pos.z = tz;
+                  npc.stuckTimer = 0;
+                  found = true;
+                  break;
+                }
+              }
+              if (found) break;
+            }
+          }
+        }
+
         npc.timer = 1 + Math.random() * 2;
         continue;
       } else if (npc.state === 'fleeing') {
@@ -382,12 +416,11 @@ export function updateNpcs(dt) {
       }
 
       if (!moved) {
-        // Blocked — stop and idle briefly, then pick new direction
         npc.state = 'idle';
         npc.timer = 0.5 + Math.random() * 1.0;
         crossfade(npc.walkAction, npc.idleAction);
       } else {
-        npc.model.rotation.y = Math.atan2(npc.dirX, npc.dirZ) + npc.facingOffset;
+        npc.model.rotation = new Vector3(0, Math.atan2(npc.dirX, npc.dirZ) + npc.facingOffset, 0);
       }
     }
   }
@@ -413,8 +446,9 @@ export function getNearestSoldier() {
 
   for (const npc of npcs) {
     if (npc.type !== 'soldier') continue;
-    const dx = p.x - npc.model.position.x;
-    const dz = p.z - npc.model.position.z;
+    const pos = npc.model.position;
+    const dx = p.x - pos.x;
+    const dz = p.z - pos.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < bestDist) {
       bestDist = dist;
@@ -444,6 +478,24 @@ export function talkToNearestSoldier() {
 }
 
 /**
+ * Project a world position to screen coords (Babylon.js).
+ * Returns { x, y, behind } where behind=true if behind camera.
+ */
+function projectToScreen(wx, wy, wz) {
+  const engine = getEngine();
+  const scene = getScene();
+  const camera = getCamera();
+  const vp = camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
+  const projected = Vector3.Project(
+    new Vector3(wx, wy, wz),
+    Matrix.Identity(),
+    scene.getTransformMatrix(),
+    vp
+  );
+  return { x: projected.x, y: projected.y, behind: projected.z > 1 };
+}
+
+/**
  * Update the soldier [E] hint and speech bubble screen positions.
  */
 export function updateSoldierHint() {
@@ -452,16 +504,13 @@ export function updateSoldierHint() {
   // Speech bubble follows the speaking soldier
   if (speechTarget && speechTimer > 0) {
     const pos = speechTarget.model.position;
-    _projNpc.set(pos.x, pos.y + 1.8, pos.z);
-    _projNpc.project(camera);
+    const p = projectToScreen(pos.x, pos.y + 1.8, pos.z);
 
     const el = document.getElementById('npc-speech');
-    if (el && _projNpc.z < 1) {
-      const hw = window.innerWidth / 2;
-      const hh = window.innerHeight / 2;
+    if (el && !p.behind) {
       const margin = 80;
-      const bx = Math.max(margin, Math.min(window.innerWidth - margin, _projNpc.x * hw + hw));
-      const by = Math.max(margin, Math.min(window.innerHeight - margin, -_projNpc.y * hh + hh));
+      const bx = Math.max(margin, Math.min(window.innerWidth - margin, p.x));
+      const by = Math.max(margin, Math.min(window.innerHeight - margin, p.y));
       el.style.left = bx + 'px';
       el.style.top = by + 'px';
     }
@@ -471,12 +520,10 @@ export function updateSoldierHint() {
   const hintEl = document.getElementById('interact-hint');
   if (!hintEl) return;
 
-  // Don't show soldier hint if a door hint is already active
   if (hintEl.style.display === 'block' && hintEl.dataset.source === 'door') return;
 
   const soldier = getNearestSoldier();
   if (!soldier) {
-    // Only hide if we were showing a soldier hint
     if (hintEl.dataset.source === 'soldier') {
       hintEl.style.display = 'none';
       hintEl.dataset.source = '';

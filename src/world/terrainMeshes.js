@@ -1,74 +1,99 @@
-import * as THREE from 'three';
+import { MeshBuilder, Mesh, VertexData, StandardMaterial,
+         Texture, Color3, Vector3 } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getTerrainHeight } from './terrain.js';
+import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
-const loader = new THREE.TextureLoader();
-
-function loadTex(path, repeatX, repeatY) {
-    const tex = loader.load(path);
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(repeatX, repeatY);
-    tex.colorSpace = THREE.SRGBColorSpace;
+function loadTex(path, uScale, vScale, scene) {
+    const tex = new Texture(path, scene);
+    tex.uScale = uScale;
+    tex.vScale = vScale;
+    // Babylon.js defaults to WRAP (repeat) addressing
     return tex;
 }
 
 export function buildGround(scene) {
     const size = CFG.GRID * CFG.CELL + 20;
-    const segments = 128;
-    const geo = new THREE.PlaneGeometry(size, size, segments, segments);
+    const segments = 64;
+
+    // Create a ground mesh with subdivisions
+    const ground = MeshBuilder.CreateGround('ground', {
+        width: size,
+        height: size,
+        subdivisions: segments,
+        updatable: true,
+    }, scene);
 
     // Displace vertices for terrain elevation
-    const positions = geo.attributes.position;
-    for (let i = 0; i < positions.count; i++) {
-        const lx = positions.getX(i);
-        const ly = positions.getY(i);
-        // After -PI/2 rotation: world X = lx, world Z = -ly
-        const h = getTerrainHeight(lx, -ly);
-        positions.setZ(i, h);
+    const positions = ground.getVerticesData('position');
+    for (let i = 0; i < positions.length; i += 3) {
+        const wx = positions[i];     // x
+        const wz = positions[i + 2]; // z
+        const h = getTerrainHeight(wx, wz);
+        positions[i + 1] = h;        // y = height
     }
-    positions.needsUpdate = true;
-    geo.computeVertexNormals();
 
+    ground.updateVerticesData('position', positions);
+    ground.createNormals(true); // recompute normals after displacement
+
+    // Fix normals if flipped (useRightHandedSystem + createNormals may invert winding)
+    const normals = ground.getVerticesData('normal');
+    if (normals && normals[1] < 0) {
+        console.warn('[GROUND] Flipping normals — were pointing DOWN (Y=' + normals[1].toFixed(3) + ')');
+        for (let i = 0; i < normals.length; i++) normals[i] = -normals[i];
+        ground.updateVerticesData('normal', normals);
+    } else {
+        console.warn('[GROUND] Normals OK — pointing UP (Y=' + (normals ? normals[1].toFixed(3) : 'null') + ')');
+    }
+
+    ground.refreshBoundingInfo();  // update bounding box after vertex displacement
+
+    // StandardMaterial for shadow compatibility (PBR shadows broken with useRightHandedSystem)
     let mat;
     if (CFG.SNOW_MODE) {
-        mat = new THREE.MeshStandardMaterial({ color: 0xdde4e8, roughness: 0.85 });
+        mat = new StandardMaterial('groundMat', scene);
+        mat.diffuseColor = new Color3(0.867, 0.894, 0.910);
+        mat.specularColor = new Color3(0.02, 0.02, 0.02);
     } else {
-        const grassTex = loadTex('./assets/textures/grass.jpg', size / 4, size / 4);
-        mat = new THREE.MeshStandardMaterial({ map: grassTex, roughness: 0.95 });
+        mat = new StandardMaterial('groundMat', scene);
+        mat.diffuseTexture = loadTex('./assets/textures/grass.jpg', size / 4, size / 4, scene);
+        mat.diffuseColor = new Color3(1.2, 1.2, 1.0);
+        mat.ambientColor = new Color3(0.6, 0.6, 0.5);
+        mat.specularColor = new Color3(0.02, 0.02, 0.02);
+        mat.emissiveColor = new Color3(0.02, 0.03, 0.01);
     }
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.receiveShadow = true;
-    mesh.userData.isGround = true;
-    scene.add(mesh);
+    ground.material = mat;
+    ground.metadata = { isGround: true };
+    enableShadowReceiving(ground);
 }
 
 export function buildWater(scene) {
     const size = CFG.GRID * CFG.CELL + 20;
-    const geo = new THREE.PlaneGeometry(size, size);
+
+    const water = MeshBuilder.CreateGround('water', {
+        width: size,
+        height: size,
+    }, scene);
+    water.position.y = CFG.WATER_Y;
+
     let mat;
     if (CFG.SNOW_MODE) {
-        mat = new THREE.MeshStandardMaterial({
-            color: 0xb8d4e3,
-            roughness: 0.15,
-            metalness: 0.1,
-        });
+        // Frozen ice — slightly shiny, no transparency
+        mat = new StandardMaterial('iceMat', scene);
+        mat.diffuseColor = new Color3(0.722, 0.831, 0.890); // #b8d4e3
+        mat.specularColor = new Color3(0.3, 0.3, 0.3);
+        mat.specularPower = 64;
     } else {
-        mat = new THREE.MeshStandardMaterial({
-            color: 0x2266aa,
-            transparent: true,
-            opacity: 0.55,
-            roughness: 0.1,
-            metalness: 0.3,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-        });
+        // StandardMaterial for reliable alpha transparency
+        mat = new StandardMaterial('waterMat', scene);
+        mat.diffuseColor = new Color3(0.133, 0.4, 0.667); // #2266aa
+        mat.specularColor = new Color3(0.3, 0.4, 0.5);
+        mat.specularPower = 32;
+        mat.alpha = 0.45;
+        mat.transparencyMode = 2; // ALPHABLEND — force alpha blending pipeline
+        mat.backFaceCulling = false; // DoubleSide equivalent
     }
-    const water = new THREE.Mesh(geo, mat);
-    water.rotation.x = -Math.PI / 2;
-    water.position.y = CFG.WATER_Y;
-    water.receiveShadow = true;
-    water.userData.isGround = true;
-    scene.add(water);
+    water.material = mat;
+    water.metadata = { isGround: true };
+    enableShadowReceiving(water);
 }

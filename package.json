@@ -5,13 +5,16 @@
   "scripts": {
     "start": "npx serve . -p 3000 --no-clipboard",
     "dev": "npx serve . -p 3000 --no-clipboard",
+    "bundle:babylon": "node scripts/bundle-babylon.js",
     "build": "node build.js",
     "serve:prod": "node build.js && npx serve dist -p 3000 --no-clipboard",
     "count": "node count_lines.mjs"
   },
   "dependencies": {
-    "cannon-es": "^0.20.0",
-    "three": "^0.162.0"
+    "@babylonjs/core": "^8.52.1",
+    "@babylonjs/loaders": "^8.52.1",
+    "@babylonjs/materials": "^8.52.1",
+    "@dimforge/rapier3d-compat": "^0.19.3"
   },
   "devDependencies": {
     "esbuild": "^0.27.3"

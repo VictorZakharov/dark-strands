@@ -12,7 +12,9 @@ export const CFG = {
   WATER_Y: -1.5,
 
   // Player
-  PLAYER_H: 1.7,
+  SOLDIER_H: 2.4,
+  FOX_H: 1.2,
+  PLAYER_H: 2.15,
   PLAYER_R: 0.35,
   SPEED: 6,
   SPRINT: 11,

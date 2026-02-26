@@ -10,7 +10,7 @@ import { pickNearestTorch, hideHeldTorch, isTorchPreviewValid, placeTorchAtPrevi
 import { isTouchDevice, initTouch, setMobileGameActive, isMobileGameActive } from './touch.js';
 import { getNearestBed } from '../world/furniture.js';
 import { isCycleEnabled } from './daynight.js';
-import { openSleepMenu } from './sleep.js';
+import { openSleepMenu, isSleepMenuActive } from './sleep.js';
 
 const keys = {};
 let pointerLocked = false;
@@ -112,12 +112,35 @@ function resumeFromPause(blocker) {
   }
 }
 
+function setupHelpTabs(panel) {
+  if (panel._tabsReady) return;
+  panel._tabsReady = true;
+  const tabs = panel.querySelectorAll('.help-tab');
+  const contents = panel.querySelectorAll('.help-tab-content');
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      contents.forEach(c => c.classList.remove('active'));
+      tab.classList.add('active');
+      const target = panel.querySelector(`.help-tab-content[data-tab="${tab.dataset.tab}"]`);
+      if (target) target.classList.add('active');
+    });
+  });
+  // On mobile, default to touch tab
+  const isMobile = 'ontouchstart' in window;
+  if (isMobile) {
+    const touchTab = panel.querySelector('.help-tab[data-tab="touch"]');
+    if (touchTab) touchTab.click();
+  }
+}
+
 function toggleHelp() {
   const el = document.getElementById('help-overlay');
   if (!el) return;
   helpVisible = !helpVisible;
   el.style.display = helpVisible ? 'flex' : 'none';
   if (helpVisible) {
+    setupHelpTabs(el);
     document.exitPointerLock();
   } else {
     const renderer = getRenderer();
@@ -132,7 +155,8 @@ export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
 export function isGameActive() {
   if (simPause || timeStopped) return false;
-  return gameStarted && (pointerLocked || isMobileGameActive());
+  // Game keeps running even when pointer lock is lost (ESC frees cursor, game continues)
+  return gameStarted || isMobileGameActive();
 }
 export function isRightMouseDown() { return rightMouseDown; }
 
@@ -229,13 +253,17 @@ export function initControls() {
   const blocker = document.getElementById('blocker');
   const player = getPlayerState();
 
-  // Clicking canvas requests pointer lock (for initial entry or re-lock after ESC)
-  renderer.domElement.addEventListener('mousedown', () => {
-    if (!pointerLocked && !simPause) {
-      pendingLockEl = renderer.domElement;
+  // Clicking anywhere re-locks pointer when game is running but cursor is free
+  // Use both document-level and canvas-level handlers for maximum reliability.
+  // Some browsers only allow requestPointerLock from gesture on the target element.
+  function tryRelock() {
+    if (gameStarted && !pointerLocked && !simPause && !helpVisible && !isSleepMenuActive()) {
+      ignoreMovesFor(150);
       tryLock(renderer.domElement);
     }
-  });
+  }
+  document.addEventListener('mousedown', tryRelock);
+  renderer.domElement.addEventListener('click', tryRelock);
 
   // Click to resume from Tab-pause
   document.addEventListener('mousedown', (e) => {
@@ -267,13 +295,28 @@ export function initControls() {
       if (blocker.dataset.mode === 'game') {
         ignoreMovesFor(150);
 
-        if (simPause) {
-          if (!isSleepMenuActive()) {
-            // ESC during Tab-pause → show pause UI with OS cursor
-            enterPausedReleased(blocker);
-          }
+        if (isSleepMenuActive()) {
+          // Sleep menu opened — don't show any overlay, let the sleep UI handle it
+        } else if (simPause) {
+          // ESC during Tab-pause → show pause UI with OS cursor
+          enterPausedReleased(blocker);
+        } else {
+          // ESC during gameplay → show click-to-resume overlay
+          blocker.style.display = 'flex';
+          blocker.style.background = 'rgba(0, 0, 0, 0.25)';
+          const panel = document.getElementById('menu-panel');
+          const loading = document.getElementById('menu-loading');
+          const keysEl = document.getElementById('menu-keys');
+          const pause = document.getElementById('menu-pause');
+          if (panel) panel.style.display = 'none';
+          if (loading) loading.style.display = 'none';
+          if (keysEl) keysEl.style.display = 'none';
+          if (pause) pause.style.display = 'flex';
+          const pt = document.getElementById('pause-text');
+          if (pt) pt.textContent = '';
+          const ph = document.getElementById('pause-hint');
+          if (ph) ph.textContent = 'Click to resume';
         }
-        // else: ESC during gameplay → game keeps running, cursor free
       } else {
         blocker.style.display = 'flex';
       }

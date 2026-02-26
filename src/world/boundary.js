@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import { MeshBuilder, ShaderMaterial, Effect, Vector3, Color3 } from 'babylonjs';
 
 // --- Boundary shield: static hex grid with traveling light wave ---
 
@@ -7,16 +7,28 @@ const RIPPLE_DURATION = 1.2;
 const SHIELD_SIZE = 12;
 
 const ripplePool = [];
+let _playerAtBoundary = false;
 
-const vertexShader = `
+/** Called each frame by player.js to indicate whether the player is pressing into a boundary */
+export function setBoundaryContact(active) { _playerAtBoundary = active; }
+
+// Register custom shader code with Babylon.js Effect store
+const SHADER_NAME = 'boundaryShield';
+
+Effect.ShadersStore[SHADER_NAME + 'VertexShader'] = `
+precision highp float;
+attribute vec3 position;
+attribute vec2 uv;
+uniform mat4 worldViewProjection;
 varying vec2 vUv;
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_Position = worldViewProjection * vec4(position, 1.0);
 }
 `;
 
-const fragmentShader = `
+Effect.ShadersStore[SHADER_NAME + 'FragmentShader'] = `
+precision highp float;
 uniform float uWave;
 uniform float uOpacity;
 varying vec2 vUv;
@@ -40,7 +52,6 @@ void main() {
   float cellDist = length(cellId) / scale;  // normalized distance from shield center
 
   // Flat-top hex SDF: apothem = 0.5
-  // Edge normals at 0deg, 60deg, 120deg
   vec2 ag = abs(gv);
   float hd = max(ag.x, dot(ag, vec2(0.5, 0.866025)));
   float edge = smoothstep(0.42, 0.5, hd);
@@ -70,26 +81,31 @@ void main() {
 `;
 
 export function initBoundaryShield(scene) {
-  const geo = new THREE.PlaneGeometry(SHIELD_SIZE, SHIELD_SIZE);
-
   for (let i = 0; i < POOL_SIZE; i++) {
-    const mat = new THREE.ShaderMaterial({
-      vertexShader,
-      fragmentShader,
-      uniforms: {
-        uWave: { value: 0 },
-        uOpacity: { value: 0 },
-      },
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-      depthWrite: false,
+    const mesh = MeshBuilder.CreatePlane('shield_' + i, {
+      width: SHIELD_SIZE,
+      height: SHIELD_SIZE,
+      sideOrientation: 2, // DOUBLESIDE
+    }, scene);
+
+    const mat = new ShaderMaterial('shieldMat_' + i, scene, {
+      vertex: SHADER_NAME,
+      fragment: SHADER_NAME,
+    }, {
+      attributes: ['position', 'uv'],
+      uniforms: ['worldViewProjection', 'uWave', 'uOpacity'],
     });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.visible = false;
-    mesh.frustumCulled = false;
-    mesh.raycast = function() {}; // visual-only, skip all raycasts
-    scene.add(mesh);
+    mat.setFloat('uWave', 0);
+    mat.setFloat('uOpacity', 0);
+    mat.alpha = 0.99; // enables alpha blending
+    mat.alphaMode = 1; // ALPHA_ADD (additive blending)
+    mat.backFaceCulling = false;
+    mat.disableDepthWrite = true;
+
+    mesh.material = mat;
+    mesh.setEnabled(false);
+    mesh.isPickable = false; // visual-only, skip all raycasts
+
     ripplePool.push({ mesh, mat, active: false, timer: 0 });
   }
 }
@@ -109,30 +125,33 @@ export function spawnBoundaryHit(x, y, z, nx, nz) {
 
   ripple.active = true;
   ripple.timer = 0;
-  ripple.mesh.visible = true;
-  ripple.mesh.position.set(x, y, z);
+  ripple.mesh.setEnabled(true);
+  ripple.mesh.position = new Vector3(x, y, z);
 
-  const lookTarget = new THREE.Vector3(x + nx, y, z + nz);
+  // Face the shield toward the inward normal
+  const lookTarget = new Vector3(x + nx, y, z + nz);
   ripple.mesh.lookAt(lookTarget);
 
-  ripple.mat.uniforms.uWave.value = 0;
-  ripple.mat.uniforms.uOpacity.value = 1;
+  ripple.mat.setFloat('uWave', 0);
+  ripple.mat.setFloat('uOpacity', 1);
 }
 
 export function updateBoundaryShield(dt) {
   for (const r of ripplePool) {
     if (!r.active) continue;
 
-    r.timer += dt;
+    // When player stops pressing into the boundary, fade out 4x faster
+    const speed = _playerAtBoundary ? 1 : 4;
+    r.timer += dt * speed;
     const t = r.timer / RIPPLE_DURATION;
 
     if (t >= 1) {
       r.active = false;
-      r.mesh.visible = false;
+      r.mesh.setEnabled(false);
       continue;
     }
 
-    r.mat.uniforms.uWave.value = t;
-    r.mat.uniforms.uOpacity.value = t < 0.6 ? 1.0 : 1.0 - (t - 0.6) / 0.4;
+    r.mat.setFloat('uWave', Math.min(t, 1));
+    r.mat.setFloat('uOpacity', t < 0.6 ? 1.0 : 1.0 - (t - 0.6) / 0.4);
   }
 }

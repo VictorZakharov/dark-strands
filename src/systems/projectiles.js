@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import { MeshBuilder, PBRMaterial, StandardMaterial, Vector3, Color3, Ray, Quaternion } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getTerrainHeight } from '../world/terrain.js';
 import { getRockTexture, registerPickableRock, findRockSurface, getPickableRockNear, deactivateRock, getTreeFoliageDamping } from '../world/vegetation.js';
@@ -8,10 +8,10 @@ import { tryBreakWindow, isWindowBrokenAt } from '../world/windows.js';
 import { getPlayerState, getPlayerBody } from '../entities/player.js';
 import { createProjectileSphere, removeBody } from '../core/physics.js';
 import { spawnBoundaryHit } from '../world/boundary.js';
+import { getScene, getCamera } from '../core/scene.js';
+import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
 const projectiles = [];
-const _throwRay = new THREE.Raycaster();
-_throwRay.layers.set(0); // skip player model (layer 1) and sky objects (layer 2)
 
 // Glass shard particles
 const glassShards = [];
@@ -21,18 +21,28 @@ const SHARD_LIFE = 2.0;
 function spawnGlassShards(x, y, z, scene) {
   for (let i = 0; i < SHARD_COUNT; i++) {
     const size = 0.03 + Math.random() * 0.06;
-    const geo = new THREE.PlaneGeometry(size, size * (0.5 + Math.random()));
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0x88ccee, transparent: true, opacity: 0.6, side: THREE.DoubleSide,
-    });
-    const shard = new THREE.Mesh(geo, mat);
-    shard.position.set(
+    const shard = MeshBuilder.CreatePlane('shard', {
+      width: size,
+      height: size * (0.5 + Math.random()),
+      sideOrientation: 2 // DOUBLESIDE
+    }, scene);
+    const mat = new StandardMaterial('shardMat' + i, scene);
+    mat.diffuseColor = new Color3(0.533, 0.8, 0.933); // #88ccee
+    mat.alpha = 0.6;
+    mat.disableLighting = true;
+    shard.material = mat;
+
+    shard.position = new Vector3(
       x + (Math.random() - 0.5) * 0.3,
       y + (Math.random() - 0.5) * 0.3,
       z + (Math.random() - 0.5) * 0.3
     );
-    shard.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-    scene.add(shard);
+    shard.rotation = new Vector3(
+      Math.random() * Math.PI,
+      Math.random() * Math.PI,
+      Math.random() * Math.PI
+    );
+
     glassShards.push({
       mesh: shard,
       vx: (Math.random() - 0.5) * 2,
@@ -45,40 +55,50 @@ function spawnGlassShards(x, y, z, scene) {
 }
 
 export function spawnProjectile(camera, scene) {
-  const camPos = new THREE.Vector3();
-  const camDir = new THREE.Vector3();
-  camera.getWorldPosition(camPos);
-  camera.getWorldDirection(camDir);
+  const camPos = camera.position.clone();
+  // Babylon FreeCamera: forward = target - position
+  const camDir = camera.getTarget().subtract(camera.position).normalize();
 
   const p = getPlayerState();
-  const eyePos = new THREE.Vector3(p.x, p.y + CFG.PLAYER_H, p.z);
+  const eyePos = new Vector3(p.x, p.y + CFG.PLAYER_H, p.z);
 
   // Raycast from camera to find exact crosshair target (fixes 3rd person parallax)
-  _throwRay.set(camPos, camDir);
-  _throwRay.far = 200;
-  const hits = _throwRay.intersectObjects(scene.children, true);
-  let targetPoint;
-  if (hits.length > 0) {
-    targetPoint = hits[0].point;
-  } else {
-    targetPoint = new THREE.Vector3().copy(camPos).addScaledVector(camDir, 200);
-  }
-  const dir = new THREE.Vector3().subVectors(targetPoint, eyePos).normalize();
-
-  const geo = new THREE.DodecahedronGeometry(CFG.THROWN_STONE_SIZE, 1);
-  const mat = new THREE.MeshStandardMaterial({
-    map: getRockTexture(),
-    roughness: 0.95,
-    flatShading: true,
+  const ray = new Ray(camPos, camDir, 200);
+  const hit = scene.pickWithRay(ray, (mesh) => {
+    // Skip player model and non-pickable meshes
+    let node = mesh;
+    while (node) {
+      if (node.name === 'playerRoot') return false;
+      node = node.parent;
+    }
+    return mesh.isPickable !== false;
   });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
 
-  const spawnPos = eyePos.clone().addScaledVector(dir, 0.5);
+  let targetPoint;
+  if (hit && hit.hit && hit.pickedPoint) {
+    targetPoint = hit.pickedPoint;
+  } else {
+    targetPoint = camPos.add(camDir.scale(200));
+  }
+  const dir = targetPoint.subtract(eyePos).normalize();
+
+  const mesh = MeshBuilder.CreateIcoSphere('stone', {
+    radius: CFG.THROWN_STONE_SIZE,
+    subdivisions: 2,
+  }, scene);
+  const mat = new PBRMaterial('stoneMat', scene);
+  const rockTex = getRockTexture();
+  if (rockTex) mat.albedoTexture = rockTex;
+  mat.roughness = 0.95;
+  mat.metallic = 0;
+  mesh.material = mat;
+  mesh.rotationQuaternion = Quaternion.Identity();
+  addShadowCaster(mesh);
+  enableShadowReceiving(mesh);
+
+  const spawnPos = eyePos.add(dir.scale(0.5));
   spawnPos.y -= 0.3;
-  mesh.position.copy(spawnPos);
-  scene.add(mesh);
+  mesh.position = spawnPos.clone();
 
   const vx = dir.x * CFG.THROW_SPEED;
   const vy = dir.y * CFG.THROW_SPEED + 4;
@@ -97,17 +117,20 @@ export function spawnProjectile(camera, scene) {
 /** Spawn a rock that falls straight down from the given position (placement drop) */
 function spawnDroppingRock(x, y, z, scene) {
   const s = CFG.THROWN_STONE_SIZE;
-  const geo = new THREE.DodecahedronGeometry(s, 1);
-  const mat = new THREE.MeshStandardMaterial({
-    map: getRockTexture(),
-    roughness: 0.95,
-    flatShading: true,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.position.set(x, y, z);
-  scene.add(mesh);
+  const mesh = MeshBuilder.CreateIcoSphere('stone', {
+    radius: s,
+    subdivisions: 2,
+  }, scene);
+  const mat = new PBRMaterial('stoneMat', scene);
+  const rockTex = getRockTexture();
+  if (rockTex) mat.albedoTexture = rockTex;
+  mat.roughness = 0.95;
+  mat.metallic = 0;
+  mesh.material = mat;
+  mesh.rotationQuaternion = Quaternion.Identity();
+  addShadowCaster(mesh);
+  enableShadowReceiving(mesh);
+  mesh.position = new Vector3(x, y, z);
 
   const body = createProjectileSphere(s, x, y, z, 0, 0, 0);
 
@@ -119,6 +142,7 @@ function spawnDroppingRock(x, y, z, scene) {
 
 export function updateProjectiles(dt) {
   const s = CFG.THROWN_STONE_SIZE;
+  const scene = getScene();
 
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
@@ -128,22 +152,33 @@ export function updateProjectiles(dt) {
 
     // Sync mesh from physics body
     p.mesh.position.set(p.body.position.x, p.body.position.y, p.body.position.z);
-    p.mesh.quaternion.set(
-      p.body.quaternion.x, p.body.quaternion.y,
-      p.body.quaternion.z, p.body.quaternion.w
-    );
+    if (p.mesh.rotationQuaternion) {
+      p.mesh.rotationQuaternion.set(
+        p.body.quaternion.x, p.body.quaternion.y,
+        p.body.quaternion.z, p.body.quaternion.w
+      );
+    }
 
     const bx = p.body.position.x;
-    const by = p.body.position.y;
+    let by = p.body.position.y;
     const bz = p.body.position.z;
 
-    // Window breaking — projectiles pass through window bodies (collision group),
-    // so we manually check when they enter a window cell
+    // Per-frame terrain floor clamp
+    const terrainFloorY = getTerrainHeight(bx, bz) + s * 0.4;
+    if (by < terrainFloorY) {
+      p.body.position.y = terrainFloorY;
+      by = terrainFloorY;
+      if (p.body.velocity.y < 0) {
+        p.body.velocity.y *= -0.3;
+      }
+    }
+
+    // Window breaking
     const gHit = w2g(bx, bz);
     if (isWindowCell(gHit.x, gHit.z)) {
       if (!isWindowBrokenAt(gHit.x, gHit.z, bx, bz, by)) {
         if (tryBreakWindow(gHit.x, gHit.z, bx, bz, by)) {
-          spawnGlassShards(bx, by, bz, p.mesh.parent);
+          spawnGlassShards(bx, by, bz, scene);
           p.body.velocity.x *= 0.8;
           p.body.velocity.y *= 0.8;
           p.body.velocity.z *= 0.8;
@@ -151,25 +186,22 @@ export function updateProjectiles(dt) {
       }
     }
 
-    // Water damping — slow rocks in water
+    // Water damping
     if (!CFG.SNOW_MODE && by < CFG.WATER_Y) {
       p.body.linearDamping = 0.85;
     } else {
       p.body.linearDamping = 0.01;
     }
 
-    // Tree foliage damping — rocks passing through leaves slow down
+    // Tree foliage damping
     const foliageDamp = getTreeFoliageDamping(bx, by, bz);
     if (foliageDamp !== null) {
-      // Frame-rate independent damping (foliageDamp is per-second retention)
       const factor = Math.pow(foliageDamp, dt * 60);
       p.body.velocity.x *= factor;
       p.body.velocity.z *= factor;
-      // Only damp upward velocity — let gravity pull rock down through leaves
       if (p.body.velocity.y > 0) {
         p.body.velocity.y *= factor;
       }
-      // Never trigger rest detection while in foliage
       p.restTime = 0;
     }
 
@@ -177,7 +209,7 @@ export function updateProjectiles(dt) {
       p.body.velocity.x ** 2 + p.body.velocity.y ** 2 + p.body.velocity.z ** 2
     );
 
-    // Rock-on-rock knockback — fast projectile hits a stationary pebble
+    // Rock-on-rock knockback
     if (speed > 2) {
       const hitRock = getPickableRockNear(bx, bz, by, s);
       if (hitRock) {
@@ -185,8 +217,7 @@ export function updateProjectiles(dt) {
         deactivateRock(hitRock);
         if (hitRock.physicsBody) removeBody(hitRock.physicsBody);
         const factor = 0.6;
-        spawnDroppingRock(hitRock.x, rockY, hitRock.z, p.mesh.parent);
-        // Give the new rock velocity from the projectile's momentum
+        spawnDroppingRock(hitRock.x, rockY, hitRock.z, scene);
         const newProj = projectiles[projectiles.length - 1];
         if (newProj && newProj.body) {
           newProj.body.velocity.set(
@@ -195,21 +226,18 @@ export function updateProjectiles(dt) {
             p.body.velocity.z * factor
           );
         }
-        // Slow down the original projectile
         p.body.velocity.x *= 0.3;
         p.body.velocity.y *= 0.3;
         p.body.velocity.z *= 0.3;
       }
     }
 
-    // Rest detection — if velocity stays low, stone has landed
+    // Rest detection
     if (speed < 0.5 && p.age > 0.3) {
       p.restTime += dt;
       if (p.restTime > 0.3) {
-        // Stone at rest — register as pickable rock
         p.alive = false;
         removeBody(p.body);
-        // Ensure stone rests on terrain, not underground
         const groundY = getTerrainHeight(bx, bz);
         const minY = groundY + s * 0.4;
         if (by < minY) {
@@ -223,9 +251,9 @@ export function updateProjectiles(dt) {
       p.restTime = 0;
     }
 
-    // World boundary — shield ripple + deflect
+    // World boundary
     const worldEdge = CFG.HALF - 1;
-    const shieldWall = worldEdge + 2; // visual placed past clamp so player can see it
+    const shieldWall = worldEdge + 2;
     if (Math.abs(bx) > worldEdge || Math.abs(bz) > worldEdge) {
       if (bx > worldEdge) {
         spawnBoundaryHit(shieldWall, by, bz, -1, 0);
@@ -247,30 +275,28 @@ export function updateProjectiles(dt) {
 
     // Too far from spawn — remove
     if (Math.abs(bx - p.sx) > 200 || Math.abs(bz - p.sz) > 200) {
-      p.mesh.parent.remove(p.mesh);
+      p.mesh.dispose();
       p.alive = false;
       removeBody(p.body);
       projectiles.splice(i, 1);
       continue;
     }
 
-    // Failsafe: fallen below world — remove
+    // Failsafe: fallen below world
     if (by < -50) {
-      p.mesh.parent.remove(p.mesh);
+      p.mesh.dispose();
       p.alive = false;
       removeBody(p.body);
       projectiles.splice(i, 1);
     }
   }
 
-  // Update glass shards (non-physics particles)
+  // Update glass shards
   for (let i = glassShards.length - 1; i >= 0; i--) {
     const sh = glassShards[i];
     sh.life -= dt;
     if (sh.life <= 0) {
-      sh.mesh.parent.remove(sh.mesh);
-      sh.mesh.geometry.dispose();
-      sh.mesh.material.dispose();
+      sh.mesh.dispose();
       glassShards.splice(i, 1);
       continue;
     }
@@ -280,7 +306,7 @@ export function updateProjectiles(dt) {
     sh.mesh.position.z += sh.vz * dt;
     sh.mesh.rotation.x += sh.spin * dt;
     sh.mesh.rotation.z += sh.spin * 0.7 * dt;
-    sh.mesh.material.opacity = Math.min(0.6, sh.life / SHARD_LIFE * 0.6);
+    sh.mesh.material.alpha = Math.min(0.6, sh.life / SHARD_LIFE * 0.6);
   }
 }
 
@@ -292,6 +318,7 @@ export function getNearestInFlightRock() {
 
   for (const pr of projectiles) {
     if (!pr.alive) continue;
+    if (pr.age < 0.5) continue;
     const dx = p.x - pr.body.position.x;
     const dy = (p.y + CFG.PLAYER_H * 0.5) - pr.body.position.y;
     const dz = p.z - pr.body.position.z;
@@ -313,6 +340,7 @@ export function pickNearestInFlightRock(inventory) {
   for (let i = 0; i < projectiles.length; i++) {
     const pr = projectiles[i];
     if (!pr.alive) continue;
+    if (pr.age < 0.5) continue;
     const dx = p.x - pr.body.position.x;
     const dy = (p.y + CFG.PLAYER_H * 0.5) - pr.body.position.y;
     const dz = p.z - pr.body.position.z;
@@ -327,7 +355,7 @@ export function pickNearestInFlightRock(inventory) {
 
   const pr = projectiles[bestIdx];
   pr.alive = false;
-  pr.mesh.parent.remove(pr.mesh);
+  pr.mesh.dispose();
   removeBody(pr.body);
   projectiles.splice(bestIdx, 1);
   inventory.stones++;
@@ -353,7 +381,7 @@ export function kickNearbyRock(scene) {
   const vx = body.velocity.x;
   const vz = body.velocity.z;
   const hSpeed = Math.sqrt(vx * vx + vz * vz);
-  if (hSpeed < 1) return; // not moving fast enough
+  if (hSpeed < 1) return;
 
   const hitRock = getPickableRockNear(p.x, p.z, p.y + 0.2, CFG.PLAYER_R);
   if (!hitRock) return;
@@ -366,7 +394,6 @@ export function kickNearbyRock(scene) {
 
   const newProj = projectiles[projectiles.length - 1];
   if (newProj && newProj.body) {
-    // Kick direction: from player center toward rock
     const dx = hitRock.x - p.x;
     const dz = hitRock.z - p.z;
     const dist = Math.sqrt(dx * dx + dz * dz) || 1;
@@ -387,36 +414,45 @@ const ROCK_PLACE_MAX_DIST = 3;
 const ROCK_PLACE_STEP = 0.12;
 
 export function initRockPreview(scene) {
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0x44ff44, transparent: true, opacity: 0.5, depthWrite: false,
-  });
-  rockPreviewMesh = new THREE.Mesh(
-    new THREE.DodecahedronGeometry(CFG.THROWN_STONE_SIZE, 1),
-    mat
-  );
-  rockPreviewMesh.visible = false;
-  scene.add(rockPreviewMesh);
+  const mat = new StandardMaterial('rockPreviewMat', scene);
+  mat.diffuseColor = new Color3(0.267, 1.0, 0.267); // #44ff44
+  mat.alpha = 0.5;
+  mat.disableLighting = true;
+
+  rockPreviewMesh = MeshBuilder.CreateIcoSphere('rockPreview', {
+    radius: CFG.THROWN_STONE_SIZE,
+    subdivisions: 2,
+  }, scene);
+  rockPreviewMesh.material = mat;
+  rockPreviewMesh.setEnabled(false);
+  rockPreviewMesh.isPickable = false;
 }
 
 function findRockPlacementTarget(camera) {
-  const origin = new THREE.Vector3();
-  const dir = new THREE.Vector3();
-  camera.getWorldPosition(origin);
-  camera.getWorldDirection(dir);
+  const origin = camera.position.clone();
+  const dir = camera.getTarget().subtract(camera.position).normalize();
 
   const p = getPlayerState();
   const px = p.x, pz = p.z;
   const sz = CFG.THROWN_STONE_SIZE;
   let lastValid = null;
 
+  const playerFeetY = p.y;
+  const playerTerrainY = getTerrainHeight(px, pz);
+  const onElevated = playerFeetY > playerTerrainY + 1.0;
+
   for (let t = 0.3; t < 12; t += ROCK_PLACE_STEP) {
     const x = origin.x + dir.x * t;
-    const y = origin.y + dir.y * t;
+    let y = origin.y + dir.y * t;
     const z = origin.z + dir.z * t;
 
     const dxp = x - px, dzp = z - pz;
     const distPlayer = Math.sqrt(dxp * dxp + dzp * dzp);
     if (distPlayer > ROCK_PLACE_MAX_DIST) break;
+
+    if (onElevated && y < playerFeetY) {
+      y = playerFeetY + sz * 0.4;
+    }
 
     if (!isWalkable(x, z)) break;
 
@@ -438,19 +474,19 @@ export function updateRockPreview(camera, active) {
   rockPlacementHit = null;
 
   if (!active) {
-    rockPreviewMesh.visible = false;
+    rockPreviewMesh.setEnabled(false);
     return;
   }
 
   const hit = findRockPlacementTarget(camera);
   if (!hit) {
-    rockPreviewMesh.visible = false;
+    rockPreviewMesh.setEnabled(false);
     return;
   }
 
   rockPlacementHit = hit;
-  rockPreviewMesh.visible = true;
-  rockPreviewMesh.position.set(hit.x, hit.y, hit.z);
+  rockPreviewMesh.setEnabled(true);
+  rockPreviewMesh.position = new Vector3(hit.x, hit.y, hit.z);
 }
 
 export function isRockPreviewValid() {

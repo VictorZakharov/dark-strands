@@ -1,22 +1,19 @@
-import * as THREE from 'three';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3 } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getGrid, isDoorCell, isWindowCell, isStairCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 
-const loader = new THREE.TextureLoader();
-
-function loadTex(path, repeatX, repeatY) {
-    const tex = loader.load(path);
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(repeatX, repeatY);
-    tex.colorSpace = THREE.SRGBColorSpace;
+function loadTex(path, uScale, vScale, scene) {
+    const tex = new Texture(path, scene);
+    tex.uScale = uScale;
+    tex.vScale = vScale;
     return tex;
 }
 
 // Window registry for breakable glass — keyed by "gx,gz"
 const windowPanes = new Map();
+let glassMergedMesh = null; // merged mesh for all glass panes
 
 /** Try to break a window at cell (gx,gz) at world position (wx,wz,wy). Returns true if glass broke. */
 export function tryBreakWindow(gx, gz, wx, wz, wy) {
@@ -34,8 +31,16 @@ export function tryBreakWindow(gx, gz, wx, wz, wy) {
         if (isNS) { if (Math.abs(wx - p.x) > winW / 2) continue; }
         else { if (Math.abs(wz - p.z) > winW / 2) continue; }
         w.broken = true;
-        if (w.pane.parent) w.pane.parent.remove(w.pane);
-        w.pane.geometry.dispose();
+        // Zero out this pane's vertices in the merged mesh (degenerate triangles = invisible)
+        if (glassMergedMesh) {
+            const positions = glassMergedMesh.getVerticesData('position');
+            for (let i = w.vertStart; i < w.vertEnd; i++) {
+                positions[i * 3] = 0;
+                positions[i * 3 + 1] = 0;
+                positions[i * 3 + 2] = 0;
+            }
+            glassMergedMesh.updateVerticesData('position', positions);
+        }
         return true;
     }
     return false;
@@ -85,60 +90,31 @@ export function isInsideWindowOpening(gx, gz, wy, wx, wz) {
     return false;
 }
 
+/**
+ * Build glass panes and wooden frames for windows.
+ * Wall geometry with window holes is now handled by buildWalls() in walls.js.
+ */
 export function buildWindows(scene) {
-    const wallTex = loadTex('./assets/textures/stone_wall.jpg', 1, 1);
-    const wallMat = new THREE.MeshStandardMaterial({
-        map: wallTex,
-        roughness: 0.9,
-        side: THREE.DoubleSide,
-    });
-
-    // World-space triplanar UVs for window wall segments
-    wallMat.onBeforeCompile = (shader) => {
-        shader.vertexShader = shader.vertexShader.replace(
-            '#include <uv_vertex>',
-            `#include <uv_vertex>
-      {
-        vec4 wp = modelMatrix * vec4(position, 1.0);
-        vec3 wn = normalize(mat3(modelMatrix) * normal);
-        vec3 an = abs(wn);
-        float ts = 0.5;
-        if (an.y >= an.x && an.y >= an.z) {
-          vMapUv = wp.xz * ts;
-        } else if (an.x >= an.z) {
-          vMapUv = wp.zy * ts;
-        } else {
-          vMapUv = wp.xy * ts;
-        }
-      }
-      `
-        );
-    };
+    // --- Materials ---
 
     // Wooden frame material (bark texture, same as doors)
-    const frameTex = loadTex('./assets/textures/bark.jpg', 2, 2);
-    const frameMat = new THREE.MeshStandardMaterial({
-        map: frameTex,
-        color: 0x8b5a2b,
-        roughness: 0.85,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-    });
+    const frameMat = new StandardMaterial('windowFrameMat', scene);
+    frameMat.diffuseTexture = loadTex('./assets/textures/bark.jpg', 1, 1, scene);
+    frameMat.diffuseColor = new Color3(0x8b / 255, 0x5a / 255, 0x2b / 255);
+    frameMat.specularColor = new Color3(0.02, 0.02, 0.02);
+    frameMat.zOffset = -1;
     const FRAME_T = 0.07;  // frame bar cross-section thickness
     const FRAME_D = CFG.WALL_T + 0.1; // extends slightly past wall on both sides
 
-    const glassMat = new THREE.MeshStandardMaterial({
-        color: 0x88ccee,
-        transparent: true,
-        opacity: 0.25,
-        roughness: 0.05,
-        metalness: 0.2,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-    });
+    // Glass material
+    const glassMat = new StandardMaterial('windowGlassMat', scene);
+    glassMat.diffuseColor = new Color3(0x88 / 255, 0xcc / 255, 0xee / 255);
+    glassMat.alpha = 0.25;
+    glassMat.specularPower = 128;
+    glassMat.backFaceCulling = false;
+    glassMat.disableDepthWrite = true;
 
-    // Group windows by cell to create one wall piece per cell
+    // --- Group windows by cell ---
     const cellWindows = new Map();
     for (const b of getBuildings()) {
         const bWallH = b.stories * CFG.WALL_H;
@@ -155,11 +131,19 @@ export function buildWindows(scene) {
         }
     }
 
-    // Thin-post detection for window wall extension (mirrors buildWalls logic)
+    // Thin-post detection — needed to compute glass/frame offset matching wall openings
     const grid = getGrid();
+    const winCornerCells = new Set();
+    for (const b of getBuildings()) {
+        winCornerCells.add(`${b.x},${b.z}`);
+        winCornerCells.add(`${b.x + b.w - 1},${b.z}`);
+        winCornerCells.add(`${b.x},${b.z + b.h - 1}`);
+        winCornerCells.add(`${b.x + b.w - 1},${b.z + b.h - 1}`);
+    }
     function isWinThinPost(gx, gz) {
         if (gx < 0 || gz < 0 || gx >= CFG.GRID || gz >= CFG.GRID) return false;
         if (grid[gx][gz] || isDoorCell(gx, gz) || isWindowCell(gx, gz) || isStairCell(gx, gz)) return false;
+        if (winCornerCells.has(`${gx},${gz}`)) return true;
         const oN = gz > 0 && grid[gx][gz - 1];
         const oS = gz < CFG.GRID - 1 && grid[gx][gz + 1];
         const oW = gx > 0 && grid[gx - 1][gz];
@@ -168,141 +152,136 @@ export function buildWindows(scene) {
         const facesEW = oW || oE;
         return (facesNS && facesEW) || (!facesNS && !facesEW);
     }
-    const winExt = CFG.CELL / 2; // same extension as buildWalls
+    const winExt = CFG.CELL / 2 + CFG.WALL_T / 2;
+
+    const frameMeshes = [];
+    const glassMeshes = [];
+    let glassVertCount = 0; // running vertex offset for pane registry
 
     for (const [, cw] of cellWindows) {
         const p = g2w(cw.gx, cw.gz);
-        const ty = 0; // buildings on flat zones — use fixed baseline
         const isNS = cw.wall === 'south' || cw.wall === 'north';
 
-        // Detect thin-post neighbors along the wall direction and extend toward them
-        // Shape local X = wall's primary axis. For EW walls (rotated PI/2), local +X = world -Z.
-        let extLeft = 0, extRight = 0; // in shape-local X
+        // Compute offset so glass/frame align with wall openings
+        let extLeft = 0, extRight = 0;
         if (isNS) {
             extLeft = isWinThinPost(cw.gx - 1, cw.gz) ? winExt : 0;
             extRight = isWinThinPost(cw.gx + 1, cw.gz) ? winExt : 0;
         } else {
-            // After PI/2 rotation: local -X = world +Z, local +X = world -Z
-            extLeft = isWinThinPost(cw.gx, cw.gz + 1) ? winExt : 0;  // world +Z → local -X
-            extRight = isWinThinPost(cw.gx, cw.gz - 1) ? winExt : 0; // world -Z → local +X
+            extLeft = isWinThinPost(cw.gx, cw.gz - 1) ? winExt : 0;
+            extRight = isWinThinPost(cw.gx, cw.gz + 1) ? winExt : 0;
         }
 
-        const halfW = CFG.CELL / 2;
-        const left = -halfW - extLeft;
-        const right = halfW + extRight;
+        const offsetCenter = (extRight - extLeft) / 2;
+        const ocX = isNS ? offsetCenter : 0;
+        const ocZ = isNS ? 0 : offsetCenter;
 
-        // Build wall shape with window holes (extend below ground to match regular walls)
-        const shape = new THREE.Shape();
-        shape.moveTo(left, -0.5);
-        shape.lineTo(right, -0.5);
-        shape.lineTo(right, cw.wallH);
-        shape.lineTo(left, cw.wallH);
-        shape.closePath();
-
-        // Deduplicate by floor, keep first entry's size
+        // Deduplicate windows per floor
         const floorMap = new Map();
         for (const win of cw.wins) {
             if (!floorMap.has(win.floor)) floorMap.set(win.floor, win);
         }
         const uniqueWins = [...floorMap.values()];
 
+        // Glass panes and frame bars for each window
         for (const win of uniqueWins) {
             const winW = CFG.CELL * win.wFrac;
             const winH = CFG.WALL_H * win.hFrac;
             const baseY = (win.floor - 1) * CFG.WALL_H + CFG.WALL_H * 0.5;
-            const hole = new THREE.Path();
-            hole.moveTo(-winW / 2, baseY - winH / 2);
-            hole.lineTo(winW / 2, baseY - winH / 2);
-            hole.lineTo(winW / 2, baseY + winH / 2);
-            hole.lineTo(-winW / 2, baseY + winH / 2);
-            hole.closePath();
-            shape.holes.push(hole);
-        }
 
-        const wallGeo = new THREE.ExtrudeGeometry(shape, {
-            depth: CFG.WALL_T,
-            bevelEnabled: false,
-        });
-        wallGeo.translate(0, 0, -CFG.WALL_T / 2);
+            const cx = p.x + ocX;
+            const cz = p.z + ocZ;
 
-        const wallMesh = new THREE.Mesh(wallGeo, wallMat);
-        wallMesh.position.set(p.x, ty, p.z);
-        wallMesh.castShadow = true;
-        wallMesh.receiveShadow = true;
+            // --- Glass pane ---
+            const pane = MeshBuilder.CreatePlane('winGlass', {
+                width: winW,
+                height: winH,
+            }, scene);
+            const paneVerts = pane.getTotalVertices();
 
-        // Rotate for EW walls
-        if (!isNS) {
-            wallMesh.rotation.y = Math.PI / 2;
-        }
+            pane.position = new Vector3(cx, baseY, cz);
+            if (!isNS) pane.rotation.y = Math.PI / 2;
 
-        scene.add(wallMesh);
+            // Bake transforms into vertices for merging
+            pane.bakeCurrentTransformIntoVertices();
+            glassMeshes.push(pane);
 
-        // Glass panes + wooden frames in each window opening
-        for (const win of uniqueWins) {
-            const winW = CFG.CELL * win.wFrac;
-            const winH = CFG.WALL_H * win.hFrac;
-            const baseY = (win.floor - 1) * CFG.WALL_H + CFG.WALL_H * 0.5;
-            const paneGeo = new THREE.PlaneGeometry(winW, winH);
-            const pane = new THREE.Mesh(paneGeo, glassMat);
-
-            if (isNS) {
-                pane.position.set(p.x, ty + baseY, p.z);
-            } else {
-                pane.rotation.y = Math.PI / 2;
-                pane.position.set(p.x, ty + baseY, p.z);
-            }
-
-            scene.add(pane);
-
-            // Register pane for breakable window system
+            // Register with vertex range for break-by-zeroing
             const regKey = `${cw.gx},${cw.gz}`;
             if (!windowPanes.has(regKey)) windowPanes.set(regKey, []);
             windowPanes.get(regKey).push({
-                pane, wall: cw.wall, floor: win.floor,
+                wall: cw.wall, floor: win.floor,
                 wFrac: win.wFrac, hFrac: win.hFrac, broken: false,
+                vertStart: glassVertCount, vertEnd: glassVertCount + paneVerts,
             });
+            glassVertCount += paneVerts;
 
-            // Wooden frame — 4 bars around window opening
+            // --- Frame bars ---
             const outerW = winW + FRAME_T * 2;
             const outerH = winH + FRAME_T * 2;
 
             // Top bar
-            const topGeo = isNS
-                ? new THREE.BoxGeometry(outerW, FRAME_T, FRAME_D)
-                : new THREE.BoxGeometry(FRAME_D, FRAME_T, outerW);
-            const topBar = new THREE.Mesh(topGeo, frameMat);
-            topBar.position.set(p.x, ty + baseY + winH / 2 + FRAME_T / 2, p.z);
-            topBar.castShadow = true;
-            scene.add(topBar);
+            const topBar = isNS
+                ? MeshBuilder.CreateBox('frameTop', { width: outerW, height: FRAME_T, depth: FRAME_D }, scene)
+                : MeshBuilder.CreateBox('frameTop', { width: FRAME_D, height: FRAME_T, depth: outerW }, scene);
+            topBar.position = new Vector3(cx, baseY + winH / 2 + FRAME_T / 2, cz);
+            topBar.bakeCurrentTransformIntoVertices();
+            frameMeshes.push(topBar);
 
             // Bottom bar
-            const botBar = new THREE.Mesh(topGeo, frameMat);
-            botBar.position.set(p.x, ty + baseY - winH / 2 - FRAME_T / 2, p.z);
-            botBar.castShadow = true;
-            scene.add(botBar);
+            const botBar = isNS
+                ? MeshBuilder.CreateBox('frameBot', { width: outerW, height: FRAME_T, depth: FRAME_D }, scene)
+                : MeshBuilder.CreateBox('frameBot', { width: FRAME_D, height: FRAME_T, depth: outerW }, scene);
+            botBar.position = new Vector3(cx, baseY - winH / 2 - FRAME_T / 2, cz);
+            botBar.bakeCurrentTransformIntoVertices();
+            frameMeshes.push(botBar);
 
             // Left bar
-            const sideGeo = isNS
-                ? new THREE.BoxGeometry(FRAME_T, outerH, FRAME_D)
-                : new THREE.BoxGeometry(FRAME_D, outerH, FRAME_T);
-            const leftBar = new THREE.Mesh(sideGeo, frameMat);
+            const leftBar = isNS
+                ? MeshBuilder.CreateBox('frameL', { width: FRAME_T, height: outerH, depth: FRAME_D }, scene)
+                : MeshBuilder.CreateBox('frameL', { width: FRAME_D, height: outerH, depth: FRAME_T }, scene);
             if (isNS) {
-                leftBar.position.set(p.x - winW / 2 - FRAME_T / 2, ty + baseY, p.z);
+                leftBar.position = new Vector3(cx - winW / 2 - FRAME_T / 2, baseY, cz);
             } else {
-                leftBar.position.set(p.x, ty + baseY, p.z - winW / 2 - FRAME_T / 2);
+                leftBar.position = new Vector3(cx, baseY, cz - winW / 2 - FRAME_T / 2);
             }
-            leftBar.castShadow = true;
-            scene.add(leftBar);
+            leftBar.bakeCurrentTransformIntoVertices();
+            frameMeshes.push(leftBar);
 
             // Right bar
-            const rightBar = new THREE.Mesh(sideGeo, frameMat);
+            const rightBar = isNS
+                ? MeshBuilder.CreateBox('frameR', { width: FRAME_T, height: outerH, depth: FRAME_D }, scene)
+                : MeshBuilder.CreateBox('frameR', { width: FRAME_D, height: outerH, depth: FRAME_T }, scene);
             if (isNS) {
-                rightBar.position.set(p.x + winW / 2 + FRAME_T / 2, ty + baseY, p.z);
+                rightBar.position = new Vector3(cx + winW / 2 + FRAME_T / 2, baseY, cz);
             } else {
-                rightBar.position.set(p.x, ty + baseY, p.z + winW / 2 + FRAME_T / 2);
+                rightBar.position = new Vector3(cx, baseY, cz + winW / 2 + FRAME_T / 2);
             }
-            rightBar.castShadow = true;
-            scene.add(rightBar);
+            rightBar.bakeCurrentTransformIntoVertices();
+            frameMeshes.push(rightBar);
+        }
+    }
+
+    // --- Merge all frame bars into one mesh ---
+    if (frameMeshes.length > 0) {
+        const merged = Mesh.MergeMeshes(frameMeshes, true, true, undefined, false, false);
+        if (merged) {
+            merged.name = 'windowFrames';
+            merged.material = frameMat;
+            // Thin bars (0.07u) alias into stripes at shadow map resolution — skip shadow casting
+        }
+    }
+
+    // --- Merge all glass panes into one mesh (break by zeroing vertices) ---
+    if (glassMeshes.length > 0) {
+        const merged = Mesh.MergeMeshes(glassMeshes, true, true, undefined, false, false);
+        if (merged) {
+            merged.name = 'windowGlass';
+            merged.material = glassMat;
+            merged.isPickable = false;
+            // Mark the merged mesh as updatable so we can zero vertices for breakage
+            merged.markVerticesDataAsUpdatable('position', true);
+            glassMergedMesh = merged;
         }
     }
 }

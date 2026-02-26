@@ -1,147 +1,177 @@
-import * as THREE from 'three';
-import * as CANNON from 'cannon-es';
+import { MeshBuilder, Mesh, PBRMaterial, Texture, Color3,
+         Vector3, TransformNode, Ray } from 'babylonjs';
 import { CFG } from '../config.js';
 import { setCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 import { getPlayerState } from '../entities/player.js';
 import { getTerrainHeight } from './terrain.js';
-import { getCamera } from '../core/scene.js';
+import { getCamera, getScene } from '../core/scene.js';
 import { collidesWithRock } from './vegetation.js';
 import { createKinematicBox } from '../core/physics.js';
-import { getScene } from '../core/scene.js';
-
-const _projVec = new THREE.Vector3();
-const _losRay = new THREE.Raycaster();
-_losRay.layers.set(0); // Only interact with world geometry
+import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
 const doors = [];
 const INTERACT_DIST = 3.5;
 const OPEN_SPEED = 4.0; // radians per second
 
-const texLoader = new THREE.TextureLoader();
-const barkTex = texLoader.load('./assets/textures/bark.jpg');
-barkTex.wrapS = THREE.RepeatWrapping;
-barkTex.wrapT = THREE.RepeatWrapping;
-barkTex.repeat.set(1, 1.5);
-barkTex.colorSpace = THREE.SRGBColorSpace;
+/* ── Shared materials (created lazily on first placeDoors call) ─── */
+let doorMat = null;
+let baseMat = null;
+let knobMat = null;
 
-const doorMat = new THREE.MeshStandardMaterial({
-  map: barkTex,
-  color: 0x8b5a2b,
-  roughness: 0.85,
-});
+function ensureMaterials(scene) {
+  if (doorMat) return;
 
-const knobMat = new THREE.MeshStandardMaterial({
-  color: 0x886633,
-  metalness: 0.8,
-  roughness: 0.3,
-});
-const knobGeo = new THREE.SphereGeometry(0.12, 8, 6);
+  const barkTex = new Texture('./assets/textures/bark.jpg', scene);
+  barkTex.uScale = 1;
+  barkTex.vScale = 1.5;
 
+  doorMat = new PBRMaterial('doorMat', scene);
+  doorMat.albedoTexture = barkTex;
+  doorMat.albedoColor = Color3.FromHexString('#8b5a2b');
+  doorMat.roughness = 0.85;
+  doorMat.metallic = 0;
+
+  baseMat = new PBRMaterial('doorBaseMat', scene);
+  baseMat.albedoTexture = barkTex.clone();
+  baseMat.albedoColor = Color3.FromHexString('#663311');
+  baseMat.roughness = 0.95;
+  baseMat.metallic = 0;
+
+  knobMat = new PBRMaterial('doorKnobMat', scene);
+  knobMat.albedoColor = Color3.FromHexString('#886633');
+  knobMat.metallic = 0.8;
+  knobMat.roughness = 0.3;
+}
+
+/* ── Fancy door leaf builder ─────────────────────────────────────── */
+// Knob always at +X (the free swinging edge).
+// Orientation is handled entirely by the placement rotation below.
+function buildFancyDoorLeaf(scene, w, h, thick, leafIndex) {
+  const leaf = new TransformNode(`doorLeaf_${leafIndex}`, scene);
+
+  // Base thin panel (darker wood)
+  const baseMesh = MeshBuilder.CreateBox(`doorBase_${leafIndex}`,
+    { width: w, height: h, depth: thick * 0.3 }, scene);
+  baseMesh.material = baseMat;
+  baseMesh.parent = leaf;
+  addShadowCaster(baseMesh);
+
+  // Frame and stiles
+  const stileW = 0.45;
+
+  const leftStile = MeshBuilder.CreateBox(`doorLStile_${leafIndex}`,
+    { width: stileW, height: h, depth: thick }, scene);
+  leftStile.material = doorMat;
+  leftStile.position.x = -w / 2 + stileW / 2;
+  leftStile.parent = leaf;
+  addShadowCaster(leftStile);
+
+  const rightStile = MeshBuilder.CreateBox(`doorRStile_${leafIndex}`,
+    { width: stileW, height: h, depth: thick }, scene);
+  rightStile.material = doorMat;
+  rightStile.position.x = w / 2 - stileW / 2;
+  rightStile.parent = leaf;
+  addShadowCaster(rightStile);
+
+  // Rails (horizontal)
+  const railH = 0.25;
+
+  const topRail = MeshBuilder.CreateBox(`doorTopRail_${leafIndex}`,
+    { width: w, height: railH, depth: thick }, scene);
+  topRail.material = doorMat;
+  topRail.position.y = h / 2 - railH / 2;
+  topRail.parent = leaf;
+  addShadowCaster(topRail);
+
+  const bottomRail = MeshBuilder.CreateBox(`doorBotRail_${leafIndex}`,
+    { width: w, height: railH, depth: thick }, scene);
+  bottomRail.material = doorMat;
+  bottomRail.position.y = -h / 2 + railH / 2;
+  bottomRail.parent = leaf;
+  addShadowCaster(bottomRail);
+
+  const midRail1 = MeshBuilder.CreateBox(`doorMidRail1_${leafIndex}`,
+    { width: w, height: railH, depth: thick }, scene);
+  midRail1.material = doorMat;
+  midRail1.position.y = h / 6;
+  midRail1.parent = leaf;
+  addShadowCaster(midRail1);
+
+  const midRail2 = MeshBuilder.CreateBox(`doorMidRail2_${leafIndex}`,
+    { width: w, height: railH, depth: thick }, scene);
+  midRail2.material = doorMat;
+  midRail2.position.y = -h / 4;
+  midRail2.parent = leaf;
+  addShadowCaster(midRail2);
+
+  // Knob on both sides at the free edge (+X = opposite hinge at -X)
+  const knobZ = thick / 2 + 0.10;
+  const knobX = w / 2 - stileW / 2;
+
+  const knobR = MeshBuilder.CreateSphere(`doorKnobR_${leafIndex}`,
+    { diameter: 0.24, segments: 8 }, scene);
+  knobR.material = knobMat;
+  knobR.position = new Vector3(knobX, 0, knobZ);
+  knobR.parent = leaf;
+
+  const knobL = MeshBuilder.CreateSphere(`doorKnobL_${leafIndex}`,
+    { diameter: 0.24, segments: 8 }, scene);
+  knobL.material = knobMat;
+  knobL.position = new Vector3(knobX, 0, -knobZ);
+  knobL.parent = leaf;
+
+  // Backplates (cylinders rotated along X to face Z)
+  const plateR = MeshBuilder.CreateCylinder(`doorPlateR_${leafIndex}`,
+    { diameter: 0.12, height: 0.04, tessellation: 8 }, scene);
+  plateR.material = knobMat;
+  plateR.rotation.x = Math.PI / 2;
+  plateR.position = new Vector3(knobX, 0, thick / 2 + 0.02);
+  plateR.parent = leaf;
+
+  const plateL = MeshBuilder.CreateCylinder(`doorPlateL_${leafIndex}`,
+    { diameter: 0.12, height: 0.04, tessellation: 8 }, scene);
+  plateL.material = knobMat;
+  plateL.rotation.x = Math.PI / 2;
+  plateL.position = new Vector3(knobX, 0, -thick / 2 - 0.02);
+  plateL.parent = leaf;
+
+  return leaf;
+}
+
+/* ── Place all doors in the world ────────────────────────────────── */
 export function placeDoors(scene) {
+  ensureMaterials(scene);
+
   const doorW = CFG.CELL;
   const doorH = CFG.WALL_H * 0.88;
 
-  // Reusable fancy door leaf builder
-  const buildFancyDoorLeaf = (w, h, thick) => {
-    const leaf = new THREE.Group();
-
-    // Base thin panel (darker wood)
-    const baseGeo = new THREE.BoxGeometry(w, h, thick * 0.3);
-    const baseMat = new THREE.MeshStandardMaterial({
-      map: barkTex, color: 0x663311, roughness: 0.95
-    });
-    const baseMesh = new THREE.Mesh(baseGeo, baseMat);
-    baseMesh.castShadow = true;
-    leaf.add(baseMesh);
-
-    // Frame and stiles
-    const stileW = 0.45;
-    const stileGeo = new THREE.BoxGeometry(stileW, h, thick);
-
-    const leftStile = new THREE.Mesh(stileGeo, doorMat);
-    leftStile.position.x = -w / 2 + stileW / 2;
-    leftStile.castShadow = true;
-    leaf.add(leftStile);
-
-    const rightStile = new THREE.Mesh(stileGeo, doorMat);
-    rightStile.position.x = w / 2 - stileW / 2;
-    rightStile.castShadow = true;
-    leaf.add(rightStile);
-
-    // Rails (horizontal)
-    const railH = 0.25;
-    const railGeo = new THREE.BoxGeometry(w, railH, thick);
-
-    const topRail = new THREE.Mesh(railGeo, doorMat);
-    topRail.position.y = h / 2 - railH / 2;
-    topRail.castShadow = true;
-    leaf.add(topRail);
-
-    const bottomRail = new THREE.Mesh(railGeo, doorMat);
-    bottomRail.position.y = -h / 2 + railH / 2;
-    bottomRail.castShadow = true;
-    leaf.add(bottomRail);
-
-    const midRail1 = new THREE.Mesh(railGeo, doorMat);
-    midRail1.position.y = h / 6;
-    midRail1.castShadow = true;
-    leaf.add(midRail1);
-
-    const midRail2 = new THREE.Mesh(railGeo, doorMat);
-    midRail2.position.y = -h / 4;
-    midRail2.castShadow = true;
-    leaf.add(midRail2);
-
-    // Old Knob on both sides
-    const knobZ = thick / 2 + 0.10; // pushed slightly further out to accommodate plate
-    const knobX = w / 2 - stileW / 2;
-
-    const knobR = new THREE.Mesh(knobGeo, knobMat);
-    knobR.position.set(knobX, 0, knobZ);
-    leaf.add(knobR);
-
-    // Knob on the back side too
-    const knobL = new THREE.Mesh(knobGeo, knobMat);
-    knobL.position.set(knobX, 0, -knobZ);
-    leaf.add(knobL);
-
-    // Add backplates to separate the knob from the door physically
-    const plateGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.04, 8);
-    plateGeo.rotateX(Math.PI / 2); // align to Z axis
-
-    const plateR = new THREE.Mesh(plateGeo, knobMat);
-    plateR.position.set(knobX, 0, thick / 2 + 0.02);
-    leaf.add(plateR);
-
-    const plateL = new THREE.Mesh(plateGeo, knobMat);
-    plateL.position.set(knobX, 0, -thick / 2 - 0.02);
-    leaf.add(plateL);
-
-    return leaf;
-  };
+  let leafIdx = 0;
 
   for (const b of getBuildings()) {
     for (const d of b.doors) {
       const p = g2w(d.gx, d.gz);
-      const group = new THREE.Group();
-      group.position.set(p.x, 0, p.z);
+      const group = new TransformNode(`doorGroup_${leafIdx}`, scene);
+      group.position = new Vector3(p.x, 0, p.z);
 
       const isNS = d.wall === 'south' || d.wall === 'north';
-      const leafGroup = buildFancyDoorLeaf(doorW, doorH, 0.16);
+      const leafGroup = buildFancyDoorLeaf(scene, doorW, doorH, 0.16, leafIdx);
+      leafGroup.parent = group;
 
+      // Leaf +X = free edge (knob side), leaf -X = hinge side.
+      // Rotation chosen so +X always maps to the free swinging end in world space.
       if (isNS) {
-        leafGroup.position.set(doorW / 2, doorH / 2, 0);
+        // No rotation — +X stays as +X in parent. Hinge at left (-X edge of cell).
+        leafGroup.position = new Vector3(doorW / 2, doorH / 2, 0);
         group.position.x -= doorW / 2;
       } else {
-        leafGroup.rotation.y = Math.PI / 2;
-        leafGroup.position.set(0, doorH / 2, doorW / 2);
+        // -PI/2 rotation: leaf +X maps to parent +Z (free end).
+        // Hinge at -Z edge of cell (group origin).
+        leafGroup.rotation.y = -Math.PI / 2;
+        leafGroup.position = new Vector3(0, doorH / 2, doorW / 2);
         group.position.z -= doorW / 2;
       }
-
-      group.add(leafGroup);
-      scene.add(group);
 
       // Create kinematic physics body for door panel
       const doorHalfW = doorW / 2;
@@ -164,6 +194,7 @@ export function placeDoors(scene) {
         gz: d.gz,
         wx: p.x,
         wz: p.z,
+        wall: d.wall,
         isNS,
         open: false,
         currentRotY: 0,
@@ -172,9 +203,13 @@ export function placeDoors(scene) {
         hingeX,
         hingeZ,
       });
+
+      leafIdx++;
     }
   }
 }
+
+/* ── Query helpers ───────────────────────────────────────────────── */
 
 export function getDoorByCell(gx, gz) {
   for (const door of doors) {
@@ -189,7 +224,7 @@ export function getNearestDoor() {
   let best = null;
   let bestDist = INTERACT_DIST;
 
-  const eyePos = new THREE.Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
+  const eyePos = new Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
 
   for (const door of doors) {
     // Skip doors if player is above door level (e.g. on 2nd floor)
@@ -218,43 +253,15 @@ export function getNearestDoor() {
     const nearZ = hz + t * segDz;
     const dist = Math.sqrt((p.x - nearX) ** 2 + (p.z - nearZ) ** 2);
     if (dist < bestDist) {
-      // Raycast check for line of sight to door
-      const doorH = CFG.WALL_H * 0.88;
-      const targetPos = new THREE.Vector3(nearX, doorBaseY + doorH / 2, nearZ);
-      const castDist = eyePos.distanceTo(targetPos);
-      const dir = new THREE.Vector3().subVectors(targetPos, eyePos).normalize();
-
-      _losRay.set(eyePos, dir);
-      _losRay.far = castDist;
-
-      let blocked = false;
-      if (scene) {
-        const hits = _losRay.intersectObjects(scene.children, true);
-        for (const h of hits) {
-          if (h.distance < castDist - 0.2) {
-            // Ignore hitting the door mesh itself
-            let isDoorPart = false;
-            h.object.traverseAncestors((ancestor) => {
-              if (ancestor === door.group) isDoorPart = true;
-            });
-
-            if (!isDoorPart && h.object.type !== 'Sprite') {
-              blocked = true;
-              break;
-            }
-          }
-        }
-      }
-
-      if (!blocked) {
-        bestDist = dist;
-        best = door;
-      }
+      bestDist = dist;
+      best = door;
     }
   }
 
   return best;
 }
+
+/* ── Door panel geometry helpers ─────────────────────────────────── */
 
 /** Compute door panel positions at a given rotation */
 function getDoorPanelPositions(door, rot) {
@@ -297,7 +304,8 @@ function refineContact(door, lo, hi, panelR) {
 function findMaxDoorRotation(door) {
   const panelR = 0.12; // match door panel visual thickness for flush contact
   const steps = 60;
-  const fullRot = -Math.PI / 2;
+  // South/West walls: +PI/2 opens inward.  North/East walls: -PI/2 opens inward.
+  const fullRot = (door.wall === 'south' || door.wall === 'west') ? Math.PI / 2 : -Math.PI / 2;
   let safeRot = 0;
 
   for (let i = 1; i <= steps; i++) {
@@ -326,6 +334,8 @@ function findClosingTarget(door) {
   }
   return 0;
 }
+
+/* ── Toggle interaction ──────────────────────────────────────────── */
 
 export function toggleNearestDoor() {
   const door = getNearestDoor();
@@ -360,6 +370,8 @@ export function toggleNearestDoor() {
   setCell(door.gx, door.gz, door.open);
 }
 
+/* ── Per-frame update ────────────────────────────────────────────── */
+
 export function updateDoors(dt) {
   const doorW = CFG.CELL;
   const doorH = CFG.WALL_H * 0.88;
@@ -392,6 +404,8 @@ export function updateDoors(dt) {
     }
   }
 }
+
+/* ── Door panel center/collision ─────────────────────────────────── */
 
 /**
  * Get the current world-space center of a door panel based on its rotation.
@@ -459,6 +473,8 @@ export function getDoorPanelPushback(wx, wz, entityR) {
   return worstPen > 0 ? { x: pushX, z: pushZ } : null;
 }
 
+/* ── HUD hint ────────────────────────────────────────────────────── */
+
 export function updateDoorHint() {
   const el = document.getElementById('interact-hint');
   if (!el) return;
@@ -472,28 +488,35 @@ export function updateDoorHint() {
     return;
   }
 
+  const scene = getScene();
   const camera = getCamera();
+  const engine = scene.getEngine();
+
   // Project the door's world position to screen space
   const pc = getDoorPanelCenter(door);
   const doorY = door.group.position.y + CFG.WALL_H * 0.5;
-  _projVec.set(pc.x, doorY, pc.z);
-  _projVec.project(camera);
+  const worldPos = new Vector3(pc.x, doorY, pc.z);
 
-  // Behind camera — hide
-  if (_projVec.z > 1) {
+  const projected = Vector3.Project(
+    worldPos,
+    camera.getWorldMatrix(),
+    camera.getTransformationMatrix(),
+    camera.viewport.toGlobal(
+      engine.getRenderWidth(),
+      engine.getRenderHeight()
+    )
+  );
+
+  // Behind camera — hide (z > 1 in NDC means behind)
+  if (projected.z > 1) {
     if (el.dataset.source === 'door') el.style.display = 'none';
     return;
   }
 
-  const hw = window.innerWidth / 2;
-  const hh = window.innerHeight / 2;
-  const sx = (_projVec.x * hw) + hw;
-  const sy = -(_projVec.y * hh) + hh;
-
   el.textContent = door.open ? '[E] Close' : '[E] Open';
   el.style.fontSize = '';
-  el.style.left = sx + 'px';
-  el.style.top = sy + 'px';
+  el.style.left = projected.x + 'px';
+  el.style.top = projected.y + 'px';
   el.style.display = 'block';
   el.dataset.source = 'door';
 }

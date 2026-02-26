@@ -1,148 +1,207 @@
-import * as THREE from 'three';
-import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
+import { HemisphericLight, DirectionalLight, Vector3,
+         Color3, MeshBuilder, ShaderMaterial, Effect,
+         TransformNode, LensFlareSystem, LensFlare,
+         ShadowGenerator } from 'babylonjs';
 
-let sunLight, hemiLight, stars, sunGroup, sunLensflare;
+let sunLight, hemiLight, sunCSM;
+let stars = null, sunGroup = null, sunLensflare = null;
 
 export function getSunLight() { return sunLight; }
 export function getHemiLight() { return hemiLight; }
+export function getSunCSM() { return sunCSM; }
 export function getStars() { return stars; }
 export function getSunGroup() { return sunGroup; }
 export function getSunLensflare() { return sunLensflare; }
 
-/** Generate a soft radial gradient texture on canvas */
-function createGlowTexture(size, innerColor, outerColor) {
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const half = size / 2;
-  const gradient = ctx.createRadialGradient(half, half, 0, half, half, half);
-  gradient.addColorStop(0, innerColor);
-  gradient.addColorStop(0.15, innerColor);
-  gradient.addColorStop(0.4, outerColor);
-  gradient.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  const tex = new THREE.CanvasTexture(canvas);
-  return tex;
+// --- Sun glow shader (radial gradient, no hard edges) ---
+Effect.ShadersStore['sunGlowVertexShader'] = `
+precision highp float;
+attribute vec3 position;
+attribute vec2 uv;
+uniform mat4 worldViewProjection;
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = worldViewProjection * vec4(position, 1.0);
 }
+`;
 
-/** Generate a flare ring texture */
-function createFlareTexture(size) {
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const half = size / 2;
-  const gradient = ctx.createRadialGradient(half, half, half * 0.6, half, half, half);
-  gradient.addColorStop(0, 'rgba(255,200,100,0)');
-  gradient.addColorStop(0.5, 'rgba(255,180,80,0.08)');
-  gradient.addColorStop(0.7, 'rgba(255,160,60,0.04)');
-  gradient.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(canvas);
+Effect.ShadersStore['sunGlowFragmentShader'] = `
+precision highp float;
+varying vec2 vUv;
+void main() {
+  vec2 p = (vUv - 0.5) * 2.0;
+  float dist = length(p);
+
+  // Bright core (tight Gaussian)
+  float core = exp(-dist * dist * 12.0);
+  // Warm corona (wider Gaussian)
+  float corona = exp(-dist * dist * 2.5) * 0.6;
+  // Outer haze (very wide)
+  float haze = exp(-dist * dist * 0.8) * 0.15;
+
+  float glow = core + corona + haze;
+
+  // Color: white core → warm yellow → orange edges
+  vec3 white = vec3(1.0, 1.0, 0.98);
+  vec3 warm  = vec3(1.0, 0.85, 0.5);
+  vec3 outer = vec3(1.0, 0.6, 0.2);
+  vec3 color = mix(outer, warm, smoothstep(0.7, 0.0, dist));
+  color = mix(color, white, core);
+
+  float alpha = glow;
+  if (alpha < 0.005) discard;
+  gl_FragColor = vec4(color * glow, alpha);
 }
+`;
 
 export function initLighting(scene) {
-  hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x3a5a2a, 0.7);
-  scene.add(hemiLight);
+  // Hemisphere light (sky + ground ambient)
+  hemiLight = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene);
+  hemiLight.diffuse = Color3.FromHexString('#87CEEB');
+  hemiLight.groundColor = new Color3(0.227, 0.353, 0.165); // #3a5a2a
+  hemiLight.intensity = 0.45;
 
-  sunLight = new THREE.DirectionalLight(0xffeedd, 1.5);
-  sunLight.castShadow = true;
-  sunLight.shadow.mapSize.set(2048, 2048);
-  sunLight.shadow.camera.left = -50;
-  sunLight.shadow.camera.right = 50;
-  sunLight.shadow.camera.top = 50;
-  sunLight.shadow.camera.bottom = -50;
-  sunLight.shadow.camera.near = 0.5;
-  sunLight.shadow.camera.far = 150;
-  sunLight.shadow.bias = -0.001;
-  sunLight.shadow.normalBias = 0.05;
-  scene.add(sunLight);
-  scene.add(sunLight.target);
+  // Directional sun light — direction points FROM sun TO scene
+  sunLight = new DirectionalLight('sun', new Vector3(-1, -2, -1).normalize(), scene);
+  sunLight.diffuse = new Color3(1, 0.933, 0.867); // #ffeedd
+  sunLight.intensity = 1.5;
+  sunLight.position = new Vector3(30, 60, 30);
 
-  // Stars
-  const sGeo = new THREE.BufferGeometry();
-  const positions = [];
-  for (let i = 0; i < 800; i++) {
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.random() * Math.PI * 0.45;
-    const R = 180;
-    positions.push(
-      R * Math.sin(phi) * Math.cos(theta),
-      R * Math.cos(phi),
-      R * Math.sin(phi) * Math.sin(theta)
-    );
+  // Shadow generator — PCF (Percentage Closer Filtering) for sharp, reliable shadows.
+  sunCSM = new ShadowGenerator(2048, sunLight);
+  sunCSM.usePercentageCloserFiltering = true;
+  sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+  sunCSM.setDarkness(0.1);
+  sunCSM.bias        = 0.005;
+  sunCSM.normalBias  = 0.02;
+
+  // --- Sun visual (glowing radial gradient in the sky) ---
+  sunGroup = new TransformNode('sunGroup', scene);
+
+  const sunMesh = MeshBuilder.CreatePlane('sunGlow', { size: 50 }, scene);
+  sunMesh.parent = sunGroup;
+  sunMesh.billboardMode = 7; // BILLBOARDMODE_ALL
+  const sunMat = new ShaderMaterial('sunGlowMat', scene, {
+    vertex: 'sunGlow',
+    fragment: 'sunGlow',
+  }, {
+    attributes: ['position', 'uv'],
+    uniforms: ['worldViewProjection'],
+  });
+  sunMat.alpha = 0.99; // enable alpha blending
+  sunMat.alphaMode = 1; // ALPHA_ADD (additive blending)
+  sunMat.backFaceCulling = false;
+  sunMat.disableDepthWrite = true;
+  sunMesh.material = sunMat;
+  sunMesh.isPickable = false;
+  sunMesh.applyFog = false;
+
+  // --- Lens flare system ---
+  sunLensflare = new LensFlareSystem('sunFlares', sunGroup, scene);
+  new LensFlare(0.5, 0, new Color3(1, 0.95, 0.8), null, sunLensflare);
+  new LensFlare(0.1, 0.3, new Color3(0.8, 0.6, 0.2), null, sunLensflare);
+  new LensFlare(0.15, 0.5, new Color3(0.5, 0.8, 1.0), null, sunLensflare);
+  new LensFlare(0.08, 0.7, new Color3(1.0, 0.5, 0.3), null, sunLensflare);
+  new LensFlare(0.2, 1.0, new Color3(0.6, 0.4, 0.2), null, sunLensflare);
+}
+
+/**
+ * Move the shadow camera to follow the player each frame.
+ * Call from the game loop with the player's world position.
+ */
+export function updateSunShadow(px, py, pz) {
+  if (!sunLight) return;
+  // Position light opposite to direction, centered on player (matches working prototype)
+  const d = sunLight.direction;
+  sunLight.position.set(
+    px - d.x * 70,
+    py - d.y * 70,
+    pz - d.z * 70
+  );
+}
+
+/** Register a mesh as a shadow caster with the CSM generator */
+export function addShadowCaster(mesh) {
+  if (sunCSM) {
+    sunCSM.addShadowCaster(mesh, true);
   }
-  sGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+}
 
-  const sMat = new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: 0.6,
-    transparent: true,
-    opacity: 0,
-  });
-  stars = new THREE.Points(sGeo, sMat);
-  scene.add(stars);
+/** Enable shadow receiving on a mesh */
+export function enableShadowReceiving(mesh) {
+  mesh.receiveShadows = true;
+}
 
-  // Sun — group with core sphere + glow layers
-  sunGroup = new THREE.Group();
-  sunGroup.visible = false;
+/**
+ * Dump full shadow system state to the console for debugging.
+ * Call from browser console: window._debugShadows()
+ */
+export function debugShadows() {
+  const scene = sunLight?.getScene();
+  console.group('[Shadow Debug]');
+  console.log('scene.shadowsEnabled:', scene?.shadowsEnabled);
+  console.log('sunLight exists:', !!sunLight);
+  console.log('sunLight.shadowEnabled:', sunLight?.shadowEnabled);
+  console.log('sunLight._shadowEnabled:', sunLight?._shadowEnabled);
+  console.log('sunCSM exists:', !!sunCSM);
+  console.log('sunCSM type:', sunCSM?.constructor?.name);
+  console.log('sunCSM.getClassName():', sunCSM?.getClassName?.());
 
-  // Core sun sphere (bright, solid)
-  const sunGeo = new THREE.SphereGeometry(4, 16, 16);
-  const sunMat = new THREE.MeshBasicMaterial({
-    color: 0xfffff0,
-    fog: false,
-  });
-  const sunCore = new THREE.Mesh(sunGeo, sunMat);
-  sunGroup.add(sunCore);
+  const sm = sunCSM?.getShadowMap?.();
+  console.log('shadowMap exists:', !!sm);
+  if (sm) {
+    console.log('shadowMap.renderList:', sm.renderList);
+    console.log('shadowMap.renderList length:', sm.renderList?.length);
+    if (sm.renderList) {
+      console.log('shadowMap casters:', sm.renderList.slice(0, 10).map(m => m.name));
+    }
+    console.log('shadowMap size:', sm.getSize());
+  }
 
-  // Inner glow (warm, tight)
-  const glowTex1 = createGlowTexture(256, 'rgba(255,255,220,1)', 'rgba(255,220,100,0.3)');
-  const innerGlow = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex1,
-    color: 0xffeeaa,
-    transparent: true,
-    opacity: 0.8,
-    blending: THREE.AdditiveBlending,
-    fog: false,
-    depthWrite: false,
-  }));
-  innerGlow.scale.set(30, 30, 1);
-  sunGroup.add(innerGlow);
+  // Check light._shadowGenerators map
+  console.log('sunLight._shadowGenerators:', sunLight?._shadowGenerators);
+  if (sunLight?._shadowGenerators) {
+    console.log('_shadowGenerators size:', sunLight._shadowGenerators.size);
+    for (const [key, val] of sunLight._shadowGenerators.entries()) {
+      console.log('  key:', key, 'val:', val?.getClassName?.());
+    }
+  }
 
-  // Outer corona (wide, soft)
-  const glowTex2 = createGlowTexture(256, 'rgba(255,200,100,0.6)', 'rgba(255,150,50,0.05)');
-  const outerGlow = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex2,
-    color: 0xffcc66,
-    transparent: true,
-    opacity: 0.5,
-    blending: THREE.AdditiveBlending,
-    fog: false,
-    depthWrite: false,
-  }));
-  outerGlow.scale.set(60, 60, 1);
-  sunGroup.add(outerGlow);
+  // Check getShadowGenerator with and without camera
+  if (scene) {
+    const sgByCam = sunLight?.getShadowGenerator?.(scene.activeCamera);
+    const sgNoArg = sunLight?.getShadowGenerator?.();
+    console.log('getShadowGenerator(activeCamera):', sgByCam?.getClassName?.() ?? null);
+    console.log('getShadowGenerator():', sgNoArg?.getClassName?.() ?? null);
+    console.log('scene.activeCamera:', scene.activeCamera?.name);
+  }
 
-  // Put sun on layer 2 so raycasters (layer 0) don't hit sprites
-  sunGroup.traverse(obj => obj.layers.set(2));
-  scene.add(sunGroup);
-
-  // Lensflare — attached to the sun group position, adds flare elements when looking at sun
-  const flareTex = createGlowTexture(256, 'rgba(255,255,255,1)', 'rgba(255,200,100,0.2)');
-  const flareRing = createFlareTexture(256);
-
-  sunLensflare = new Lensflare();
-  sunLensflare.addElement(new LensflareElement(flareTex, 300, 0, new THREE.Color(0xffffff)));
-  sunLensflare.addElement(new LensflareElement(flareRing, 500, 0.1, new THREE.Color(0xffddaa)));
-  sunLensflare.addElement(new LensflareElement(flareTex, 120, 0.3, new THREE.Color(0xff9944)));
-  sunLensflare.addElement(new LensflareElement(flareTex, 80, 0.6, new THREE.Color(0xffaa55)));
-  sunLensflare.addElement(new LensflareElement(flareRing, 200, 0.7, new THREE.Color(0xffcc88)));
-  sunLensflare.addElement(new LensflareElement(flareTex, 60, 1.0, new THREE.Color(0xffbb66)));
-  sunLensflare.visible = false;
-  sunLensflare.layers.set(2);
-  scene.add(sunLensflare);
+  // Check receiving meshes
+  if (scene) {
+    const receivers = scene.meshes.filter(m => m.receiveShadows);
+    console.log('receiveShadows meshes:', receivers.length, receivers.slice(0, 5).map(m => m.name));
+    // Check lightSources for the ground mesh
+    const ground = scene.getMeshByName('ground');
+    if (ground) {
+      console.log('ground.receiveShadows:', ground.receiveShadows);
+      console.log('ground._lightSources:', ground._lightSources?.map(l => l.name));
+    }
+    // Check shadow test ground
+    const testGround = scene.getMeshByName('shadowTestGround');
+    if (testGround) {
+      console.log('testGround.receiveShadows:', testGround.receiveShadows);
+      console.log('testGround._lightSources:', testGround._lightSources?.map(l => l.name));
+    }
+    // Check shadow test box (caster)
+    const testBox = scene.getMeshByName('shadowTestBox');
+    if (testBox) {
+      console.log('testBox in renderList:', sm?.renderList?.includes(testBox));
+    }
+    // Log total lights
+    console.log('Total scene lights:', scene.lights.length);
+    console.log('Enabled lights:', scene.lights.filter(l => l.isEnabled()).length);
+    console.log('Scene lights:', scene.lights.filter(l => l.isEnabled()).map(l => l.name + '(' + l.getClassName() + ')'));
+  }
+  console.groupEnd();
 }

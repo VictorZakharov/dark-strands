@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3, Matrix } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getGrid, setCell, markTreeCell } from './grid.js';
 import { getBuildings } from './generator.js';
@@ -6,9 +6,9 @@ import { g2w, rng, rngInt } from '../utils/helpers.js';
 import { getTerrainHeight } from './terrain.js';
 import { getPlayerState } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
-import { createStaticSphere } from '../core/physics.js';
+import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
+import { createStaticSphere, createStaticCylinder } from '../core/physics.js';
 
-const texLoader = new THREE.TextureLoader();
 let barkTex, leafTex, rockTex;
 
 const rockColliders = [];
@@ -16,65 +16,29 @@ const rockColliders = [];
 // Tree positions for foliage collision checks
 const treePosData = []; // { x, z, ty, scale }
 
-// Shared depth material for leaf shadow rendering — discards ~45% of fragments
-// via world-position hash to create dappled/lighter shadows
-const leafShadowDepth = new THREE.MeshDepthMaterial({
-  depthPacking: THREE.RGBADepthPacking,
-});
-leafShadowDepth.onBeforeCompile = (shader) => {
-  shader.vertexShader = shader.vertexShader.replace(
-    'varying vec2 vHighPrecisionZW;',
-    `varying vec2 vHighPrecisionZW;
-    varying vec3 vWPos;`
-  );
-  shader.vertexShader = shader.vertexShader.replace(
-    'vHighPrecisionZW = gl_Position.zw;',
-    `vHighPrecisionZW = gl_Position.zw;
-    vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
-  );
-  shader.fragmentShader = shader.fragmentShader.replace(
-    'varying vec2 vHighPrecisionZW;',
-    `varying vec2 vHighPrecisionZW;
-    varying vec3 vWPos;`
-  );
-  shader.fragmentShader = shader.fragmentShader.replace(
-    '#include <clipping_planes_fragment>',
-    `#include <clipping_planes_fragment>
-    vec2 snapped = floor(vWPos.xz * 3.0);
-    float lh = fract(sin(dot(snapped, vec2(12.9898, 78.233))) * 43758.5453);
-    if (lh > 0.55) discard;`
-  );
-};
-
-function getBarkTexture() {
+function getBarkTexture(scene) {
   if (!barkTex) {
-    barkTex = texLoader.load('./assets/textures/bark.jpg');
-    barkTex.wrapS = THREE.RepeatWrapping;
-    barkTex.wrapT = THREE.RepeatWrapping;
-    barkTex.repeat.set(1, 2);
-    barkTex.colorSpace = THREE.SRGBColorSpace;
+    barkTex = new Texture('./assets/textures/bark.jpg', scene);
+    barkTex.uScale = 1;
+    barkTex.vScale = 2;
   }
   return barkTex;
 }
 
-function getLeafTexture() {
+function getLeafTexture(scene) {
   if (!leafTex) {
-    leafTex = texLoader.load('./assets/textures/grass.jpg');
-    leafTex.wrapS = THREE.RepeatWrapping;
-    leafTex.wrapT = THREE.RepeatWrapping;
-    leafTex.repeat.set(2, 2);
-    leafTex.colorSpace = THREE.SRGBColorSpace;
+    leafTex = new Texture('./assets/textures/grass.jpg', scene);
+    leafTex.uScale = 2;
+    leafTex.vScale = 2;
   }
   return leafTex;
 }
 
-export function getRockTexture() {
+export function getRockTexture(scene) {
   if (!rockTex) {
-    rockTex = texLoader.load('./assets/textures/stone_wall.jpg');
-    rockTex.wrapS = THREE.RepeatWrapping;
-    rockTex.wrapT = THREE.RepeatWrapping;
-    rockTex.repeat.set(1, 1);
-    rockTex.colorSpace = THREE.SRGBColorSpace;
+    rockTex = new Texture('./assets/textures/stone_wall.jpg', scene);
+    rockTex.uScale = 1;
+    rockTex.vScale = 1;
   }
   return rockTex;
 }
@@ -144,61 +108,21 @@ export function getRockSurfaceHeight(wx, wz, currentY) {
   return bestTop;
 }
 
-function createTree(wx, wz) {
-  const group = new THREE.Group();
-
-  const trunkMat = new THREE.MeshStandardMaterial({
-    map: getBarkTexture(),
-    roughness: 0.95,
-  });
-  const leafMat = new THREE.MeshStandardMaterial({
-    color: CFG.SNOW_MODE ? 0xc8cdd0 : 0x3a8a3a,
-    roughness: 0.9,
-    flatShading: true,
-  });
-
-  // Randomize tree shape
-  const trunkH = rng(1.4, 2.4);
-  const trunkRadBot = rng(0.14, 0.22);
-  const trunkRadTop = trunkRadBot * rng(0.5, 0.75);
-  const numCones = rngInt(3, 5);
-
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(trunkRadTop, trunkRadBot, trunkH, 6),
-    trunkMat
-  );
-  trunk.position.y = trunkH / 2;
-  trunk.castShadow = true;
-  group.add(trunk);
-
-  for (let i = 0; i < numCones; i++) {
-    // Wider at bottom, narrower at top (fir/pine shape)
-    const frac = 1 - i / numCones;
-    const coneR = rng(1.0, 1.5) * (0.25 + 0.75 * frac);
-    const coneH = rng(0.9, 1.4);
-    const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(Math.max(coneR, 0.25), coneH, 6),
-      leafMat
-    );
-    cone.position.y = trunkH + i * rng(0.5, 0.7);
-    cone.castShadow = true;
-    cone.receiveShadow = true;
-    cone.customDepthMaterial = leafShadowDepth;
-    group.add(cone);
-  }
-
-  const ty = getTerrainHeight(wx, wz);
-  group.position.set(wx, ty, wz);
-
-  // 2x bigger base, with random variation
-  const s = rng(1.6, 3.2);
-  group.scale.set(s, s, s);
-  return group;
-}
-
 export function placeTrees(scene) {
   const grid = getGrid();
   const buildings = getBuildings();
+
+  // Shared materials (StandardMaterial for shadow compatibility)
+  const trunkMat = new StandardMaterial('trunkMat', scene);
+  trunkMat.diffuseTexture = getBarkTexture(scene);
+  trunkMat.specularColor = new Color3(0.02, 0.02, 0.02);
+
+  const leafMat = new StandardMaterial('leafMat', scene);
+  leafMat.diffuseColor = CFG.SNOW_MODE ? new Color3(0xc8 / 255, 0xcd / 255, 0xd0 / 255) : new Color3(0x3a / 255, 0x8a / 255, 0x3a / 255);
+  leafMat.specularColor = new Color3(0.02, 0.02, 0.02);
+
+  const trunkMeshes = [];
+  const coneMeshes = [];
   let placed = 0;
 
   for (let i = 0; i < CFG.TREES * 3 && placed < CFG.TREES; i++) {
@@ -218,29 +142,81 @@ export function placeTrees(scene) {
     if (tooClose) continue;
 
     const p = g2w(gx, gz);
-    // Skip below water level
     if (getTerrainHeight(p.x, p.z) < CFG.WATER_Y) continue;
 
     setCell(gx, gz, false);
     markTreeCell(gx, gz);
-    const tree = createTree(p.x, p.z);
-    scene.add(tree);
-    treePosData.push({ x: p.x, z: p.z, ty: getTerrainHeight(p.x, p.z), scale: tree.scale.x });
+
+    const ty = getTerrainHeight(p.x, p.z);
+    const trunkH = rng(1.4, 2.4);
+    const trunkRadBot = rng(0.14, 0.22);
+    const trunkRadTop = trunkRadBot * rng(0.5, 0.75);
+    const numCones = rngInt(3, 5);
+    const s = rng(1.6, 3.2);
+
+    // Trunk — create temp mesh, position/scale, bake transform for merging
+    const tMesh = MeshBuilder.CreateCylinder('_trunk', {
+      diameterTop: trunkRadTop * 2,
+      diameterBottom: trunkRadBot * 2,
+      height: trunkH,
+      tessellation: 6,
+    }, scene);
+    tMesh.scaling = new Vector3(s, s, s);
+    tMesh.position = new Vector3(p.x, ty + trunkH / 2 * s, p.z);
+    tMesh.bakeCurrentTransformIntoVertices();
+    trunkMeshes.push(tMesh);
+
+    // Canopy cones
+    for (let j = 0; j < numCones; j++) {
+      const frac = 1 - j / numCones;
+      const coneR = rng(1.0, 1.5) * (0.25 + 0.75 * frac);
+      const coneH = rng(0.9, 1.4);
+      const coneY = trunkH + j * rng(0.5, 0.7);
+      const cMesh = MeshBuilder.CreateCylinder('_cone', {
+        diameterTop: 0,
+        diameterBottom: Math.max(coneR, 0.25) * 2,
+        height: coneH,
+        tessellation: 6,
+      }, scene);
+      cMesh.scaling = new Vector3(s, s, s);
+      cMesh.position = new Vector3(p.x, ty + coneY * s, p.z);
+      cMesh.bakeCurrentTransformIntoVertices();
+      coneMeshes.push(cMesh);
+    }
+
+    treePosData.push({ x: p.x, z: p.z, ty, scale: s });
+    createStaticCylinder(trunkRadBot * s, trunkH * s / 2, p.x, ty + trunkH * s / 2, p.z);
     placed++;
+  }
+
+  // Merge all trunks into 1 draw call
+  if (trunkMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(trunkMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedTrunks';
+    merged.material = trunkMat;
+    addShadowCaster(merged);
+  }
+
+  // Merge all canopy cones into 1 draw call
+  if (coneMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(coneMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedCanopy';
+    merged.material = leafMat;
+    merged.convertToFlatShadedMesh();
+    addShadowCaster(merged);
+    enableShadowReceiving(merged);
   }
 }
 
 export function placeRocks(scene) {
-  const rockMat = new THREE.MeshStandardMaterial({
-    map: getRockTexture(),
-    roughness: 0.95,
-    flatShading: true,
-  });
+  const rockMat = new StandardMaterial('rockMat', scene);
+  rockMat.diffuseTexture = getRockTexture(scene);
+  rockMat.specularColor = new Color3(0.02, 0.02, 0.02);
 
   const grid = getGrid();
   const buildings = getBuildings();
+  const mergedRockMeshes = [];
 
-  // Spawn throwable pebbles first, then environment rocks
   const totalRocks = CFG.ROCKS + CFG.THROWABLE_STONES;
   let placedPebbles = 0;
   let placedEnv = 0;
@@ -261,7 +237,6 @@ export function placeRocks(scene) {
     }
     if (inside) continue;
 
-    // Check door proximity — prevent rocks spawning near doors (would block them)
     let nearDoor = false;
     for (const b of buildings) {
       for (const d of b.doors) {
@@ -277,52 +252,80 @@ export function placeRocks(scene) {
     const p0 = g2w(gx, gz);
     if (getTerrainHeight(p0.x, p0.z) < CFG.WATER_Y) continue;
 
-    // Decide: throwable pebble or environment rock
     let s;
     if (placedPebbles < CFG.THROWABLE_STONES && (placedEnv >= CFG.ROCKS || Math.random() < 0.3)) {
-      // Throwable pebble — fixed small size (matches thrown stone)
       s = CFG.THROWN_STONE_SIZE;
       placedPebbles++;
     } else if (placedEnv < CFG.ROCKS) {
-      // Environment rock — clearly bigger (random, 3x+ diameter of pebbles)
       const r = Math.random();
       if (r < 0.2) {
-        s = rng(1.5, 2.5); // big
+        s = rng(1.5, 2.5);
       } else if (r < 0.5) {
-        s = rng(0.9, 1.5); // medium
+        s = rng(0.9, 1.5);
       } else {
-        s = rng(0.6, 0.9); // small env (still 3x pebble diameter)
+        s = rng(0.6, 0.9);
       }
       placedEnv++;
     } else {
       continue;
     }
 
-    // Only block grid cell for large rocks (small/medium use circle collision only)
     if (s > 1.2) setCell(gx, gz, false);
 
     const ox = rng(-0.3, 0.3);
     const oz = rng(-0.3, 0.3);
     const ty = getTerrainHeight(p0.x + ox, p0.z + oz);
+    const rx = rng(0, Math.PI);
+    const ry = rng(0, Math.PI);
 
-    const geo = new THREE.DodecahedronGeometry(s, 1);
-    const rock = new THREE.Mesh(geo, rockMat);
-    rock.position.set(p0.x + ox, ty + s * 0.4, p0.z + oz);
-    rock.rotation.set(rng(0, Math.PI), rng(0, Math.PI), 0);
-    rock.castShadow = true;
-    rock.receiveShadow = true;
-    scene.add(rock);
+    const pickable = s <= CFG.ROCK_PICK_MAX_SIZE;
 
-    const rc = {
-      x: p0.x + ox, z: p0.z + oz,
-      r: s * 0.85, top: ty + s * 0.8, height: s * 0.8,
-      mesh: rock, size: s, active: true,
-    };
-    // Physics body for rocks large enough to block movement
-    if (s > 0.5) {
-      rc.physicsBody = createStaticSphere(s * 0.65, p0.x + ox, ty + s * 0.4, p0.z + oz);
+    if (pickable) {
+      // Pickable rocks stay individual (can be hidden on pickup)
+      const rock = MeshBuilder.CreateIcoSphere('pickableRock', { radius: s, subdivisions: 2 }, scene);
+      rock.position = new Vector3(p0.x + ox, ty + s * 0.4, p0.z + oz);
+      rock.rotation = new Vector3(rx, ry, 0);
+      rock.material = rockMat;
+      addShadowCaster(rock);
+      enableShadowReceiving(rock);
+
+      const rc = {
+        x: p0.x + ox, z: p0.z + oz,
+        r: s * 0.85, top: ty + s * 0.8, height: s * 0.8,
+        mesh: rock, size: s, active: true,
+      };
+      if (s > 0.5) {
+        rc.physicsBody = createStaticSphere(s * 0.75, p0.x + ox, ty + s * 0.4, p0.z + oz);
+      }
+      rockColliders.push(rc);
+    } else {
+      // Non-pickable rocks — bake transform into mesh for merging
+      const rockMesh = MeshBuilder.CreateIcoSphere('_rock', { radius: s, subdivisions: 2 }, scene);
+      rockMesh.position = new Vector3(p0.x + ox, ty + s * 0.4, p0.z + oz);
+      rockMesh.rotation = new Vector3(rx, ry, 0);
+      rockMesh.bakeCurrentTransformIntoVertices();
+      mergedRockMeshes.push(rockMesh);
+
+      const rc = {
+        x: p0.x + ox, z: p0.z + oz,
+        r: s * 0.85, top: ty + s * 0.8, height: s * 0.8,
+        mesh: null, size: s, active: true,
+      };
+      if (s > 0.5) {
+        rc.physicsBody = createStaticSphere(s * 0.75, p0.x + ox, ty + s * 0.4, p0.z + oz);
+      }
+      rockColliders.push(rc);
     }
-    rockColliders.push(rc);
+  }
+
+  // Merge all non-pickable rocks into 1 draw call
+  if (mergedRockMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(mergedRockMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedRocks';
+    merged.material = rockMat;
+    merged.convertToFlatShadedMesh();
+    addShadowCaster(merged);
+    enableShadowReceiving(merged);
   }
 }
 
@@ -393,7 +396,7 @@ export function registerPickableRock(mesh, x, z, size) {
     r: size * 0.85, top, height: size * 0.8,
     mesh, size, active: true,
   };
-  rc.physicsBody = createStaticSphere(size * 0.65, x, mesh.position.y, z);
+  rc.physicsBody = createStaticSphere(size * 0.85, x, mesh.position.y, z);
   rockColliders.push(rc);
 }
 
@@ -419,7 +422,7 @@ export function getPickableRockNear(wx, wz, wy, hitRadius) {
  */
 export function deactivateRock(rc) {
   rc.active = false;
-  rc.mesh.visible = false;
+  if (rc.mesh) rc.mesh.isVisible = false;
 }
 
 export function getNearestPickableRock() {
@@ -443,12 +446,12 @@ export function pickNearestRock(inventory) {
   const rc = getNearestPickableRock();
   if (!rc) return false;
   rc.active = false;
-  rc.mesh.visible = false;
+  if (rc.mesh) rc.mesh.isVisible = false;
   inventory.stones++;
   return true;
 }
 
-const _projRock = new THREE.Vector3();
+const _projRock = new Vector3();
 
 /** Returns all active pickable rocks (for minimap display) */
 export function getPickableRocks() {
@@ -468,19 +471,28 @@ export function updateRockHint() {
   }
 
   const camera = getCamera();
-  _projRock.set(rock.x, rock.top + 0.3, rock.z);
-  _projRock.project(camera);
-  if (_projRock.z > 1) {
+  const scn = camera.getScene();
+  const engine = scn.getEngine();
+
+  // Project rock world position to screen coordinates
+  const worldPos = new Vector3(rock.x, rock.top + 0.3, rock.z);
+  const projected = Vector3.Project(
+    worldPos,
+    Matrix.Identity(),
+    scn.getTransformMatrix(),
+    camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight())
+  );
+
+  // Check if behind camera (z > 1 in NDC equivalent)
+  if (projected.z > 1) {
     if (el.dataset.source === 'rock') el.style.display = 'none';
     return;
   }
 
-  const hw = window.innerWidth / 2;
-  const hh = window.innerHeight / 2;
   el.textContent = '[E] Pick up';
   el.style.fontSize = '21px';
-  el.style.left = (_projRock.x * hw + hw) + 'px';
-  el.style.top = (-_projRock.y * hh + hh) + 'px';
+  el.style.left = projected.x + 'px';
+  el.style.top = projected.y + 'px';
   el.style.display = 'block';
   el.dataset.source = 'rock';
 }

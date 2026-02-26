@@ -1,4 +1,6 @@
-import * as THREE from 'three';
+import { MeshBuilder, Mesh, StandardMaterial, PointLight,
+         ShadowGenerator, Texture, Color3, Vector3, TransformNode,
+         Ray, ParticleSystem } from 'babylonjs';
 import { getGrid, isDoorCell, isWindowCell, isStairCell, isWalkable } from './grid.js';
 import { getBuildings, getWallHeightAt } from './generator.js';
 import { isInsideWindowOpening } from './windows.js';
@@ -7,9 +9,10 @@ import { getDoorByCell } from './doors.js';
 import { g2w, w2g, rngInt } from '../utils/helpers.js';
 import { CFG } from '../config.js';
 import { getPlayerState, getCamBlend } from '../entities/player.js';
-import { getCamera, getScene } from '../core/scene.js';
+import { getCamera } from '../core/scene.js';
 import { getTerrainHeight } from './terrain.js';
 import { getInventory } from './flowers.js';
+import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
 const torchLights = [];
 const doorTorchLights = [];
@@ -18,53 +21,87 @@ const doorTorchFlames = [];
 // All pickable torches (interior + door + player-placed)
 const pickableTorches = [];
 
-const _losRay = new THREE.Raycaster();
-_losRay.layers.set(0); // Only interact with world geometry
-
-
 // Player-placed door torches — need wx/wz updates when door rotates
 const playerDoorTorches = [];
 
-// Pre-allocated light pool — avoids adding/removing PointLights which triggers shader recompile
-const LIGHT_POOL_SIZE = 20;
-const lightPool = [];       // { light, inUse }
+// Fixed pool of always-enabled "slot" PointLights for torch illumination.
+// These lights are NEVER toggled with setEnabled() — only their position and
+// intensity change each frame. This avoids shader recompilation (which causes
+// the entire world to flicker invisible while new shaders compile).
+const MAX_ENABLED_TORCHES = 5;
+const slotLights = []; // always-enabled PointLights (length = MAX_ENABLED_TORCHES)
 
 // Limit shadow-casting point lights to avoid GPU cost (cube maps = 6 passes each)
 const MAX_SHADOW_TORCHES = 3;
-let _shadowTorchCount = 0;
 
-function configureTorchShadow(light) {
-  if (_shadowTorchCount >= MAX_SHADOW_TORCHES) return;
-  _shadowTorchCount++;
-  light.castShadow = true;
-  light.shadow.mapSize.width = 256;
-  light.shadow.mapSize.height = 256;
-  light.shadow.camera.near = 0.1;
-  light.shadow.camera.far = 8;
-  light.shadow.bias = -0.003;
+// Shadow generators for point-light torches (one per shadow-casting slot light)
+const _shadowGenerators = [];
+
+/** Register a mesh as a shadow caster for all torch shadow generators */
+function addTorchShadowCaster(mesh) {
+  for (const sg of _shadowGenerators) {
+    sg.addShadowCaster(mesh, true);
+  }
 }
 
+export function getTorchShadowGenerators() { return _shadowGenerators; }
+
 export function initTorchLightPool(scene) {
-  for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
-    const light = new THREE.PointLight(0xff8833, 0, 6, 2.0);
-    scene.add(light);
-    lightPool.push({ light, inUse: false });
+  // Create fixed slot lights — always enabled, intensity=0 until assigned to a torch
+  for (let i = 0; i < MAX_ENABLED_TORCHES; i++) {
+    const light = new PointLight(`torchSlot_${i}`, new Vector3(0, -100, 0), scene);
+    light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
+    light.intensity = 0;
+    light.range = 6;
+    light.metadata = {};
+    // Attach shadow generators to first MAX_SHADOW_TORCHES slots
+    if (i < MAX_SHADOW_TORCHES) {
+      const sg = new ShadowGenerator(256, light);
+      sg.usePercentageCloserFiltering = true;
+      sg.bias = 0.001;
+      sg.normalBias = 0.01;
+      light.shadowMinZ = 0.1;
+      light.shadowMaxZ = 8;
+      light.metadata.shadowGen = sg;
+      _shadowGenerators.push(sg);
+    }
+    slotLights.push(light);
+  }
+}
+
+// Placement light pool — separate from the culling slot lights.
+// Player-placed torches acquire from here; these start disabled and are enabled
+// ONE TIME on acquire (the single setEnabled call happens at placement, not per-frame).
+const PLACE_POOL_SIZE = 15;
+const placePool = [];
+
+export function initPlacementLightPool(scene) {
+  for (let i = 0; i < PLACE_POOL_SIZE; i++) {
+    const light = new PointLight(`torchPlacePool_${i}`, Vector3.Zero(), scene);
+    light.diffuse = new Color3(1, 0.533, 0.2);
+    light.intensity = 0;
+    light.range = 6;
+    light.setEnabled(false);
+    light.metadata = {};
+    placePool.push({ light, inUse: false });
   }
 }
 
 function acquirePoolLight() {
-  for (const entry of lightPool) {
+  for (const entry of placePool) {
     if (!entry.inUse) {
       entry.inUse = true;
+      entry.light.setEnabled(true);
       return entry.light;
     }
   }
-  return null; // pool exhausted — shouldn't happen in normal play
+  return null;
 }
 
 function releasePoolLight(light) {
   light.intensity = 0;
-  for (const entry of lightPool) {
+  light.setEnabled(false);
+  for (const entry of placePool) {
     if (entry.light === light) { entry.inUse = false; return; }
   }
 }
@@ -74,8 +111,22 @@ export function getDoorTorchLights() { return doorTorchLights; }
 export function getDoorTorchFlames() { return doorTorchFlames; }
 
 // Shared materials (reused for placement)
-const _flameMat = new THREE.MeshBasicMaterial({ color: 0xff7722 });
-const _stickMat = new THREE.MeshStandardMaterial({ color: 0x4a3020 });
+let _flameMat = null;
+let _stickMat = null;
+
+function ensureMaterials(scene) {
+  if (!_flameMat) {
+    _flameMat = new StandardMaterial('torchFlameMat', scene);
+    _flameMat.disableLighting = true;
+    _flameMat.emissiveColor = new Color3(1, 0.467, 0.133); // 0xff7722
+  }
+  if (!_stickMat) {
+    _stickMat = new StandardMaterial('torchStickMat', scene);
+    _stickMat.diffuseColor = new Color3(0.29, 0.188, 0.125); // 0x4a3020
+    _stickMat.specularColor = new Color3(0.02, 0.02, 0.02);
+  }
+}
+
 const TILT = Math.PI / 6;
 const STICK_LEN = 0.6;
 const TIP_OUT = Math.sin(TILT) * STICK_LEN;
@@ -83,6 +134,8 @@ const TIP_UP = Math.cos(TILT) * STICK_LEN;
 
 /** Create a wall-mounted torch at given position, returns { light, flame, stick } */
 function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ, usePool) {
+  ensureMaterials(scene);
+
   // Actual tip = stick center + half-length projection
   const tipX = mountX + normalX * TIP_OUT;
   const tipZ = mountZ + normalZ * TIP_OUT;
@@ -93,54 +146,77 @@ function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ, usePoo
     light = acquirePoolLight();
     if (!light) return null;
   } else {
-    light = new THREE.PointLight(0xff8833, 0, 6, 2.0);
-    scene.add(light);
+    // World-gen torch: create a permanently-disabled data-only light.
+    // Actual illumination is handled by the fixed slot lights in updateTorchEmbers.
+    const name = `torchLight_${torchLights.length + doorTorchLights.length}`;
+    light = new PointLight(name, Vector3.Zero(), scene);
+    light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
+    light.range = 6;
+    light.setEnabled(false); // permanently disabled — slot lights do the rendering
+    light.metadata = {};
   }
   light.intensity = 2;
-  light.position.set(tipX, tipY + 0.06, tipZ);
+  light.position = new Vector3(tipX, tipY + 0.06, tipZ);
 
-  const flame = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 5), _flameMat);
-  flame.position.set(tipX, tipY, tipZ);
-  scene.add(flame);
+  const flame = MeshBuilder.CreateSphere('torchFlame', { diameter: 0.16, segments: 5 }, scene);
+  flame.material = _flameMat;
+  flame.position = new Vector3(tipX, tipY, tipZ);
+  flame.isPickable = false;
 
-  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, STICK_LEN, 4), _stickMat);
-  stick.position.set(
+  const stick = MeshBuilder.CreateCylinder('torchStick', {
+    diameterTop: 0.06, diameterBottom: 0.08, height: STICK_LEN, tessellation: 4,
+  }, scene);
+  stick.material = _stickMat;
+  stick.position = new Vector3(
     mountX + normalX * TIP_OUT / 2,
     mountY + TIP_UP / 2,
     mountZ + normalZ * TIP_OUT / 2
   );
+  // Apply tilt rotation based on wall normal direction
   if (Math.abs(normalX) > 0.5) {
     stick.rotation.z = normalX > 0 ? -TILT : TILT;
   } else {
     stick.rotation.x = normalZ > 0 ? TILT : -TILT;
   }
-  stick.castShadow = true;
-  scene.add(stick);
+  stick.isPickable = false;
+  addShadowCaster(stick); // CSM shadow caster
+  addTorchShadowCaster(stick); // point-light shadow caster
 
   return { light, flame, stick, wx: tipX, wz: tipZ, pooled: !!usePool };
 }
 
 /** Create a vertical ground torch, returns { light, flame, stick } */
 function createGroundTorch(scene, x, groundY, z, usePool) {
+  ensureMaterials(scene);
+
   let light;
   if (usePool) {
     light = acquirePoolLight();
     if (!light) return null;
   } else {
-    light = new THREE.PointLight(0xff8833, 0, 6, 2.0);
-    scene.add(light);
+    const name = `groundTorchLight_${torchLights.length}`;
+    light = new PointLight(name, Vector3.Zero(), scene);
+    light.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
+    light.range = 6;
+    light.setEnabled(false); // permanently disabled — slot lights do the rendering
+    light.metadata = {};
   }
   light.intensity = 2;
-  light.position.set(x, groundY + STICK_LEN + 0.12, z);
+  light.position = new Vector3(x, groundY + STICK_LEN + 0.12, z);
 
-  const flame = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 5), _flameMat);
-  flame.position.set(x, groundY + STICK_LEN + 0.08, z);
-  scene.add(flame);
+  const flame = MeshBuilder.CreateSphere('groundTorchFlame', { diameter: 0.16, segments: 5 }, scene);
+  flame.material = _flameMat;
+  flame.position = new Vector3(x, groundY + STICK_LEN + 0.08, z);
+  flame.isPickable = false;
 
-  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, STICK_LEN, 4), _stickMat);
-  stick.position.set(x, groundY + STICK_LEN / 2, z);
-  stick.castShadow = true;
-  scene.add(stick);
+  const stick = MeshBuilder.CreateCylinder('groundTorchStick', {
+    diameterTop: 0.06, diameterBottom: 0.08, height: STICK_LEN, tessellation: 4,
+  }, scene);
+  stick.material = _stickMat;
+  stick.position = new Vector3(x, groundY + STICK_LEN / 2, z);
+  stick.isPickable = false;
+  addShadowCaster(stick);
+  addTorchShadowCaster(stick);
 
   return { light, flame, stick, wx: x, wz: z, pooled: !!usePool };
 }
@@ -177,7 +253,6 @@ export function placeTorches(scene) {
       const wx = p.x + tp.ox, wz = p.z + tp.oz;
       const awayX = -tp.ox / wallOffset, awayZ = -tp.oz / wallOffset;
       const t = createWallTorch(scene, wx, wz, 2.2, awayX, awayZ);
-      if (b.stories >= 2) configureTorchShadow(t.light);
       torchLights.push(t.light);
       pickableTorches.push({ ...t, active: true });
     }
@@ -217,10 +292,9 @@ export function placeDoorTorches(scene) {
       }
 
       const t = createWallTorch(scene, mountX, mountZ, torchY, nx, nz);
-      if (b.stories >= 2) configureTorchShadow(t.light);
       t.light.intensity = 0; // Let dayNight set it
-      t.light.userData.baseIntensity = 0;
-      t.flame.visible = false;
+      t.light.metadata.baseIntensity = 0;
+      t.flame.isVisible = false;
       doorTorchLights.push(t.light);
       doorTorchFlames.push(t.flame);
       pickableTorches.push({ ...t, active: true }); // Remains pickable even when light is off during day
@@ -232,41 +306,19 @@ export function placeDoorTorches(scene) {
 
 export function getNearestPickableTorch() {
   const p = getPlayerState();
-  const scene = getScene();
   let best = null;
   let bestDist = CFG.TORCH_PICK_DIST;
 
-  const eyePos = new THREE.Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
+  const eyePos = new Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
 
   for (const t of pickableTorches) {
     if (!t.active) continue;
 
-    const targetPos = new THREE.Vector3();
-    t.flame.getWorldPosition(targetPos);
+    // Get flame world position (works whether flame is parented to a door group or scene root)
+    const targetPos = t.flame.getAbsolutePosition();
 
-    const dist = eyePos.distanceTo(targetPos);
-    if (dist >= bestDist) continue;
-
-    // Line of sight check
-    const dir = new THREE.Vector3().subVectors(targetPos, eyePos).normalize();
-    _losRay.set(eyePos, dir);
-    _losRay.far = dist;
-
-    let blocked = false;
-    if (scene) {
-      const hits = _losRay.intersectObjects(scene.children, true);
-      for (const h of hits) {
-        // If we hit something significantly before the torch (allowing small threshold for torch meshes)
-        if (h.distance < dist - 0.2) {
-          if (h.object.type !== 'Sprite') {
-            blocked = true;
-            break;
-          }
-        }
-      }
-    }
-
-    if (!blocked) {
+    const dist = Vector3.Distance(eyePos, targetPos);
+    if (dist < bestDist) {
       bestDist = dist;
       best = t;
     }
@@ -278,15 +330,15 @@ export function pickNearestTorch(inventory) {
   const t = getNearestPickableTorch();
   if (!t) return false;
   t.active = false;
-  t.stick.visible = false;
-  t.flame.visible = false;
+  t.stick.isVisible = false;
+  t.flame.isVisible = false;
   if (t.pooled) {
-    // Return pooled light for reuse
+    // Return placement pool light for reuse
     releasePoolLight(t.light);
   } else {
-    // World-gen light: keep visible, zero intensity so shader count stays stable
+    // World-gen light: mark as picked (already permanently disabled)
     t.light.intensity = 0;
-    t.light.userData.picked = true;
+    t.light.metadata.picked = true;
   }
   // Remove from door-torch tracking if it was door-parented
   const dIdx = playerDoorTorches.indexOf(t);
@@ -307,21 +359,33 @@ const PLACE_MAX_DIST_GROUND = 3;
 const PLACE_STEP = 0.12;
 
 export function initTorchPreview(scene) {
-  const mat = new THREE.MeshBasicMaterial({
-    color: 0x44ff44, transparent: true, opacity: 0.5, depthWrite: false,
-  });
+  const mat = new StandardMaterial('torchPreviewMat', scene);
+  mat.disableLighting = true;
+  mat.emissiveColor = new Color3(0.267, 1, 0.267); // 0x44ff44
+  mat.alpha = 0.5;
+  // Babylon.js handles depth write via needDepthPrePass or material settings
+  // For transparent preview, alpha < 1 is sufficient
 
-  previewGroup = new THREE.Group();
+  previewGroup = new TransformNode('torchPreviewGroup', scene);
 
-  previewStick = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, STICK_LEN, 4), mat);
-  previewGroup.add(previewStick);
+  previewStick = MeshBuilder.CreateCylinder('previewStick', {
+    diameterTop: 0.06, diameterBottom: 0.08, height: STICK_LEN, tessellation: 4,
+  }, scene);
+  previewStick.material = mat;
+  previewStick.parent = previewGroup;
+  previewStick.isPickable = false;
 
-  previewFlame = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 5), mat.clone());
-  previewFlame.material.color.set(0x44ff44);
-  previewGroup.add(previewFlame);
+  const flameMat = mat.clone('torchPreviewFlameMat');
+  flameMat.emissiveColor = new Color3(0.267, 1, 0.267); // 0x44ff44
+  flameMat.alpha = 0.5;
 
-  previewGroup.visible = false;
-  scene.add(previewGroup);
+  previewFlame = MeshBuilder.CreateSphere('previewFlame', { diameter: 0.16, segments: 5 }, scene);
+  previewFlame.material = flameMat;
+  previewFlame.parent = previewGroup;
+  previewFlame.position = new Vector3(0, 0.3, 0);
+  previewFlame.isPickable = false;
+
+  previewGroup.setEnabled(false);
 }
 
 const MIN_TORCH_SPACING = 0.6;
@@ -339,10 +403,8 @@ function isTooCloseToTorch(x, y, z) {
 
 /** Ray-march from camera through crosshair; distances measured from player */
 function findPlacementTarget(camera) {
-  const origin = new THREE.Vector3();
-  const dir = new THREE.Vector3();
-  camera.getWorldPosition(origin);
-  camera.getWorldDirection(dir);
+  const origin = camera.globalPosition.clone();
+  const dir = camera.getForwardRay(1).direction.clone();
 
   // Player position for distance checks (consistent between 1st/3rd person)
   const p = getPlayerState();
@@ -376,7 +438,7 @@ function findPlacementTarget(camera) {
     // Past wall range from player — stop
     if (distPlayer > PLACE_MAX_DIST_WALL) break;
 
-    // Wall hit (walkable → non-walkable transition)
+    // Wall hit (walkable -> non-walkable transition)
     const walkable = isWalkable(x, z);
     if (!walkable && prevWalkable) {
       const g = w2g(x, z);
@@ -449,29 +511,29 @@ export function updateTorchPreview(camera, active) {
   placementHit = null;
 
   if (!active || getInventory().torches <= 0) {
-    previewGroup.visible = false;
+    previewGroup.setEnabled(false);
     return;
   }
 
   const hit = findPlacementTarget(camera);
   if (!hit) {
-    previewGroup.visible = false;
+    previewGroup.setEnabled(false);
     return;
   }
 
   placementHit = hit;
-  previewGroup.visible = true;
+  previewGroup.setEnabled(true);
 
   // Reset transforms
-  previewGroup.rotation.set(0, 0, 0);
-  previewStick.position.set(0, 0, 0);
-  previewStick.rotation.set(0, 0, 0);
-  previewFlame.position.set(0, 0.3, 0);
+  previewGroup.rotation = Vector3.Zero();
+  previewStick.position = Vector3.Zero();
+  previewStick.rotation = Vector3.Zero();
+  previewFlame.position = new Vector3(0, 0.3, 0);
 
   if (hit.type === 'wall' || hit.type === 'door') {
     // Wall/door-mounted — position at surface, tilted away
     const mx = hit.x, mz = hit.z, my = hit.y;
-    previewGroup.position.set(
+    previewGroup.position = new Vector3(
       mx + hit.nx * TIP_OUT / 2,
       my + TIP_UP / 2,
       mz + hit.nz * TIP_OUT / 2
@@ -481,11 +543,11 @@ export function updateTorchPreview(camera, active) {
     } else {
       previewStick.rotation.x = hit.nz > 0 ? TILT : -TILT;
     }
-    previewFlame.position.set(hit.nx * TIP_OUT / 2, TIP_UP / 2, hit.nz * TIP_OUT / 2);
+    previewFlame.position = new Vector3(hit.nx * TIP_OUT / 2, TIP_UP / 2, hit.nz * TIP_OUT / 2);
   } else {
     // Ground — vertical
-    previewGroup.position.set(hit.x, hit.y + STICK_LEN / 2, hit.z);
-    previewFlame.position.set(0, STICK_LEN / 2, 0);
+    previewGroup.position = new Vector3(hit.x, hit.y + STICK_LEN / 2, hit.z);
+    previewFlame.position = new Vector3(0, STICK_LEN / 2, 0);
   }
 }
 
@@ -507,12 +569,12 @@ export function placeTorchAtPreview(scene) {
     // Re-parent flame + stick into door group (convert to door-local coords)
     const doorGroup = door.group;
     for (const child of [t.flame, t.stick]) {
-      const wp = new THREE.Vector3();
-      child.getWorldPosition(wp);
-      scene.remove(child);
-      doorGroup.add(child);
-      doorGroup.worldToLocal(wp);
-      child.position.copy(wp);
+      const wp = child.getAbsolutePosition();
+      child.parent = doorGroup;
+      // Convert world position to door-group-local coordinates
+      const invWorld = doorGroup.getWorldMatrix().clone().invert();
+      const localPos = Vector3.TransformCoordinates(wp, invWorld);
+      child.position = localPos;
     }
     const entry = { ...t, active: true, doorGroup };
     pickableTorches.push(entry);
@@ -538,18 +600,15 @@ export function updateDoorTorchPositions() {
   for (const t of playerDoorTorches) {
     if (!t.active || !t.doorGroup) continue;
     // Convert flame local position to world position for light + ember tracking
-    const wp = new THREE.Vector3();
-    t.flame.getWorldPosition(wp);
+    const wp = t.flame.getAbsolutePosition();
     t.wx = wp.x;
     t.wz = wp.z;
     // Update pooled light position to match
-    t.light.position.set(wp.x, wp.y + 0.04, wp.z);
+    t.light.position = new Vector3(wp.x, wp.y + 0.04, wp.z);
   }
 }
 
 // ---- Hint (used by old system, kept for reference but main uses unified hint) ----
-
-const _projTorch = new THREE.Vector3();
 
 export function updateTorchHint() {
   // Now handled by unified updateInteractHint in main.js
@@ -559,37 +618,47 @@ export function updateTorchHint() {
 
 let heldGroup = null;
 let heldLight = null;
-const _right = new THREE.Vector3();
-const _fwd = new THREE.Vector3();
-const _yAxis = new THREE.Vector3(0, 1, 0);
 
 export function initHeldTorch(scene) {
-  heldGroup = new THREE.Group();
+  heldGroup = new TransformNode('heldTorchGroup', scene);
 
-  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, 0.5, 4), _stickMat);
-  heldGroup.add(stick);
+  ensureMaterials(scene);
 
-  const flame = new THREE.Mesh(new THREE.SphereGeometry(0.06, 5, 5), _flameMat);
-  flame.position.y = 0.3;
-  heldGroup.add(flame);
+  const stick = MeshBuilder.CreateCylinder('heldTorchStick', {
+    diameterTop: 0.04, diameterBottom: 0.06, height: 0.5, tessellation: 4,
+  }, scene);
+  stick.material = _stickMat;
+  stick.parent = heldGroup;
+  stick.isPickable = false;
 
-  heldGroup.visible = false;
-  scene.add(heldGroup);
+  const flame = MeshBuilder.CreateSphere('heldTorchFlame', { diameter: 0.12, segments: 5 }, scene);
+  flame.material = _flameMat;
+  flame.position = new Vector3(0, 0.3, 0);
+  flame.parent = heldGroup;
+  flame.isPickable = false;
 
-  heldLight = new THREE.PointLight(0xff8833, 0, 15, 1.5);
-  scene.add(heldLight);
+  heldGroup.setEnabled(false);
+
+  // Held torch light — always enabled, intensity=0 when inactive.
+  // Never toggle setEnabled() to avoid shader recompilation flicker.
+  heldLight = new PointLight('heldTorchLight', new Vector3(0, -100, 0), scene);
+  heldLight.diffuse = new Color3(1, 0.533, 0.2); // 0xff8833
+  heldLight.intensity = 0;
+  heldLight.range = 6;
+  heldLight.metadata = {};
 }
 
 export function updateHeldTorch(camera, active, playerState) {
   if (!heldGroup || !heldLight) return;
 
   if (!active) {
-    heldGroup.visible = false;
+    heldGroup.setEnabled(false);
     heldLight.intensity = 0;
+    heldLight.position.y = -100; // park far away so it doesn't affect any mesh
     return;
   }
 
-  heldGroup.visible = true;
+  heldGroup.setEnabled(true);
   heldLight.intensity = 2;
 
   let px, py, pz;
@@ -606,71 +675,69 @@ export function updateHeldTorch(camera, active, playerState) {
     pz = playerState.z + rZ * 0.35 + fZ * 0.25;
   } else {
     // 1st person — position relative to camera
-    camera.getWorldDirection(_fwd);
-    _right.crossVectors(_fwd, _yAxis).normalize();
-    px = camera.position.x + _right.x * 0.35 + _fwd.x * 0.3;
-    py = camera.position.y - 0.45;
-    pz = camera.position.z + _right.z * 0.35 + _fwd.z * 0.3;
+    const fwd = camera.getForwardRay(1).direction;
+    const yAxis = new Vector3(0, 1, 0);
+    const right = Vector3.Cross(fwd, yAxis).normalize();
+    px = camera.globalPosition.x + right.x * 0.35 + fwd.x * 0.3;
+    py = camera.globalPosition.y - 0.45;
+    pz = camera.globalPosition.z + right.z * 0.35 + fwd.z * 0.3;
   }
 
-  heldGroup.position.set(px, py, pz);
+  heldGroup.position = new Vector3(px, py, pz);
 
   // Keep torch upright with subtle tilt
-  heldGroup.rotation.set(0, 0, -0.15);
+  heldGroup.rotation = new Vector3(0, 0, -0.15);
 
   // Light at flame tip
-  heldLight.position.set(px, py + 0.35, pz);
+  heldLight.position = new Vector3(px, py + 0.35, pz);
 }
 
 export function hideHeldTorch() {
-  if (heldGroup) heldGroup.visible = false;
-  if (heldLight) heldLight.intensity = 0;
+  if (heldGroup) heldGroup.setEnabled(false);
+  if (heldLight) {
+    heldLight.intensity = 0;
+    heldLight.position.y = -100;
+  }
 }
 
 // ---- Torch ember particles ----
 
-let emberTex = null;
 const EMBERS_PER_TORCH = 3;
 const EMBER_VIS_DIST = 30; // only animate embers near player
-let torchEmbers = []; // { sprite, torch, vel, life, maxLife }
+let torchEmbers = []; // { mesh, torch, vel, life, maxLife }
 
-function getEmberTexture() {
-  if (emberTex) return emberTex;
-  const c = document.createElement('canvas');
-  c.width = 16; c.height = 16;
-  const ctx = c.getContext('2d');
-  const grad = ctx.createRadialGradient(8, 8, 0, 8, 8, 8);
-  grad.addColorStop(0, 'rgba(255,200,50,1)');
-  grad.addColorStop(0.5, 'rgba(255,100,0,0.6)');
-  grad.addColorStop(1, 'rgba(255,50,0,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 16, 16);
-  emberTex = new THREE.CanvasTexture(c);
-  return emberTex;
-}
-
+let _emberMat = null;
 let _emberScene = null;
+
+function getEmberMaterial(scene) {
+  if (_emberMat) return _emberMat;
+  _emberMat = new StandardMaterial('emberMat', scene);
+  _emberMat.disableLighting = true;
+  _emberMat.emissiveColor = new Color3(1, 0.6, 0.15); // warm ember glow
+  _emberMat.alpha = 0;
+  // Additive blending in Babylon.js
+  _emberMat.alphaMode = 1; // ALPHA_ADD
+  _emberMat.disableDepthWrite = true;
+  return _emberMat;
+}
 
 export function initTorchEmbers(scene) {
   _emberScene = scene;
-  const tex = getEmberTexture();
+  getEmberMaterial(scene);
 
-  // Create ember sprites for all active torches (pickable list covers all)
+  // Create ember meshes for all active torches (pickable list covers all)
   for (const t of pickableTorches) {
     if (!t.active) continue;
     for (let i = 0; i < EMBERS_PER_TORCH; i++) {
-      const mat = new THREE.SpriteMaterial({
-        map: tex, blending: THREE.AdditiveBlending,
-        transparent: true, opacity: 0, depthWrite: false,
-      });
-      const sprite = new THREE.Sprite(mat);
-      sprite.layers.set(2); // skip raycaster (layer 0 only)
-      sprite.scale.set(0.04, 0.04, 0.04);
-      sprite.visible = false;
-      scene.add(sprite);
+      const mesh = MeshBuilder.CreateSphere(`ember_${torchEmbers.length}`, {
+        diameter: 0.04, segments: 3,
+      }, scene);
+      mesh.material = _emberMat.clone(`emberMat_${torchEmbers.length}`);
+      mesh.isPickable = false;
+      mesh.isVisible = false;
       torchEmbers.push({
-        sprite, torch: t,
-        vel: new THREE.Vector3(), life: 0, maxLife: rnd(0.8, 2.0),
+        mesh, torch: t,
+        vel: new Vector3(0, 0, 0), life: 0, maxLife: rnd(0.8, 2.0),
       });
     }
   }
@@ -683,8 +750,8 @@ function resetEmber(e) {
   const fx = e.torch.wx;
   const fy = e.torch.flame.position.y;
   const fz = e.torch.wz;
-  e.sprite.position.set(fx + rnd(-0.05, 0.05), fy, fz + rnd(-0.05, 0.05));
-  e.vel.set(rnd(-0.15, 0.15), rnd(0.5, 1.2), rnd(-0.15, 0.15));
+  e.mesh.position = new Vector3(fx + rnd(-0.05, 0.05), fy, fz + rnd(-0.05, 0.05));
+  e.vel = new Vector3(rnd(-0.15, 0.15), rnd(0.5, 1.2), rnd(-0.15, 0.15));
   e.maxLife = rnd(0.8, 2.0);
   e.life = e.maxLife;
 }
@@ -692,41 +759,50 @@ function resetEmber(e) {
 export function updateTorchEmbers(dt) {
   if (!torchEmbers.length) return;
   const p = getPlayerState();
-  const px = p.x, pz = p.z;
+  const px = p.x, py = p.y, pz = p.z;
   const pg = w2g(px, pz);
   const grid = getGrid();
   const isInside = pg.x >= 0 && pg.x < CFG.GRID && pg.z >= 0 && pg.z < CFG.GRID && !!grid[pg.x][pg.z];
-  const playerFloor = Math.floor(Math.max(0, p.y) / CFG.WALL_H);
+  const playerFloor = Math.floor(Math.max(0, py) / CFG.WALL_H);
 
-  // Manage light occlusion across floors to prevent light bleed
+  // Distance-based light culling via fixed slot lights.
+  // Slot lights are ALWAYS enabled — we only move their position and set intensity.
+  // This avoids setEnabled() toggling which triggers shader recompilation flicker.
+  const torchDistances = [];
   for (const t of pickableTorches) {
-    if (!t.active || t.light.userData.picked) continue;
+    if (!t.active || t.light.metadata.picked) continue;
+    if (t.light.metadata.baseIntensity === undefined) t.light.metadata.baseIntensity = 2.0;
+    const dx = t.wx - px, dz = t.wz - pz;
+    torchDistances.push({ t, dist2: dx * dx + dz * dz });
+  }
+  torchDistances.sort((a, b) => a.dist2 - b.dist2);
 
-    // Smoothly fade out lights that are on different floors
-    const flameY = t.flame.position.y;
-    const torchFloor = Math.floor(flameY / CFG.WALL_H);
-    const floorDiff = Math.abs(torchFloor - playerFloor);
+  // Move slot lights to the nearest torch positions
+  for (let i = 0; i < slotLights.length; i++) {
+    const slot = slotLights[i];
+    if (i < torchDistances.length) {
+      const { t } = torchDistances[i];
+      const flameY = t.flame.position.y;
+      const torchFloor = Math.floor(flameY / CFG.WALL_H);
+      const floorDiff = Math.abs(torchFloor - playerFloor);
 
-    // Base intensity comes from daynight.js (or defaults to 2.0 for player-placed non-world torches)
-    if (t.light.userData.baseIntensity === undefined) t.light.userData.baseIntensity = 2.0;
+      // Move slot light to this torch's position
+      slot.position.copyFrom(t.light.position);
 
-    // Base intensity
-    let targetIntensity = t.light.userData.baseIntensity;
-
-    // If player is inside and on a different floor, scale down intensity heavily
-    if (isInside && floorDiff >= 1) {
-      targetIntensity = 0;
-    }
-
-    if (t.light.intensity !== targetIntensity) {
-      t.light.intensity += (targetIntensity - t.light.intensity) * Math.min(1, dt * 5);
+      let targetIntensity = t.light.metadata.baseIntensity;
+      if (isInside && floorDiff >= 1) targetIntensity = 0;
+      slot.intensity = targetIntensity;
+    } else {
+      // No torch for this slot — park it far away with zero intensity
+      slot.position.y = -100;
+      slot.intensity = 0;
     }
   }
 
   for (const e of torchEmbers) {
     // Skip inactive or unlit torches (door torches off during day or occluded)
-    if (!e.torch.active || Math.abs(e.torch.light.intensity) < 0.1 || !e.torch.flame.visible) {
-      e.sprite.visible = false;
+    if (!e.torch.active || Math.abs(e.torch.light.intensity) < 0.1 || !e.torch.flame.isVisible) {
+      e.mesh.isVisible = false;
       e.life = 0;
       continue;
     }
@@ -734,20 +810,20 @@ export function updateTorchEmbers(dt) {
     // Distance culling
     const dx = e.torch.wx - px, dz = e.torch.wz - pz;
     if (dx * dx + dz * dz > EMBER_VIS_DIST * EMBER_VIS_DIST) {
-      e.sprite.visible = false;
+      e.mesh.isVisible = false;
       e.life = 0;
       continue;
     }
 
-    e.sprite.visible = true;
+    e.mesh.isVisible = true;
     e.life -= dt;
     if (e.life <= 0) {
       resetEmber(e);
     }
 
-    e.sprite.position.x += e.vel.x * dt;
-    e.sprite.position.y += e.vel.y * dt;
-    e.sprite.position.z += e.vel.z * dt;
+    e.mesh.position.x += e.vel.x * dt;
+    e.mesh.position.y += e.vel.y * dt;
+    e.mesh.position.z += e.vel.z * dt;
     e.vel.x += rnd(-1.5, 1.5) * dt; // wind wobble
 
     // Capping maximum ember height strictly to the room ceiling bounds
@@ -755,34 +831,31 @@ export function updateTorchEmbers(dt) {
     const floorIndex = Math.floor(flameY / CFG.WALL_H);
     const ceilingY = (floorIndex + 1) * CFG.WALL_H - 0.1;
 
-    if (e.sprite.position.y > flameY + 1.0 || e.sprite.position.y > ceilingY) {
+    if (e.mesh.position.y > flameY + 1.0 || e.mesh.position.y > ceilingY) {
       e.life = 0;
     }
 
     const frac = Math.max(0, e.life / e.maxLife);
-    e.sprite.material.opacity = frac * 0.7;
+    e.mesh.material.alpha = frac * 0.7;
     const sc = 0.03 + 0.05 * frac;
-    e.sprite.scale.set(sc, sc, sc);
+    e.mesh.scaling = new Vector3(sc / 0.04, sc / 0.04, sc / 0.04); // base diameter is 0.04, scale relative
   }
 }
 
 /** Add embers for a newly placed torch */
 export function addTorchEmbers(torch) {
   if (!_emberScene) return;
-  const tex = getEmberTexture();
+  getEmberMaterial(_emberScene);
   for (let i = 0; i < EMBERS_PER_TORCH; i++) {
-    const mat = new THREE.SpriteMaterial({
-      map: tex, blending: THREE.AdditiveBlending,
-      transparent: true, opacity: 0, depthWrite: false,
-    });
-    const sprite = new THREE.Sprite(mat);
-    sprite.layers.set(2); // skip raycaster (layer 0 only)
-    sprite.scale.set(0.04, 0.04, 0.04);
-    sprite.visible = false;
-    _emberScene.add(sprite);
+    const mesh = MeshBuilder.CreateSphere(`ember_${torchEmbers.length}`, {
+      diameter: 0.04, segments: 3,
+    }, _emberScene);
+    mesh.material = _emberMat.clone(`emberMat_${torchEmbers.length}`);
+    mesh.isPickable = false;
+    mesh.isVisible = false;
     torchEmbers.push({
-      sprite, torch,
-      vel: new THREE.Vector3(), life: 0, maxLife: rnd(0.8, 2.0),
+      mesh, torch,
+      vel: new Vector3(0, 0, 0), life: 0, maxLife: rnd(0.8, 2.0),
     });
   }
 }

@@ -83,22 +83,27 @@
   <div id="help-panel">
     <div id="help-header">
       <h2 id="help-title">SURVIVAL GUIDE</h2>
+      <div id="help-tabs">
+        <button class="help-tab active" data-tab="controls">Controls</button>
+        <button class="help-tab help-mobile" data-tab="touch">Touch</button>
+        <button class="help-tab" data-tab="world">World</button>
+      </div>
       <span id="help-close" class="help-desktop">SHIFT+? to close</span>
       <span id="help-close-mobile" class="help-mobile">Tap to close</span>
     </div>
 
-    <!-- Desktop guide -->
-    <div id="help-content" class="help-desktop">
+    <!-- Tab: Controls (desktop keyboard/mouse) -->
+    <div class="help-tab-content active" data-tab="controls">
       <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x2694;</span> Movement &amp; Combat</div>
+        <div class="help-section-title"><span class="help-icon">&#x2694;</span> Movement</div>
         <div class="help-grid">
           <div class="help-card">
             <div class="help-card-head">Walk &amp; Sprint</div>
-            <div class="help-card-body">Use <b>WASD</b> to move freely. Hold <b>SHIFT</b> to sprint at double speed -- but beware, stamina is limited.</div>
+            <div class="help-card-body">Use <b>WASD</b> to move freely. Hold <b>SHIFT</b> to sprint at double speed.</div>
           </div>
           <div class="help-card">
-            <div class="help-card-head">Jump</div>
-            <div class="help-card-body">Press <b>SPACE</b> to leap over obstacles, scale boulders, and reach second-story staircases.</div>
+            <div class="help-card-head">Jump &amp; Double Jump</div>
+            <div class="help-card-body">Press <b>SPACE</b> to jump. Press again mid-air for a double jump. You can also jump briefly after walking off a ledge.</div>
           </div>
           <div class="help-card">
             <div class="help-card-head">Zoom</div>
@@ -108,11 +113,91 @@
       </div>
 
       <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x1F4AC;</span> Interaction</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Interact</div>
+            <div class="help-card-body">Press <b>E</b> near doors, soldiers, flowers, rocks, torches, or beds. Watch for the <b>[E]</b> prompt floating in the world.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Throw &amp; Place</div>
+            <div class="help-card-body">Select a stone and <b>left-click</b> to throw. Press <b>E</b> with a stone selected to enter placement mode -- a green preview shows where it will land. Click to place.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Flowers &amp; Torches</div>
+            <div class="help-card-body">Pick up flowers and torches with <b>E</b>. Select and <b>left-click</b> to place them -- flowers go on terrain, torches on walls or ground.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x1F3AF;</span> Camera &amp; HUD</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Camera</div>
+            <div class="help-card-body">Press <b>V</b> to switch between first-person and over-the-shoulder third-person view.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Hotbar</div>
+            <div class="help-card-body">Press <b>1-5</b> to select slots. Hold <b>ALT</b> for a virtual cursor -- drag items between slots to reorder.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Pause</div>
+            <div class="help-card-body"><b>TAB</b> pauses with mouse trapped. <b>ESC</b> frees cursor (game keeps running). Click to re-lock.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Fast-Forward</div>
+            <div class="help-card-body">Hold <b>Q</b> to run the world at 3x speed -- time, movement, and animations all accelerate.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: Touch (mobile only) -->
+    <div class="help-tab-content" data-tab="touch">
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x2694;</span> Touch Controls</div>
+        <div class="help-grid">
+          <div class="help-card">
+            <div class="help-card-head">Move</div>
+            <div class="help-card-body">Touch and drag the <b>left side</b> of the screen. A virtual joystick appears where you touch.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Look Around</div>
+            <div class="help-card-body">Swipe the <b>right side</b> of the screen to rotate the camera. Use both thumbs -- left to move, right to look.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Jump</div>
+            <div class="help-card-body">Tap the <b>JUMP</b> button (bottom-right). Tap again mid-air for a double jump.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Interact</div>
+            <div class="help-card-body"><b>Hold still</b> on the right side for 1 second near doors, soldiers, flowers, rocks, torches, or beds. A progress circle fills to confirm.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Use Item</div>
+            <div class="help-card-body">Tap the <b>USE</b> button to throw stones, enter placement mode, or place torches/flowers.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Hotbar &amp; Camera</div>
+            <div class="help-card-body">Tap a <b>hotbar slot</b> to select it. Tap <b>CAM</b> to switch between first and third person.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: World (shared by desktop and mobile) -->
+    <div class="help-tab-content" data-tab="world">
+      <div class="help-section">
         <div class="help-section-title"><span class="help-icon">&#x1F3E0;</span> Exploration</div>
         <div class="help-grid">
           <div class="help-card">
             <div class="help-card-head">Buildings</div>
-            <div class="help-card-body">Discover stone structures with doorways, glass windows, and torchlit interiors. Some rise two stories with climbable staircases.</div>
+            <div class="help-card-body">Stone structures with doorways, breakable windows, and furniture. Some rise two stories with staircases, tables, chairs, and beds.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Rooftops</div>
+            <div class="help-card-body">Climb onto rooftops if you can find a way up. Slanted roofs are slippery -- thrown stones will roll off. Flat roofs make good vantage points.</div>
           </div>
           <div class="help-card">
             <div class="help-card-head">Terrain &amp; Water</div>
@@ -126,148 +211,37 @@
       </div>
 
       <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x1F4AC;</span> Interaction</div>
+        <div class="help-section-title"><span class="help-icon">&#x1F4A5;</span> Rocks &amp; Physics</div>
         <div class="help-grid">
           <div class="help-card">
-            <div class="help-card-head">Doors</div>
-            <div class="help-card-body">Approach a door and press <b>E</b> to swing it open or shut. Watch for the <b>[E]</b> prompt floating in the world.</div>
+            <div class="help-card-head">Throwing</div>
+            <div class="help-card-body">Select a stone and <b>left-click</b> to throw. Stones bounce off walls and terrain with realistic physics. Slanted roofs are slippery -- stones roll right off.</div>
           </div>
+          <div class="help-card">
+            <div class="help-card-head">Placement Mode</div>
+            <div class="help-card-body">Press <b>E</b> with a stone selected to toggle placement mode. A green preview shows where the stone will land. Click to place it gently instead of throwing.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Rock Splitting</div>
+            <div class="help-card-body">Thrown stones that hit stationary pebbles will knock them loose with momentum transfer. Chain reactions are possible -- experiment with angles.</div>
+          </div>
+          <div class="help-card">
+            <div class="help-card-head">Breaking Windows</div>
+            <div class="help-card-body">Throw a stone at a window pane to shatter it. Glass shards scatter on impact. Broken windows let projectiles pass through freely.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="help-section">
+        <div class="help-section-title"><span class="help-icon">&#x1F4AC;</span> Creatures &amp; NPCs</div>
+        <div class="help-grid">
           <div class="help-card">
             <div class="help-card-head">Soldiers</div>
-            <div class="help-card-body">Green-tinted warriors wander the land. Get close and press <b>E</b> to hear their stories -- some wise, some strange.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Flowers</div>
-            <div class="help-card-body">Glowing blooms dot the terrain. Press <b>E</b> to collect them into your hotbar. Select the flower slot and <b>left-click</b> to enter placement mode -- a green preview shows where it will be planted.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Rocks &amp; Stones</div>
-            <div class="help-card-body">Small rocks can be picked up with <b>E</b>. Select the stone slot and <b>left-click</b> to throw them in an arc. Landed stones can be picked up again.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Torches</div>
-            <div class="help-card-body">Press <b>E</b> near a wall torch to take it. Equip it and <b>left-click</b> to place on walls or ground. Torches light your way at night and can be moved freely.</div>
+            <div class="help-card-body">Green-tinted warriors wander the land. Get close to hear their stories -- some wise, some strange.</div>
           </div>
           <div class="help-card">
             <div class="help-card-head">Foxes</div>
-            <div class="help-card-body">Skittish foxes roam the wilderness. They'll flee if you get too close -- try sneaking up on them.</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x2600;</span> Day &amp; Night</div>
-        <div class="help-grid">
-          <div class="help-card">
-            <div class="help-card-head">Time Cycle</div>
-            <div class="help-card-body">Enable from the main menu. The sun arcs across the sky, torches ignite at dusk, and stars emerge at night. Snow biome has shorter days.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Fast-Forward</div>
-            <div class="help-card-body">Hold <b>Q</b> to run the entire world at 3x speed -- time, movement, and animations all accelerate.</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x1F3AF;</span> Camera &amp; HUD</div>
-        <div class="help-grid">
-          <div class="help-card">
-            <div class="help-card-head">Camera Modes</div>
-            <div class="help-card-body">Press <b>V</b> to switch between first-person and over-the-shoulder third-person view with a smooth cinematic transition.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Minimap</div>
-            <div class="help-card-body">Top-right corner shows your position (yellow dot), buildings (brown), and flowers (cyan). Use it to navigate the world.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Hotbar</div>
-            <div class="help-card-body">Press <b>1-5</b> to select inventory slots. Items auto-assign on pickup. Hold <b>ALT</b> to manage your inventory -- drag items between slots to reorder. <b>Left-click</b> uses the selected item.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Pause</div>
-            <div class="help-card-body"><b>ESC</b> frees your cursor (game keeps running). Click to re-lock. <b>TAB</b> or <b>PAUSE</b> key pauses the game with mouse trapped. <b>ESC</b> during pause releases the mouse.</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Mobile guide -->
-    <div id="help-content-mobile" class="help-mobile">
-      <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x2694;</span> Touch Controls</div>
-        <div class="help-grid">
-          <div class="help-card">
-            <div class="help-card-head">Move</div>
-            <div class="help-card-body">Touch and drag the <b>left side</b> of the screen. A virtual joystick appears where you touch -- drag in any direction to walk.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Look Around</div>
-            <div class="help-card-body">Swipe the <b>right side</b> of the screen to rotate the camera. Use both thumbs -- left to move, right to look.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Jump</div>
-            <div class="help-card-body">Tap the <b>JUMP</b> button (bottom-right) to leap over obstacles, scale boulders, and reach staircases.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Interact</div>
-            <div class="help-card-body">When near a door, soldier, flower, rock, or torch, <b>hold still</b> on the right side of the screen for 1 second. A progress circle fills up to confirm the action.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Use Item</div>
-            <div class="help-card-body">Tap the <b>USE</b> button to use your selected item -- throw a stone, enter flower placement mode, or place a torch.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Hotbar</div>
-            <div class="help-card-body">Tap a <b>hotbar slot</b> at the bottom of the screen to select it. Items are added automatically when you pick them up.</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x1F3E0;</span> Exploration</div>
-        <div class="help-grid">
-          <div class="help-card">
-            <div class="help-card-head">Buildings</div>
-            <div class="help-card-body">Discover stone structures with doorways, glass windows, and torchlit interiors. Some rise two stories with climbable staircases.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Terrain &amp; Water</div>
-            <div class="help-card-body">Rolling hills shape the landscape. Walk into water for an underwater view -- movement slows and gravity gets floaty.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Snow Biome</div>
-            <div class="help-card-body">Toggle from the main menu for a frozen landscape. Water turns to walkable ice and trees take on a wintry look.</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x1F4AC;</span> Interaction</div>
-        <div class="help-grid">
-          <div class="help-card">
-            <div class="help-card-head">Doors</div>
-            <div class="help-card-body">Walk up to a door and <b>hold still</b> to swing it open or shut. A progress circle shows the action.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Soldiers</div>
-            <div class="help-card-body">Green-tinted warriors wander the land. Get close and <b>hold still</b> to hear their stories.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Flowers</div>
-            <div class="help-card-body">Glowing blooms dot the terrain. <b>Hold still</b> to collect them. Select the flower slot and tap <b>USE</b> to enter placement mode.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Rocks &amp; Stones</div>
-            <div class="help-card-body">Small rocks can be picked up by <b>holding still</b> nearby. Select the stone slot and tap <b>USE</b> to throw them.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Torches</div>
-            <div class="help-card-body"><b>Hold still</b> near a wall torch to take it. Select the torch slot and tap <b>USE</b> to place on walls or ground.</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Foxes</div>
-            <div class="help-card-body">Skittish foxes roam the wilderness. They'll flee if you get too close -- try sneaking up on them.</div>
+            <div class="help-card-body">Skittish foxes roam the wilderness. They flee if you get too close -- try sneaking up on them.</div>
           </div>
         </div>
       </div>
@@ -279,19 +253,19 @@
             <div class="help-card-head">Time Cycle</div>
             <div class="help-card-body">Enable from the main menu. The sun arcs across the sky, torches ignite at dusk, and stars emerge at night.</div>
           </div>
+          <div class="help-card">
+            <div class="help-card-head">Sleeping</div>
+            <div class="help-card-body">Find a bed inside a building and interact to sleep until morning. Requires the day/night cycle to be enabled.</div>
+          </div>
         </div>
       </div>
 
       <div class="help-section">
-        <div class="help-section-title"><span class="help-icon">&#x1F3AF;</span> Screen Layout</div>
+        <div class="help-section-title"><span class="help-icon">&#x1F3AF;</span> HUD</div>
         <div class="help-grid">
           <div class="help-card">
             <div class="help-card-head">Minimap</div>
             <div class="help-card-body">Top-right corner shows your position (yellow dot), buildings (brown), and flowers (cyan).</div>
-          </div>
-          <div class="help-card">
-            <div class="help-card-head">Pause &amp; Help</div>
-            <div class="help-card-body">Tap <b>| |</b> (top-left) to pause the game. Tap <b>?</b> to open this guide.</div>
           </div>
         </div>
       </div>
@@ -338,9 +312,8 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "./node_modules/three/build/three.module.js",
-    "three/addons/": "./node_modules/three/examples/jsm/",
-    "cannon-es": "./node_modules/cannon-es/dist/cannon-es.js"
+    "babylonjs": "./lib/babylon.bundle.js",
+    "@dimforge/rapier3d-compat": "./node_modules/@dimforge/rapier3d-compat/rapier.mjs"
   }
 }
 </script>

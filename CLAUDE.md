@@ -1,6 +1,6 @@
 # Dark Strands
 
-3D first-person survival roguelite prototype built with Three.js. Switchable to third person. Supports desktop (keyboard+mouse) and mobile (touch controls).
+3D first-person survival roguelite prototype built with Babylon.js. Switchable to third person. Supports desktop (keyboard+mouse) and mobile (touch controls).
 
 ## Workflow Rules
 - **Never commit or push without explicit user approval.** Always present the proposed commit message and wait for confirmation before running `git commit` or `git push`.
@@ -38,9 +38,10 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 - Pause (||) and Help (?) buttons - Top-left
 
 ## Tech Stack
-- **Three.js 0.162.0** installed locally via npm, loaded via importmap from `node_modules/`
-- Pure ES modules, no bundler — `<script type="module" src="src/main.js">`
-- `npm install` required (installs three.js); `npx serve` for local HTTP server
+- **Babylon.js 8.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`, loaded via importmap as `'babylonjs'`
+- **Rapier 3D** (`@dimforge/rapier3d-compat`) — Rust/WASM physics engine
+- Pure ES modules, no bundler for game code — `<script type="module" src="src/main.js">`
+- `npm install` required; `npm run bundle:babylon` to rebuild the Babylon.js bundle; `npx serve` for local HTTP server
 
 ## Architecture
 
@@ -51,13 +52,17 @@ src/
   main.js                  # Entry point, game loop, init orchestration
   config.js                # All tunable constants (CFG object)
   core/
-    scene.js               # Renderer, scene, camera setup
-    lighting.js            # Sun, hemisphere light, stars
-    physics.js             # cannon-es world, materials, body helpers, step
+    scene.js               # Engine, Scene, FreeCamera setup
+    lighting.js            # DirectionalLight (CSM), HemisphericLight, sun glow
+    physics.js             # Rapier3D world, body helpers, step, raycast
   world/
     grid.js                # 2D collision grid, walkability checks
     generator.js           # Procedural building placement
-    geometry.js            # 3D walls, ground plane, building floors, physics bodies
+    terrainMeshes.js       # Ground plane (displaced mesh) and water plane
+    walls.js               # Building walls (merged geometry with window holes, triplanar UV) and roofs
+    floors.js              # Ground floor slabs, mid-floor pieces, stair steps
+    windows.js             # Glass panes (breakable) and wooden window frames
+    staticPhysics.js       # Rapier static bodies for walls, floors, roofs, ceiling slabs, stairs
     vegetation.js          # Low-poly trees and rocks (with physics bodies)
     terrain.js             # Perlin noise terrain heightmap
     boundary.js            # World-edge hex-grid shield effect
@@ -67,7 +72,7 @@ src/
     furniture.js           # Procedural furniture (beds) geometry generation
   entities/
     models.js              # Model registry (data only — URLs, heights, counts, licenses)
-    modelLoader.js         # GLTF loading, cloning, animation setup, places models in scene
+    modelLoader.js         # GLTF loading (SceneLoader), cloning (instantiateModelsToScene), animation mixer wrapper
     player.js              # Player state, physics capsule, camera modes
   systems/
     controls.js            # Pointer lock, keyboard, mouse input, pause states
@@ -77,7 +82,7 @@ src/
     sleep.js               # Time-skip mechanics when interacting with beds
     hud.js                 # FPS counter, minimap canvas, camera mode label
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
-    projectiles.js         # Stone throwing with cannon-es dynamic bodies
+    projectiles.js         # Stone throwing with Rapier dynamic bodies
     menu.js                # Procedural campfire menu scene
   utils/
     helpers.js             # Grid↔world coordinate conversion, rng utilities
@@ -96,10 +101,11 @@ src/
 - Player spawns at center; buildings avoid the center area
 
 ### Collision
-- **cannon-es** physics engine handles player movement, projectile physics, boundary shields, and door collisions
-- Player is a compound capsule body (2 spheres + cylinder, mass 80, fixedRotation, zero friction modifier)
-- Projectiles are dynamic sphere bodies with material-based friction/restitution
-- Static world bodies: wall boxes, floor slabs, stair steps, roof caps, rock spheres, terrain heightfield, boundary walls
+- **Rapier 3D** (Rust/WASM) physics engine handles player movement, projectile physics, boundary shields, and door collisions
+- Player is a native capsule body (mass 80, fixedRotation, CCD enabled)
+- Projectiles are dynamic sphere bodies with per-collider friction/restitution (CCD enabled)
+- Static world bodies: wall boxes, floor slabs, stair steps, ceiling slabs, roof slopes, ridge caps, rock spheres, terrain heightfield, boundary walls
+- Ceiling slabs (CEILING_COLLISION_GROUP) prevent jumping into attic on slanted-roof buildings
 - Doors use kinematic box bodies synced to visual rotation each frame
 - 2D boolean grid still used for: NPC pathfinding, placement validation, indoor/outdoor detection, torch/flower placement raycasts
 - NPCs use grid-based collision (not physics engine)
@@ -108,7 +114,8 @@ src/
 - All `.glb` files stored locally in `assets/models/`
 - Registry in `src/entities/models.js` — add new models there
 - Models are auto-scaled to `targetHeight` on load (bounding box normalization)
-- Animated models use `SkeletonUtils.clone()` for proper skeleton duplication
+- Animated models use `container.instantiateModelsToScene()` for proper skeleton duplication
+- Animation crossfade via `createAnimMixer()` wrapper that mimics Three.js AnimationMixer API using Babylon AnimationGroup weight blending
 
 ### Available Animations per Model
 - **Soldier.glb**: Idle, Walk, Run (3 clips only — no jump, attack, death, etc.)
@@ -141,6 +148,7 @@ To add more animations (attack, jump, die, reload, etc.) use **Mixamo** (https:/
 - Toggle with V key
 - `getCamBlend()` returns 0 (fully 1st person) to 1 (fully 3rd person) — use this instead of `firstPerson` boolean for transition-aware checks
 - **3rd person raycasting**: cast ray from camera world position (matches crosshair) but measure distances from player position. This pattern is used in `torches.js`, `flowers.js`, and `projectiles.js`
+- **Indoor camera**: camera collision uses Babylon scene raycasts (skips roof meshes). Ceiling Y-clamp prevents camera from seeing above walls. Temporal smoothing on collision fraction prevents snap-in oscillation during jumps
 
 ### Virtual Cursor
 A simulated mouse cursor rendered as a CSS circle element, used in two contexts:
@@ -167,7 +175,7 @@ A simulated mouse cursor rendered as a CSS circle element, used in two contexts:
      url: './assets/models/YourModel.glb',
      targetHeight: 1.0,    // desired height in world units
      count: 5,             // how many to spawn
-     animated: true,       // use SkeletonUtils.clone if true
+     animated: true,       // use instantiateModelsToScene if true
      license: 'CC0',
    }
    ```
@@ -212,7 +220,8 @@ A timestamped development journal is maintained in `DEV_JOURNAL.md` at the proje
 Keep entries append-only — never edit or remove previous entries.
 
 ## Known Quirks
-- No bundler means no tree-shaking; full Three.js and cannon-es modules are fetched
+- Babylon.js is pre-bundled into `lib/babylon.bundle.js` (~3.5MB); game source stays unbundled ES modules
 - Pointer lock requires HTTPS or localhost
 - The blocker overlay handles click-to-play (not the canvas)
 - PointLight shadows are expensive (cube maps = 6 passes each). Max 3 shadow-casting torches, only in multi-story buildings
+- `scene.useRightHandedSystem = true` to match Three.js coordinate conventions used throughout the codebase

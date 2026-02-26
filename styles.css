@@ -12,6 +12,8 @@ body {
 
 canvas#game {
   display: block;
+  width: 100vw;
+  height: 100vh;
 }
 
 /* ---- Loading screen ---- */
@@ -614,27 +616,58 @@ canvas#game {
 .help-mobile { display: none; }
 .help-desktop { display: block; }
 
-#help-content,
-#help-content-mobile {
+/* Help tabs */
+#help-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.help-tab {
+  background: rgba(232, 216, 160, 0.05);
+  border: 1px solid rgba(232, 216, 160, 0.1);
+  color: rgba(200, 200, 200, 0.4);
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 5px 14px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.help-tab:hover {
+  background: rgba(232, 216, 160, 0.1);
+  color: rgba(200, 200, 200, 0.6);
+}
+
+.help-tab.active {
+  background: rgba(232, 216, 160, 0.12);
+  border-color: rgba(232, 216, 160, 0.25);
+  color: #e8d8a0;
+}
+
+.help-tab-content {
   padding: 20px 28px 24px;
   overflow-y: auto;
-  display: flex;
+  display: none;
   flex-direction: column;
   gap: 24px;
 }
 
-#help-content::-webkit-scrollbar,
-#help-content-mobile::-webkit-scrollbar {
+.help-tab-content.active {
+  display: flex;
+}
+
+.help-tab-content::-webkit-scrollbar {
   width: 6px;
 }
 
-#help-content::-webkit-scrollbar-track,
-#help-content-mobile::-webkit-scrollbar-track {
+.help-tab-content::-webkit-scrollbar-track {
   background: transparent;
 }
 
-#help-content::-webkit-scrollbar-thumb,
-#help-content-mobile::-webkit-scrollbar-thumb {
+.help-tab-content::-webkit-scrollbar-thumb {
   background: rgba(232, 216, 160, 0.15);
   border-radius: 3px;
 }
@@ -957,7 +990,11 @@ canvas#game {
 
   /* Swap desktop/mobile help content */
   .help-desktop { display: none !important; }
-  .help-mobile { display: block !important; }
+  .help-mobile { display: inline-flex !important; }
+
+  /* On mobile, default to Touch tab instead of Controls */
+  .help-tab-content[data-tab="controls"] { display: none; }
+  .help-tab[data-tab="controls"] { display: none !important; }
 
   /* Help overlay — full screen on mobile */
   #help-overlay {

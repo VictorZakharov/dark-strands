@@ -1,23 +1,20 @@
-import * as THREE from 'three';
-import * as CANNON from 'cannon-es';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { SceneLoader, TransformNode, Vector3, Color3, Ray, Matrix, Viewport } from 'babylonjs';
 import { CFG } from '../config.js';
-import { createPlayerBody, getPhysicsWorld } from '../core/physics.js';
-import { getScene } from '../core/scene.js';
+import { createPlayerBody, raycastClosest } from '../core/physics.js';
+import { getScene, getCamera, getEngine } from '../core/scene.js';
 import { isRightMouseDown } from '../systems/controls.js';
 import { getSunOffset } from '../systems/daynight.js';
 import { getNpcCollision } from '../systems/npcAI.js';
 import { getTerrainHeight } from '../world/terrain.js';
-import { spawnBoundaryHit } from '../world/boundary.js';
+import { spawnBoundaryHit, setBoundaryContact } from '../world/boundary.js';
+import { getContainer, createAnimMixer } from './modelLoader.js';
+import { addShadowCaster, enableShadowReceiving, getSunCSM } from '../core/lighting.js';
 
-let playerModel;
+let playerModel; // TransformNode root
 let mixer, idleAction, walkAction, runAction;
 let currentAction;
 let modelReady = false;
 let facingAngle = Math.PI;
-const camRay = new THREE.Raycaster();
-camRay.layers.set(0); // Only test layer 0 (skip sky objects on layer 2)
 
 // Camera blend: 0 = first person, 1 = third person
 let camBlend = 1;          // Start at 3rd person
@@ -27,27 +24,27 @@ const CAM_TRANS_DUR = 1.0; // 1 second transition
 let convergenceDist = 30;  // crosshair convergence distance (set on V toggle)
 
 // 3→1 world-space crosshair tracking
-const _crosshairTarget = new THREE.Vector3();
-const _targetLocal = new THREE.Vector3(); // target in player-local coords (right, up, fwd)
+const _crosshairTarget = new Vector3();
+const _targetLocal = new Vector3(); // target in player-local coords (right, up, fwd)
 let _trackWorldTarget = false; // true during 3→1 transition
 
 // Zoom state
-const BASE_FOV = 75;
-const ZOOM_FOV = 25; // 3x zoom
+const BASE_FOV = 75 * Math.PI / 180; // Babylon uses radians
+const ZOOM_FOV = 25 * Math.PI / 180;
 const ZOOM_DUR = 0.5;
 let zoomT = 0; // 0 = no zoom, 1 = fully zoomed
 
 // Pre-allocated temporaries for camera blending
-const _fpPos = new THREE.Vector3();
-const _tpPos = new THREE.Vector3();
-const _blendedLookAt = new THREE.Vector3();
-const _probeTarget = new THREE.Vector3();
-const _probeDir = new THREE.Vector3();
-const _camRight = new THREE.Vector3();
-const _lastCamPos = new THREE.Vector3();
-const _lastCamFwd = new THREE.Vector3(0, 0, -1);
-const _toHit = new THREE.Vector3();
-
+const _fpPos = new Vector3();
+const _tpPos = new Vector3();
+const _blendedLookAt = new Vector3();
+const _probeTarget = new Vector3();
+const _probeDir = new Vector3();
+const _camRight = new Vector3();
+const _lastCamPos = new Vector3();
+const _lastCamFwd = new Vector3(0, 0, -1);
+const _toHit = new Vector3();
+let _camFracSmooth = 1.0; // smoothed camera collision fraction
 
 const state = {
   x: 0,
@@ -61,74 +58,118 @@ const state = {
 
 let playerBody = null;
 let _moving = false, _sprinting = false;
-let _boundaryShieldCD = 0; // frame cooldown for boundary shield spawns
-let _frozenY = null; // locked Y when standing still to eliminate terrain jitter
+let _boundaryShieldCD = 0;
+let _frozenY = null;
 let _lastGroundedTime = 0;
-const COYOTE_TIME_MS = 150; // allow jump 150ms after falling off a ledge
+const COYOTE_TIME_MS = 150;
+let _airJumpsLeft = 0;
+const MAX_AIR_JUMPS = 1;
+let _spaceWasDown = false;
 
 export function getPlayerState() { return state; }
 export function getPlayerModel() { return playerModel; }
-export function getCamBlend() { return camBlend; } // 0 = fully 1st person, 1 = fully 3rd person
-
+export function getCamBlend() { return camBlend; }
 export function getPlayerBody() { return playerBody; }
 
-export function initPlayer(scene) {
-  playerModel = new THREE.Group();
-  playerModel.visible = false;
-  scene.add(playerModel);
+/**
+ * Visual scene raycast from origin along direction.
+ * Returns array of { point: Vector3, distance: number, pickedMesh: Mesh }.
+ * Filters out playerModel children automatically.
+ */
+function sceneRaycast(origin, direction, maxDist) {
+  const scene = getScene();
+  const ray = new Ray(origin, direction, maxDist);
+  const hits = scene.multiPickWithRay(ray, (mesh) => {
+    // Skip player model meshes
+    let node = mesh;
+    while (node) {
+      if (node === playerModel) return false;
+      node = node.parent;
+    }
+    return mesh.isPickable !== false;
+  });
+  if (!hits) return [];
+  return hits.filter(h => h.hit).map(h => ({
+    point: h.pickedPoint,
+    distance: h.distance,
+    pickedMesh: h.pickedMesh,
+  }));
+}
 
-  // Create physics capsule body at spawn position (exactly on terrain surface)
+export function initPlayer(scene) {
+  playerModel = new TransformNode('playerRoot', scene);
+  playerModel.setEnabled(false);
+
+  // Create physics capsule body at spawn position
   const spawnY = getTerrainHeight(state.x, state.z);
   state.y = spawnY;
   playerBody = createPlayerBody(state.x, spawnY, state.z);
 
   // Load soldier model for the player
-  const loader = new GLTFLoader();
-  loader.load('./assets/models/Soldier.glb', (gltf) => {
-    const model = gltf.scene;
+  SceneLoader.ImportMeshAsync('', './assets/models/Soldier.glb', '', scene).then(result => {
+    const meshes = result.meshes;
+    const animGroups = result.animationGroups;
+    const rootMesh = meshes[0]; // __root__ node
 
-    // Scale to match NPC soldiers
-    const box = new THREE.Box3().setFromObject(model);
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    model.scale.multiplyScalar(0.6 / maxDim);
+    // Parent to playerModel TransformNode
+    rootMesh.parent = playerModel;
 
-    model.traverse(c => {
-      if (c.isMesh) {
-        c.castShadow = true;
-        c.receiveShadow = true;
-        c.frustumCulled = false;
-        c.material = c.material.clone();
-        c.material.color.multiply(new THREE.Color(0.5, 0.55, 1.0));
+    // Normalize scale using bounding info
+    rootMesh.scaling = new Vector3(1, 1, 1);
+    rootMesh.computeWorldMatrix(true);
+    for (const m of rootMesh.getChildMeshes()) m.computeWorldMatrix(true);
+
+    const bounds = rootMesh.getHierarchyBoundingVectors(true);
+    const geoH = bounds.max.y - bounds.min.y;
+    if (geoH > 0) {
+      const s = CFG.SOLDIER_H / geoH;
+      rootMesh.scaling = new Vector3(s, s, s);
+    }
+
+    // Tint player blue, enable shadows
+    for (const mesh of rootMesh.getChildMeshes()) {
+      if (mesh.material) {
+        mesh.material = mesh.material.clone(mesh.material.name + '_player');
+        if (mesh.material.albedoColor) {
+          const c = mesh.material.albedoColor;
+          mesh.material.albedoColor = new Color3(c.r * 0.5, c.g * 0.55, c.b * 1.0);
+        }
       }
-    });
+      addShadowCaster(mesh);
+      enableShadowReceiving(mesh);
+    }
 
-    playerModel.add(model);
-
-    // Put player model on layer 1 only — camera toggles layer 1 for FP/TP visibility
-    // Shadow map still renders it regardless of camera layers
-    playerModel.traverse(obj => obj.layers.set(1));
+    // Layer mask: player model on layer 2 (bit 1), default world on layer 1 (bit 0)
+    // Camera toggles layer 2 for FP/TP visibility
+    for (const mesh of rootMesh.getChildMeshes()) {
+      mesh.layerMask = 0x20000000; // custom layer for player
+    }
 
     // Set up animations
-    mixer = new THREE.AnimationMixer(model);
-    const clips = gltf.animations;
+    const idleGroup = animGroups.find(a => /idle/i.test(a.name)) || animGroups[0];
+    const walkGroup = animGroups.find(a => /walk/i.test(a.name)) || animGroups[1] || idleGroup;
+    const runGroup = animGroups.find(a => /run/i.test(a.name)) || animGroups[2] || walkGroup;
 
-    const idleClip = clips.find(c => /idle/i.test(c.name)) || clips[0];
-    const walkClip = clips.find(c => /walk/i.test(c.name)) || clips[1] || idleClip;
-    const runClip = clips.find(c => /run/i.test(c.name)) || clips[2] || walkClip;
+    mixer = createAnimMixer(animGroups);
 
-    idleAction = mixer.clipAction(idleClip);
-    walkAction = mixer.clipAction(walkClip);
-    runAction = mixer.clipAction(runClip);
+    idleAction = mixer.clipAction(idleGroup);
+    walkAction = mixer.clipAction(walkGroup);
+    runAction = mixer.clipAction(runGroup);
 
-    walkAction.timeScale = 0.9;
-    runAction.timeScale = 1.0;
+    if (walkGroup) walkGroup.speedRatio = 0.9;
+    if (runGroup) runGroup.speedRatio = 1.0;
 
-    idleAction.play();
+    // Start all animation groups playing (weight controls which is visible)
+    if (idleGroup) { idleGroup.play(true); idleGroup.setWeightForAllAnimatables(1); }
+    if (walkGroup && walkGroup !== idleGroup) { walkGroup.play(true); walkGroup.setWeightForAllAnimatables(0); }
+    if (runGroup && runGroup !== idleGroup && runGroup !== walkGroup) { runGroup.play(true); runGroup.setWeightForAllAnimatables(0); }
+
     currentAction = idleAction;
     modelReady = true;
 
     console.log('Player model loaded');
+  }).catch(err => {
+    console.warn('Failed to load player model:', err);
   });
 }
 
@@ -140,6 +181,8 @@ function crossfade(from, to, duration = 0.2) {
 }
 
 export function toggleCamera() {
+  const scene = getScene();
+
   // If toggling mid-3→1 transition, preserve current camera direction
   if (_trackWorldTarget) {
     state.yaw = Math.atan2(-_lastCamFwd.x, -_lastCamFwd.z);
@@ -149,12 +192,11 @@ export function toggleCamera() {
 
   state.firstPerson = !state.firstPerson;
   camBlendTarget = state.firstPerson ? 0 : 1;
-  // Start transition from current blend position (no jerk on rapid toggle)
   const progress = camBlendTarget === 1 ? camBlend : 1 - camBlend;
   camTransT = inverseSmoothstep(progress) * CAM_TRANS_DUR;
 
-  const fpEye = new THREE.Vector3(state.x, state.y + CFG.PLAYER_H, state.z);
-  const fpFwd = new THREE.Vector3(
+  const fpEye = new Vector3(state.x, state.y + CFG.PLAYER_H, state.z);
+  const fpFwd = new Vector3(
     -Math.sin(state.yaw) * Math.cos(state.pitch),
     Math.sin(state.pitch),
     -Math.cos(state.yaw) * Math.cos(state.pitch)
@@ -162,75 +204,58 @@ export function toggleCamera() {
 
   if (state.firstPerson) {
     // 3→1: raycast from TP camera to find what crosshair is actually on
-    camRay.set(_lastCamPos, _lastCamFwd);
-    camRay.far = 200;
-    camRay.near = 0;
-    const scene = getScene();
-    const hits = camRay.intersectObjects(scene.children, true);
+    const hits = sceneRaycast(_lastCamPos, _lastCamFwd, 200);
 
     let found = false;
     for (const hit of hits) {
-      let isPlayer = false;
-      let obj = hit.object;
-      while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
-      if (isPlayer) continue;
-      if (hit.object.userData && hit.object.userData.isGround) continue;
-      _crosshairTarget.copy(hit.point);
+      if (hit.pickedMesh.metadata && hit.pickedMesh.metadata.isGround) continue;
+      _crosshairTarget.copyFrom(hit.point);
       found = true;
       break;
     }
     if (!found) {
-      // No geometry hit — use far point along camera direction
-      _crosshairTarget.copy(_lastCamPos).addScaledVector(_lastCamFwd, 100);
+      _crosshairTarget.copyFrom(_lastCamPos).addInPlace(
+        _lastCamFwd.scale(100)
+      );
     }
     _trackWorldTarget = true;
 
     // convergenceDist for after the transition ends
-    _toHit.subVectors(_crosshairTarget, fpEye);
-    convergenceDist = Math.max(15, _toHit.dot(fpFwd));
+    _toHit.copyFrom(_crosshairTarget).subtractInPlace(fpEye);
+    convergenceDist = Math.max(15, Vector3.Dot(_toHit, fpFwd));
 
     // Decompose target offset into player-local (right, up, fwd) coords
-    // so mouse rotation during transition moves the target naturally.
-    const localRight = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
-    const localUp = new THREE.Vector3().crossVectors(localRight, fpFwd).normalize();
-    _targetLocal.set(_toHit.dot(localRight), _toHit.dot(localUp), _toHit.dot(fpFwd));
+    const localRight = new Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+    const localUp = Vector3.Cross(localRight, fpFwd).normalize();
+    _targetLocal.set(Vector3.Dot(_toHit, localRight), Vector3.Dot(_toHit, localUp), Vector3.Dot(_toHit, fpFwd));
   } else {
     // 1→3: raycast from actual 1st-person camera to find what crosshair is currently on
     _trackWorldTarget = true;
-    camRay.set(fpEye, fpFwd);
-    camRay.far = 200;
-    camRay.near = 0;
-    const scene = getScene();
-    const hits = camRay.intersectObjects(scene.children, true);
+    const hits = sceneRaycast(fpEye, fpFwd, 200);
 
     let found = false;
     for (const hit of hits) {
-      let isPlayer = false;
-      let obj = hit.object;
-      while (obj) { if (obj === playerModel) { isPlayer = true; break; } obj = obj.parent; }
-      if (isPlayer) continue;
-      if (hit.object.userData && hit.object.userData.isGround) continue;
-      _crosshairTarget.copy(hit.point);
+      if (hit.pickedMesh.metadata && hit.pickedMesh.metadata.isGround) continue;
+      _crosshairTarget.copyFrom(hit.point);
       found = true;
       break;
     }
     if (!found) {
-      _crosshairTarget.copy(fpEye).addScaledVector(fpFwd, 100);
+      _crosshairTarget.copyFrom(fpEye).addInPlace(fpFwd.scale(100));
     }
 
     // convergenceDist for after the transition ends
-    _toHit.subVectors(_crosshairTarget, fpEye);
-    convergenceDist = Math.max(15, _toHit.dot(fpFwd));
+    _toHit.copyFrom(_crosshairTarget).subtractInPlace(fpEye);
+    convergenceDist = Math.max(15, Vector3.Dot(_toHit, fpFwd));
 
     // Decompose target offset into player-local
-    const localRight = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
-    const localUp = new THREE.Vector3().crossVectors(localRight, fpFwd).normalize();
-    _targetLocal.set(_toHit.dot(localRight), _toHit.dot(localUp), _toHit.dot(fpFwd));
+    const localRight = new Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+    const localUp = Vector3.Cross(localRight, fpFwd).normalize();
+    _targetLocal.set(Vector3.Dot(_toHit, localRight), Vector3.Dot(_toHit, localUp), Vector3.Dot(_toHit, fpFwd));
   }
 }
 
 function inverseSmoothstep(y) {
-  // Solve 3x² - 2x³ = y for x ∈ [0,1] via Newton-Raphson
   if (y <= 0) return 0;
   if (y >= 1) return 1;
   let x = y;
@@ -246,85 +271,84 @@ function inverseSmoothstep(y) {
 
 // --- Physics-based movement ---
 
-const _rayFrom = new CANNON.Vec3();
-const _rayTo = new CANNON.Vec3();
-const _rayResult = new CANNON.RaycastResult();
+function dist3(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
 
 function isPlayerGrounded() {
   if (!playerBody) return true;
-  const world = getPhysicsWorld();
-  // Cast ray from inside bottom sphere down past capsule bottom
-  _rayFrom.set(playerBody.position.x, playerBody.position.y + 0.3, playerBody.position.z);
-  _rayTo.set(playerBody.position.x, playerBody.position.y - 0.15, playerBody.position.z);
-  _rayResult.reset();
-  // collisionFilterMask ~2 excludes player body (group 2)
-  world.raycastClosest(_rayFrom, _rayTo, { collisionFilterMask: ~2 }, _rayResult);
-  return _rayResult.hasHit;
+  const from = { x: playerBody.position.x, y: playerBody.position.y + 0.3, z: playerBody.position.z };
+  const to   = { x: playerBody.position.x, y: playerBody.position.y - 0.15, z: playerBody.position.z };
+  return raycastClosest(from, to).hasHit;
 }
 
 /** Called BEFORE physics step — sets body velocity from input */
 export function updatePlayerMovement(dt, keys) {
   if (!playerBody) return;
 
-  const fwd = new THREE.Vector3(-Math.sin(state.yaw), 0, -Math.cos(state.yaw));
-  const right = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+  const fwdX = -Math.sin(state.yaw), fwdZ = -Math.cos(state.yaw);
+  const rightX = Math.cos(state.yaw), rightZ = -Math.sin(state.yaw);
   _sprinting = keys['ShiftLeft'] || keys['ShiftRight'];
   const underwater = !CFG.SNOW_MODE && (state.y + CFG.PLAYER_H) < CFG.WATER_Y;
   const spdMul = underwater ? 0.4 : 1;
   const spd = (_sprinting ? CFG.SPRINT : CFG.SPEED) * spdMul;
-  const mv = new THREE.Vector3();
+  let mvX = 0, mvZ = 0;
 
-  if (keys['KeyW']) mv.add(fwd);
-  if (keys['KeyS']) mv.sub(fwd);
-  if (keys['KeyA']) mv.sub(right);
-  if (keys['KeyD']) mv.add(right);
+  if (keys['KeyW']) { mvX += fwdX; mvZ += fwdZ; }
+  if (keys['KeyS']) { mvX -= fwdX; mvZ -= fwdZ; }
+  if (keys['KeyA']) { mvX -= rightX; mvZ -= rightZ; }
+  if (keys['KeyD']) { mvX += rightX; mvZ += rightZ; }
 
-  _moving = mv.lengthSq() > 0;
+  const mvLen = Math.sqrt(mvX * mvX + mvZ * mvZ);
+  _moving = mvLen > 0;
 
   if (_moving) {
-    mv.normalize();
+    mvX /= mvLen; mvZ /= mvLen;
 
     // Smooth facing rotation
-    const targetAngle = Math.atan2(mv.x, mv.z);
+    const targetAngle = Math.atan2(mvX, mvZ);
     let diff = targetAngle - facingAngle;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
     facingAngle += diff * Math.min(1, dt * 12);
 
-    playerBody.velocity.x = mv.x * spd;
-    playerBody.velocity.z = mv.z * spd;
+    playerBody.velocity.x = mvX * spd;
+    playerBody.velocity.z = mvZ * spd;
   } else {
     playerBody.velocity.x = 0;
     playerBody.velocity.z = 0;
   }
 
-  // Ground check (used for jump and slope anti-slide)
+  // Ground check
   const grounded = isPlayerGrounded();
   if (grounded) {
     _lastGroundedTime = performance.now();
+    _airJumpsLeft = MAX_AIR_JUMPS;
   }
 
-  // Prevent sliding on slopes when not moving — freeze position
-  // IMPORTANT: Only freeze if we are actually grounded, otherwise we hang in mid-air on spawn!
-  if (!_moving && grounded && !keys['Space'] && playerBody.velocity.y <= 0.1) {
+  // Prevent sliding on slopes when not moving
+  if (!_moving && grounded && !keys['Space'] && playerBody.velocity.y <= 2.0) {
     playerBody.velocity.set(0, 0, 0);
-    playerBody.applyForce(new CANNON.Vec3(0, playerBody.mass * CFG.GRAV, 0));
-    // Lock Y position to eliminate terrain contact jitter
     if (_frozenY === null) _frozenY = playerBody.position.y;
   } else {
     _frozenY = null;
   }
 
-  // Coyote Time Jump: allow jumping if grounded NOW, or recently grounded (<150ms ago)
-  const canJump = grounded || (performance.now() - _lastGroundedTime < COYOTE_TIME_MS);
-  if (keys['Space'] && canJump) {
+  // Coyote Time Jump
+  const canGroundJump = grounded || (performance.now() - _lastGroundedTime < COYOTE_TIME_MS);
+  const spacePressed = keys['Space'] && !_spaceWasDown;
+  const canAirJump = !canGroundJump && _airJumpsLeft > 0 && spacePressed;
+  if (keys['Space'] && (canGroundJump || canAirJump)) {
     playerBody.velocity.y = underwater ? CFG.JUMP * 0.5 : CFG.JUMP;
-    _lastGroundedTime = 0; // instantly consume jump buffer so we can't double-jump mid-air
+    _lastGroundedTime = 0;
+    if (canAirJump) _airJumpsLeft--;
   }
+  _spaceWasDown = !!keys['Space'];
 
-  // Underwater: counteract 70% of gravity
-  if (underwater) {
-    playerBody.applyForce(new CANNON.Vec3(0, playerBody.mass * CFG.GRAV * 0.7, 0));
+  // Underwater slow sinking
+  if (underwater && playerBody.velocity.y < -2) {
+    playerBody.velocity.y = -2;
   }
 
   playerBody.wakeUp();
@@ -339,21 +363,19 @@ export function syncPlayerFromPhysics() {
   state.z = playerBody.position.z;
   state.velY = playerBody.velocity.y;
 
-  // Restore frozen Y when standing still — eliminates terrain contact jitter
+  // Restore frozen Y
   if (_frozenY !== null) {
     state.y = _frozenY;
     playerBody.position.y = _frozenY;
     playerBody.velocity.y = 0;
   }
 
-  // Ceiling clamp — safety net: raycast upward to catch any floor/roof penetration
-  const world = getPhysicsWorld();
-  _rayFrom.set(state.x, state.y + 0.1, state.z);
-  _rayTo.set(state.x, state.y + CFG.PLAYER_H + 0.1, state.z);
-  _rayResult.reset();
-  world.raycastClosest(_rayFrom, _rayTo, { collisionFilterMask: ~2 }, _rayResult);
-  if (_rayResult.hasHit) {
-    const ceilingY = _rayResult.hitPointWorld.y;
+  // Ceiling clamp
+  const ceilFrom = { x: state.x, y: state.y + 0.1, z: state.z };
+  const ceilTo   = { x: state.x, y: state.y + CFG.PLAYER_H + 3.0, z: state.z };
+  const ceilHit = raycastClosest(ceilFrom, ceilTo);
+  if (ceilHit.hasHit) {
+    const ceilingY = ceilHit.hitPointWorld.y;
     const maxY = ceilingY - CFG.PLAYER_H;
     if (state.y > maxY) {
       state.y = maxY;
@@ -362,18 +384,14 @@ export function syncPlayerFromPhysics() {
     }
   }
 
-  // Floor clamp — safety net: guarantee player never falls below the mathematical terrain height
-  // Since the Cannon-es heightfield represents an infinitely thin shell, a high downward velocity 
-  // (like landing a jump) can cause the player to completely punch through the shell between physics ticks.
+  // Floor clamp
   const terrainY = getTerrainHeight(state.x, state.z);
   if (state.y < terrainY) {
     state.y = terrainY;
     playerBody.position.y = terrainY;
-    // Only halt downward velocity; if an explosion sent them up while partially clipped, let it happen
     if (playerBody.velocity.y < 0) {
       playerBody.velocity.y = 0;
     }
-    // Also reset freeze state so we immediately anchor to the surface
     _frozenY = terrainY;
   }
 
@@ -384,7 +402,7 @@ export function syncPlayerFromPhysics() {
     if (playerBody.velocity.y < 0) playerBody.velocity.y = 0;
   }
 
-  // NPC pushback (post-physics nudge)
+  // NPC pushback
   const push = getNpcCollision(state.x, state.z, CFG.PLAYER_R);
   if (push) {
     state.x += push.x;
@@ -393,28 +411,34 @@ export function syncPlayerFromPhysics() {
     playerBody.position.z = state.z;
   }
 
-  // World boundary — only trigger shield when player actually crosses the hard edge
+  // World boundary
   const edge = CFG.HALF - 1;
   const eyeY = state.y + CFG.PLAYER_H * 0.5;
-  const shieldVis = edge + 2; // visual placed past clamp so 1st person can see it
+  const shieldVis = edge + 2;
   let hitBoundary = false;
+  let atBound = false;
 
   if (state.x > edge) {
+    atBound = true;
     if (_boundaryShieldCD <= 0) { spawnBoundaryHit(shieldVis, eyeY, state.z, -1, 0); hitBoundary = true; }
     state.x = edge; playerBody.position.x = edge; playerBody.velocity.x = 0;
   } else if (state.x < -edge) {
+    atBound = true;
     if (_boundaryShieldCD <= 0) { spawnBoundaryHit(-shieldVis, eyeY, state.z, 1, 0); hitBoundary = true; }
     state.x = -edge; playerBody.position.x = -edge; playerBody.velocity.x = 0;
   }
   if (state.z > edge) {
+    atBound = true;
     if (_boundaryShieldCD <= 0) { spawnBoundaryHit(state.x, eyeY, shieldVis, 0, -1); hitBoundary = true; }
     state.z = edge; playerBody.position.z = edge; playerBody.velocity.z = 0;
   } else if (state.z < -edge) {
+    atBound = true;
     if (_boundaryShieldCD <= 0) { spawnBoundaryHit(state.x, eyeY, -shieldVis, 0, 1); hitBoundary = true; }
     state.z = -edge; playerBody.position.z = -edge; playerBody.velocity.z = 0;
   }
 
-  if (hitBoundary) _boundaryShieldCD = 30; // ~0.5s at 60fps
+  setBoundaryContact(atBound);
+  if (hitBoundary) _boundaryShieldCD = 30;
   else if (_boundaryShieldCD > 0) _boundaryShieldCD--;
 }
 
@@ -437,203 +461,180 @@ export function updatePlayer(dt, camera, sunLight, keys) {
   if (camBlend !== camBlendTarget) {
     camTransT += dt;
     const t = Math.min(camTransT / CAM_TRANS_DUR, 1);
-    const smooth = t * t * (3 - 2 * t); // smoothstep
+    const smooth = t * t * (3 - 2 * t);
     camBlend = camBlendTarget === 0 ? 1 - smooth : smooth;
     if (t >= 1) camBlend = camBlendTarget;
   }
 
-  // First-person: camera at eye height, looking along yaw/pitch
+  // First-person: camera at eye height
   _fpPos.set(state.x, state.y + CFG.PLAYER_H, state.z);
-  const fpFwd = new THREE.Vector3(
+  const fpFwd = new Vector3(
     -Math.sin(state.yaw) * Math.cos(state.pitch),
     Math.sin(state.pitch),
     -Math.cos(state.yaw) * Math.cos(state.pitch)
   ).normalize();
-  // Third-person: over-the-shoulder behind player, pitch-aware orbit
+
+  // Third-person: over-the-shoulder
   const tpDist = 3;
   const tpBaseHeight = 2.2;
   const tpRightBase = 1.2;
-  const rightVec = new THREE.Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
+  const rightVec = new Vector3(Math.cos(state.yaw), 0, -Math.sin(state.yaw));
 
-  // Camera orbits vertically using pitch (negated so mouse-up = look up)
   const tpPitch = Math.max(-1.0, Math.min(1.2, -state.pitch));
-  const hDist = tpDist * Math.cos(tpPitch);   // horizontal distance shrinks as pitch increases
-  const vOff = tpBaseHeight + tpDist * Math.sin(tpPitch); // height offset follows pitch
+  const hDist = tpDist * Math.cos(tpPitch);
+  const vOff = tpBaseHeight + tpDist * Math.sin(tpPitch);
 
-  const scene = getScene();
   const MARGIN = 0.35;
-
-  // Helper: test if a hit is valid (not player, not ground)
-  function isValidHit(hit) {
-    let obj = hit.object;
-    while (obj) { if (obj === playerModel) return false; obj = obj.parent; }
-    if (hit.object.userData && hit.object.userData.isGround) return false;
-    return true;
-  }
 
   // Shoulder clearance: reduce right offset if a wall is to the player's right
   let tpRight = tpRightBase;
-  camRay.set(_fpPos, rightVec);
-  camRay.far = tpRightBase + MARGIN;
-  camRay.near = 0;
-  const shoulderHits = camRay.intersectObjects(scene.children, true);
+  const shoulderHits = sceneRaycast(_fpPos, rightVec, tpRightBase + MARGIN);
   for (const hit of shoulderHits) {
-    if (!isValidHit(hit)) continue;
+    if (hit.pickedMesh.metadata && hit.pickedMesh.metadata.isGround) continue;
     tpRight = Math.max(0, hit.distance - MARGIN);
     break;
   }
 
-  const tpOff = new THREE.Vector3(
-    Math.sin(state.yaw) * hDist + rightVec.x * tpRight,
-    vOff,
-    Math.cos(state.yaw) * hDist + rightVec.z * tpRight
-  );
+  const tpOffX = Math.sin(state.yaw) * hDist + rightVec.x * tpRight;
+  const tpOffY = vOff;
+  const tpOffZ = Math.cos(state.yaw) * hDist + rightVec.z * tpRight;
 
-  const desiredCamY = Math.max(state.y + 0.5, state.y + tpOff.y);
-  const desiredCam = new THREE.Vector3(state.x + tpOff.x, desiredCamY, state.z + tpOff.z);
+  const desiredCamY = Math.max(state.y + 0.5, state.y + tpOffY);
+  const desiredCam = new Vector3(state.x + tpOffX, desiredCamY, state.z + tpOffZ);
+
+  // Clamp camera Y well below ceiling so FOV can't see above walls
+  const ceilCheckFrom = { x: state.x, y: state.y + 0.5, z: state.z };
+  const ceilCheckTo   = { x: state.x, y: state.y + CFG.PLAYER_H + 5.0, z: state.z };
+  const ceilCheck = raycastClosest(ceilCheckFrom, ceilCheckTo);
+  if (ceilCheck.hasHit) {
+    const maxCamY = ceilCheck.hitPointWorld.y - 0.5;
+    if (desiredCam.y > maxCamY) desiredCam.y = maxCamY;
+  }
 
   // --- CAMERA COLLISION ---
-  // We use a single, highly robust physics raycast from the player's eye to the camera.
-  // Because physics handles solid volumes perfectly, the ray guarantees the center
-  // of the camera never enters a wall. To stop the *corners* of the camera from
-  // penetrating angled walls, we dynamically shrink (`squish`) the near-clipping plane.
-
-  const toCamera = new THREE.Vector3().subVectors(desiredCam, _fpPos);
+  const toCamera = desiredCam.subtract(_fpPos);
   const maxDist = toCamera.length();
 
-  // 1. Calculate the physical dimensions of the camera's near clipping plane
-  // targetNear = 0.3 (widest near plane in 3rd person)
   const targetNear = 0.1 + camBlend * 0.2;
-  const fovRad = BASE_FOV * Math.PI / 180;
-  // Use a fixed aspect ratio for safety, assuming standard widescreen 16:9
-  const aspect = window.innerWidth / window.innerHeight || 16 / 9;
+  const fovRad = BASE_FOV;
+  const aspect = getEngine().getRenderWidth() / getEngine().getRenderHeight() || 16 / 9;
 
-  // Create coordinate frame for the near plane (camera looks at 'lookTarget')
-  const lookTarget = new THREE.Vector3().copy(_fpPos).addScaledVector(fpFwd, convergenceDist);
-  const camFwd = new THREE.Vector3().subVectors(lookTarget, desiredCam).normalize();
-  const camRight = new THREE.Vector3().crossVectors(camFwd, new THREE.Vector3(0, 1, 0)).normalize();
-  const camUp = new THREE.Vector3().crossVectors(camRight, camFwd).normalize();
+  // Camera coordinate frame
+  const lookTarget = _fpPos.add(fpFwd.scale(convergenceDist));
+  const camFwd = lookTarget.subtract(desiredCam).normalize();
+  const worldUp = new Vector3(0, 1, 0);
+  const camRight2 = Vector3.Cross(camFwd, worldUp).normalize();
+  const camUp = Vector3.Cross(camRight2, camFwd).normalize();
 
-  // margin ensures the sweep is slightly fatter than the actual near plane
   const frustumMargin = 0.1;
   const halfH = Math.tan(fovRad / 2) * targetNear + frustumMargin;
   const halfW = halfH * aspect + frustumMargin;
 
-  // 2. Define the 5 target points precisely at the physical corners of the desired near plane
+  // 5 probe targets: center + 4 corners of near plane
   const offsets = [
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3().addScaledVector(camRight, halfW).addScaledVector(camUp, halfH),
-    new THREE.Vector3().addScaledVector(camRight, -halfW).addScaledVector(camUp, halfH),
-    new THREE.Vector3().addScaledVector(camRight, halfW).addScaledVector(camUp, -halfH),
-    new THREE.Vector3().addScaledVector(camRight, -halfW).addScaledVector(camUp, -halfH),
+    new Vector3(0, 0, 0),
+    camRight2.scale(halfW).add(camUp.scale(halfH)),
+    camRight2.scale(-halfW).add(camUp.scale(halfH)),
+    camRight2.scale(halfW).add(camUp.scale(-halfH)),
+    camRight2.scale(-halfW).add(camUp.scale(-halfH)),
   ];
 
-  // 3. Raycast ALL 5 sweep rays from the exact same safe origin (_fpPos).
-  // This creates a cone sweep. It never falsely hits adjacent walls like parallel rays do!
-  const world = getPhysicsWorld();
   let minFraction = 1.0;
 
   for (const offset of offsets) {
-    const target = desiredCam.clone().addScaledVector(camFwd, targetNear).add(offset);
+    const target = desiredCam.add(camFwd.scale(targetNear)).add(offset);
+    const dir = target.subtract(_fpPos);
+    const rayLen = dir.length();
+    if (rayLen < 0.001) continue;
+    dir.scaleInPlace(1 / rayLen);
 
-    _rayFrom.set(_fpPos.x, _fpPos.y, _fpPos.z);
-    _rayTo.set(target.x, target.y, target.z);
-    _rayResult.reset();
-
-    // collisionFilterMask ~2 excludes player body (group 2). Default hits solid walls (group 1).
-    world.raycastClosest(_rayFrom, _rayTo, { collisionFilterMask: ~2 }, _rayResult);
-
-    if (_rayResult.hasHit) {
-      const hitDist = _rayFrom.distanceTo(_rayResult.hitPointWorld);
-
-      // Pull back slightly (0.05 units) to prevent mathematical z-fighting with the AABB
-      const safeDist = Math.max(0, hitDist - 0.05);
-
-      const rayLen = _rayFrom.distanceTo(_rayTo);
-      const fraction = rayLen > 0.001 ? safeDist / rayLen : 0;
+    const hits = sceneRaycast(_fpPos, dir, rayLen);
+    for (const hit of hits) {
+      if (hit.pickedMesh.metadata && hit.pickedMesh.metadata.isGround) continue;
+      // Skip roof meshes — ceiling Y clamp already prevents camera from entering attic
+      const mn = hit.pickedMesh.name;
+      if (mn === 'slantRoofs' || mn === 'flatRoofs') continue;
+      const safeDist = Math.max(0, hit.distance - 0.05);
+      const fraction = safeDist / rayLen;
       if (fraction < minFraction) {
         minFraction = fraction;
       }
+      break; // closest non-ground hit
     }
   }
 
-  // 4. Final interpolation: Camera is pulled toward eye, and near plane is squeezed
-  // proportional to `minFraction`. This guarantees the corners shrink to track the safe ray paths.
-  const finalFraction = Math.max(0.05, minFraction);
-  _tpPos.copy(_fpPos).addScaledVector(toCamera, finalFraction);
+  // Smooth camera fraction — snap in instantly, ease out slowly to prevent oscillation
+  const rawFraction = Math.max(0.05, minFraction);
+  if (rawFraction < _camFracSmooth) {
+    _camFracSmooth = rawFraction;
+  } else {
+    _camFracSmooth += (rawFraction - _camFracSmooth) * Math.min(1, dt * 5);
+  }
+  _tpPos.copyFrom(_fpPos).addInPlace(toCamera.scale(_camFracSmooth));
 
   // Blend camera position
-  camera.position.lerpVectors(_fpPos, _tpPos, camBlend);
+  Vector3.LerpToRef(_fpPos, _tpPos, camBlend, camera.position);
 
-  // Dynamic squish of near plane
-  const squishedNear = Math.max(0.02, targetNear * finalFraction);
-
-  if (Math.abs(camera.near - squishedNear) > 0.001) {
-    camera.near = squishedNear;
-    camera.updateProjectionMatrix();
+  // Dynamic near plane squish
+  const squishedNear = Math.max(0.02, targetNear * _camFracSmooth);
+  if (Math.abs(camera.minZ - squishedNear) > 0.001) {
+    camera.minZ = squishedNear;
   }
 
-  // Camera look-at during transitions:
-  // To keep the crosshair perfectly still while the camera physically slides 
-  // between the center eye and the right shoulder, we must force the camera 
-  // to constantly look at the exact 3D world point the crosshair was resting on.
+  // Camera look-at during transitions
   if (_trackWorldTarget) {
     if (camBlend > 0 && camBlend < 1) {
       // Reconstruct target from local coords using current orientation
-      _toHit.crossVectors(rightVec, fpFwd); // local up (already unit length)
-      _crosshairTarget.copy(_fpPos)
-        .addScaledVector(rightVec, _targetLocal.x)
-        .addScaledVector(_toHit, _targetLocal.y)
-        .addScaledVector(fpFwd, _targetLocal.z);
+      const localUp2 = Vector3.Cross(rightVec, fpFwd);
+      _crosshairTarget.copyFrom(_fpPos);
+      _crosshairTarget.addInPlace(rightVec.scale(_targetLocal.x));
+      _crosshairTarget.addInPlace(localUp2.scale(_targetLocal.y));
+      _crosshairTarget.addInPlace(fpFwd.scale(_targetLocal.z));
 
-      _blendedLookAt.copy(_crosshairTarget);
+      _blendedLookAt.copyFrom(_crosshairTarget);
     } else if (camBlend === 0) {
       // 3→1 Transition complete: snap pitch/yaw
-      const dir = _toHit.subVectors(_crosshairTarget, _fpPos).normalize();
+      const dir = _crosshairTarget.subtract(_fpPos).normalize();
       state.yaw = Math.atan2(-dir.x, -dir.z);
       state.pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
 
-      const newFwd = new THREE.Vector3(
+      const newFwd = new Vector3(
         -Math.sin(state.yaw) * Math.cos(state.pitch),
         Math.sin(state.pitch),
         -Math.cos(state.yaw) * Math.cos(state.pitch)
       ).normalize();
-      _toHit.subVectors(_crosshairTarget, _fpPos);
-      convergenceDist = Math.max(15, _toHit.dot(newFwd));
+      _toHit.copyFrom(_crosshairTarget).subtractInPlace(_fpPos);
+      convergenceDist = Math.max(15, Vector3.Dot(_toHit, newFwd));
 
-      _blendedLookAt.copy(_fpPos).addScaledVector(newFwd, convergenceDist);
+      _blendedLookAt.copyFrom(_fpPos).addInPlace(newFwd.scale(convergenceDist));
       _trackWorldTarget = false;
     } else if (camBlend === 1) {
       // 1→3 Transition complete
-      _blendedLookAt.copy(lookTarget);
+      _blendedLookAt.copyFrom(lookTarget);
       _trackWorldTarget = false;
     }
   } else {
     // Normal gameplay (not transitioning)
     if (camBlend === 0) {
-      _blendedLookAt.copy(_fpPos).addScaledVector(fpFwd, convergenceDist);
+      _blendedLookAt.copyFrom(_fpPos).addInPlace(fpFwd.scale(convergenceDist));
     } else {
-      _blendedLookAt.copy(lookTarget);
+      _blendedLookAt.copyFrom(lookTarget);
     }
   }
-  camera.lookAt(_blendedLookAt);
+  camera.setTarget(_blendedLookAt);
 
-  // Player model always exists for shadows; layer 1 controls camera visibility
-  playerModel.visible = true;
-  playerModel.position.set(state.x, state.y, state.z);
-  playerModel.rotation.y = facingAngle + Math.PI;
+  // Player model visibility
+  playerModel.setEnabled(true);
+  playerModel.position = new Vector3(state.x, state.y, state.z);
+  playerModel.rotation = new Vector3(0, facingAngle + Math.PI, 0);
 
-  // FP: hide model from camera (layer 1 off) — shadows still cast
-  // TP: show model in camera (layer 1 on)
+  // Layer mask: show/hide player model based on camera blend
+  // Player meshes are on layerMask 0x20000000
   if (camBlend > 0.15) {
-    camera.layers.enable(1);
+    camera.layerMask = 0x0FFFFFFF | 0x20000000; // see everything including player
   } else {
-    camera.layers.disable(1);
+    camera.layerMask = 0x0FFFFFFF; // see everything except player layer
   }
-  // Layer 2: sky objects (sun, lensflare) — always visible, never raycasted
-  camera.layers.enable(2);
-  // Shadow camera always renders the model
-  sunLight.shadow.camera.layers.enable(1);
 
   // Crosshair always visible during gameplay
   const crosshair = document.getElementById('crosshair');
@@ -653,16 +654,16 @@ export function updatePlayer(dt, camera, sunLight, keys) {
   if (zoomT > 0 || camera.fov !== BASE_FOV) {
     const smooth = zoomT * zoomT * (3 - 2 * zoomT);
     camera.fov = BASE_FOV + (ZOOM_FOV - BASE_FOV) * smooth;
-    camera.updateProjectionMatrix();
   }
 
   // Store actual camera state for next toggle's convergence raycast
-  _lastCamPos.copy(camera.position);
-  camera.getWorldDirection(_lastCamFwd);
+  _lastCamPos.copyFrom(camera.position);
+  // Babylon FreeCamera: forward direction = target - position
+  _lastCamFwd.copyFrom(camera.getTarget()).subtractInPlace(camera.position).normalize();
 
-  // Shadow camera follows player — direction from daynight.js, position relative to player
+  // Shadow follows player (CSM handles this mostly, but we still position the directional light)
   const off = getSunOffset();
-  sunLight.target.position.set(state.x, 0, state.z);
-  sunLight.position.set(state.x + off.x, off.y, state.z + off.z);
-  sunLight.target.updateMatrixWorld();
+  sunLight.position = new Vector3(state.x + off.x, off.y, state.z + off.z);
+  // Directional light in Babylon.js uses .direction, not .target
+  sunLight.direction = new Vector3(-off.x, -off.y, -off.z).normalize();
 }

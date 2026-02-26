@@ -1,15 +1,15 @@
-import * as THREE from 'three';
+import { Vector3, Matrix, MeshBuilder, StandardMaterial, Color3 } from 'babylonjs';
 import { getPlayerState } from '../entities/player.js';
-import { getCamera } from '../core/scene.js';
+import { getCamera, getScene, getEngine } from '../core/scene.js';
 import { randomWalkablePos, isWalkable } from './grid.js';
 import { getTerrainHeight } from './terrain.js';
 import { isInsideBuilding } from './generator.js';
 import { collidesWithRock } from './vegetation.js';
 import { CFG } from '../config.js';
+import { addShadowCaster } from '../core/lighting.js';
 
 const flowers = [];
 const PICK_DIST = 2.5;
-const _projFlower = new THREE.Vector3();
 
 const inventory = { flowers: 0, stones: 0, torches: 0 };
 
@@ -34,55 +34,56 @@ export function isPreviewValid() { return previewValid; }
 
 export function initFlowerPreview(scene) {
   if (!flowerTemplate) return;
-  previewMesh = flowerTemplate.clone();
-  // Make all materials transparent with green tint
-  previewMesh.traverse(c => {
-    if (c.isMesh) {
-      c.material = c.material.clone();
-      c.material.transparent = true;
-      c.material.opacity = 0.6;
-      c.material.depthWrite = false;
-      c.material.color.set(0x44ff44);
-      c.castShadow = false;
-      c.receiveShadow = false;
+  // Clone the template and make it a ghost preview
+  const instance = flowerTemplate.clone('flowerPreview', null);
+  if (!instance) return;
+  previewMesh = instance;
+
+  // Make all child meshes transparent with green tint
+  for (const mesh of previewMesh.getChildMeshes ? previewMesh.getChildMeshes() : [previewMesh]) {
+    if (mesh.material) {
+      mesh.material = mesh.material.clone(mesh.material.name + '_preview');
+      mesh.material.alpha = 0.6;
+      if (mesh.material.albedoColor) {
+        mesh.material.albedoColor = new Color3(0.267, 1.0, 0.267); // green
+      } else if (mesh.material.diffuseColor) {
+        mesh.material.diffuseColor = new Color3(0.267, 1.0, 0.267);
+      }
     }
-  });
-  previewMesh.visible = false;
-  scene.add(previewMesh);
+    mesh.isPickable = false;
+  }
+  previewMesh.setEnabled(false);
+  previewMesh.isPickable = false;
 }
 
 export function updateFlowerPreview(camera, active) {
   if (!previewMesh) return;
   if (!active || inventory.flowers <= 0) {
-    previewMesh.visible = false;
+    previewMesh.setEnabled(false);
     previewValid = false;
     return;
   }
 
-  const origin = new THREE.Vector3();
-  const dir = new THREE.Vector3();
-  // Ray from camera position (matches crosshair in both 1st/3rd person)
-  camera.getWorldPosition(origin);
-  camera.getWorldDirection(dir);
+  const origin = camera.position.clone();
+  const dir = camera.getTarget().subtract(camera.position).normalize();
 
-  // Player position for distance checks
   const p = getPlayerState();
   const px = p.x, pz = p.z;
 
   // Looking up — no ground intersection
   if (dir.y >= -0.01) {
-    previewMesh.visible = false;
+    previewMesh.setEnabled(false);
     previewValid = false;
     return;
   }
 
-  // Iterative ground plane intersection (handles terrain curvature)
+  // Iterative ground plane intersection
   let groundY = 0;
   let hitX, hitZ, t;
   for (let i = 0; i < 3; i++) {
     t = (groundY - origin.y) / dir.y;
     if (t < 0.1 || t > 20) {
-      previewMesh.visible = false;
+      previewMesh.setEnabled(false);
       previewValid = false;
       return;
     }
@@ -91,11 +92,11 @@ export function updateFlowerPreview(camera, active) {
     groundY = getTerrainHeight(hitX, hitZ);
   }
 
-  // Check distance from player (not camera) to placement point
+  // Distance check from player
   const dxp = hitX - px, dzp = hitZ - pz;
   const distPlayer = Math.sqrt(dxp * dxp + dzp * dzp);
   if (distPlayer > CFG.PLANT_MAX_DIST) {
-    previewMesh.visible = false;
+    previewMesh.setEnabled(false);
     previewValid = false;
     return;
   }
@@ -109,17 +110,20 @@ export function updateFlowerPreview(camera, active) {
   previewValid = !inside && !underwater && walkable && !rockBlock;
 
   // Tint green (valid) or red (invalid)
-  const tint = previewValid ? 0x44ff44 : 0xff4444;
-  previewMesh.traverse(c => {
-    if (c.isMesh) c.material.color.set(tint);
-  });
+  const tint = previewValid ? new Color3(0.267, 1.0, 0.267) : new Color3(1.0, 0.267, 0.267);
+  for (const mesh of previewMesh.getChildMeshes ? previewMesh.getChildMeshes() : [previewMesh]) {
+    if (mesh.material) {
+      if (mesh.material.albedoColor) mesh.material.albedoColor = tint;
+      else if (mesh.material.diffuseColor) mesh.material.diffuseColor = tint;
+    }
+  }
 
-  previewMesh.position.set(hitX, groundY, hitZ);
-  previewMesh.visible = true;
+  previewMesh.position = new Vector3(hitX, groundY, hitZ);
+  previewMesh.setEnabled(true);
 }
 
 export function plantFlower(scene) {
-  if (!previewValid || inventory.flowers <= 0 || !previewMesh || !previewMesh.visible) return false;
+  if (!previewValid || inventory.flowers <= 0 || !previewMesh || !previewMesh.isEnabled()) return false;
 
   const wx = previewMesh.position.x;
   const wz = previewMesh.position.z;
@@ -127,18 +131,29 @@ export function plantFlower(scene) {
 
   let mesh;
   if (flowerTemplate) {
-    mesh = flowerTemplate.clone();
-    mesh.traverse(c => { if (c.isMesh) c.frustumCulled = false; });
-    mesh.position.set(wx, ty, wz);
-    mesh.rotation.y = Math.random() * Math.PI * 2;
-  } else {
-    const geo = new THREE.ConeGeometry(0.15, 0.35, 6);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xff69b4 });
-    mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(wx, ty + 0.15, wz);
+    mesh = flowerTemplate.clone('plantedFlower', null);
+    if (mesh) {
+      mesh.position = new Vector3(wx, ty, wz);
+      mesh.rotation = new Vector3(0, Math.random() * Math.PI * 2, 0);
+      for (const m of mesh.getChildMeshes ? mesh.getChildMeshes() : [mesh]) {
+        addShadowCaster(m);
+      }
+    }
   }
-  mesh.castShadow = true;
-  scene.add(mesh);
+  if (!mesh) {
+    // Fallback cone
+    mesh = MeshBuilder.CreateCylinder('plantedFlower', {
+      diameterTop: 0,
+      diameterBottom: 0.3,
+      height: 0.35,
+      tessellation: 6,
+    }, scene);
+    const mat = new StandardMaterial('flowerFallback', scene);
+    mat.diffuseColor = new Color3(1.0, 0.412, 0.706); // #ff69b4
+    mesh.material = mat;
+    mesh.position = new Vector3(wx, ty + 0.15, wz);
+    addShadowCaster(mesh);
+  }
   registerFlower(mesh, wx, wz);
 
   inventory.flowers--;
@@ -147,7 +162,7 @@ export function plantFlower(scene) {
 
 export function hideFlowerPreview() {
   if (previewMesh) {
-    previewMesh.visible = false;
+    previewMesh.setEnabled(false);
     previewValid = false;
   }
 }
@@ -175,10 +190,27 @@ export function pickNearestFlower() {
   if (!f) return false;
 
   f.active = false;
-  f.model.visible = false;
+  f.model.setEnabled(false);
   f.respawnTimer = 15 + Math.random() * 15;
   inventory.flowers++;
   return true;
+}
+
+/**
+ * Project a world position to screen coords (Babylon.js).
+ */
+function projectToScreen(wx, wy, wz) {
+  const engine = getEngine();
+  const scene = getScene();
+  const camera = getCamera();
+  const vp = camera.viewport.toGlobal(engine.getRenderWidth(), engine.getRenderHeight());
+  const projected = Vector3.Project(
+    new Vector3(wx, wy, wz),
+    Matrix.Identity(),
+    scene.getTransformMatrix(),
+    vp
+  );
+  return { x: projected.x, y: projected.y, behind: projected.z > 1 };
 }
 
 export function updateFlowers(dt, camera) {
@@ -199,14 +231,15 @@ export function updateFlowers(dt, camera) {
       if (dx * dx + dz * dz < 40 * 40) continue;
 
       const ty = getTerrainHeight(pos.x, pos.z);
-      _projFlower.set(pos.x, ty + 0.2, pos.z);
-      _projFlower.project(camera);
-      if (_projFlower.z < 1 && Math.abs(_projFlower.x) < 1.2 && Math.abs(_projFlower.y) < 1.2) continue;
+      const proj = projectToScreen(pos.x, ty + 0.2, pos.z);
+      // If visible on screen, skip (don't pop in visibly)
+      if (!proj.behind && Math.abs(proj.x / window.innerWidth - 0.5) < 0.6 &&
+          Math.abs(proj.y / window.innerHeight - 0.5) < 0.6) continue;
 
       f.wx = pos.x;
       f.wz = pos.z;
-      f.model.position.set(pos.x, ty, pos.z);
-      f.model.visible = true;
+      f.model.position = new Vector3(pos.x, ty, pos.z);
+      f.model.setEnabled(true);
       f.active = true;
       placed = true;
       break;
@@ -233,22 +266,18 @@ export function updateFlowerHint() {
     return;
   }
 
-  const camera = getCamera();
   const ty = getTerrainHeight(flower.wx, flower.wz);
-  _projFlower.set(flower.wx, ty + 0.3, flower.wz);
-  _projFlower.project(camera);
+  const proj = projectToScreen(flower.wx, ty + 0.3, flower.wz);
 
-  if (_projFlower.z > 1) {
+  if (proj.behind) {
     if (el.dataset.source === 'flower') el.style.display = 'none';
     return;
   }
 
-  const hw = window.innerWidth / 2;
-  const hh = window.innerHeight / 2;
   el.textContent = '[E] Pick';
   el.style.fontSize = '21px';
-  el.style.left = (_projFlower.x * hw + hw) + 'px';
-  el.style.top = (-_projFlower.y * hh + hh) + 'px';
+  el.style.left = proj.x + 'px';
+  el.style.top = proj.y + 'px';
   el.style.display = 'block';
   el.dataset.source = 'flower';
 }

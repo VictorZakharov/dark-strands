@@ -424,3 +424,117 @@
 - **Static Physics** (`staticPhysics.js` NEW): extracted `createWorldPhysicsBodies()` out of the visual pipeline. Translates the 2D grid into cannon-es bodies (heightfields, walls, lintels, roofs, slabs, steps).
 - **Kinematic Mask Fix** (`physics.js`, `doors.js`): updated `createKinematicBox()` to explicitly set `collisionFilterGroup = 1` and `collisionFilterMask = -1`. Previously, doors had no explicit filters, which caused projectiles (Group 8) to ghost through them even when closed. Rocks now bounce cleanly off swinging door panels.
 - **Documentation**: updated `ARCHITECTURE.md` file tree and file statistics to reflect the 5 new files and the removal of `geometry.js`.
+
+## 2026-02-23
+
+### Batch Bug Fixes — 10 gameplay issues from playtesting
+
+- **Rock re-catch prevention** (`projectiles.js`): added 0.5s minimum flight time before in-flight rocks can be picked up, preventing instant re-catch after throwing.
+- **Rock terrain tunneling** (`projectiles.js`): added per-frame terrain floor clamp for projectiles to prevent rocks from falling through the heightfield at high velocities.
+- **Ceiling clipping from furniture** (`player.js`): added ceiling proximity check when jumping (caps upward velocity near ceilings) and extended ceiling raycast origin lower to catch already-clipped-through ceilings.
+- **Backward hill hop** (`player.js`): increased velocity.y freeze threshold from 0.1 to 2.0 to catch slope-induced upward velocities when stopping on hills.
+- **Roof physics matches visuals** (`staticPhysics.js`, `physics.js`): replaced flat ceiling slab with proper angled physics for slanted gable roofs — two tilted boxes matching the visual slope angle. Added `roofMaterial` with low friction (0.1) so stones roll off. Flat roofs keep their thick slab. Players can climb roofs if they find a way up.
+- **Door handle position** (`doors.js`): negated knobX to move door handles to the hinge side of the door leaf.
+- **Table-on-stairs fix** (`furniture.js`): replaced distance-based stair avoidance with proper `isStairCell()` checks for both table and bed fallback placement.
+- **Stairs-wall gap** (`staticPhysics.js`): added filler wall physics body between stairwell east edge and east perimeter wall to seal the walkthrough gap.
+- **Building corner clipping** (`staticPhysics.js`): removed separate corner/thin-post physics bodies entirely — adjacent straight walls already extend into corners via isThinPost() extensions, providing full coverage without invisible interior pillars.
+- **Fox stuck in buildings** (`npcAI.js`): improved `smartFleeDirection()` with multi-distance sampling (2.0, 1.0, 0.5) and added stuck detection with emergency teleport — foxes stuck inside a building for 3+ seconds are relocated to the nearest outdoor walkable position.
+
+### Follow-up Fixes — roof, ceiling, placement, hints
+- **Flat roof physics alignment** (`staticPhysics.js`): physics slab top now matches visual roof surface at topY+0.25 (was topY+1.0), fixing player/rocks floating above flat roofs.
+- **Ceiling jump from bed** (`player.js`): replaced fixed headroom<0.5 threshold with physics-based velocity cap (v = sqrt(2*g*h)*0.85), preventing ceiling clips when jumping from elevated surfaces like beds.
+- **Rock placement through roof** (`projectiles.js`): added player-feet Y check in `findRockPlacementTarget()` — breaks ray march if target is >0.5 below player feet, preventing placement through roof/floor surfaces.
+- **Interaction hints through roof** (`main.js`): added Y-distance filter in `updateInteractHint()` — skips objects >1.5 below player, hiding hints for interior objects when standing on roof.
+- **Corner physics: cylinder** (`staticPhysics.js`, `physics.js`): replaced + shape with a vertical cylinder (radius=CELL/2) at corner cells. Circular cross-section prevents player capsule from getting stuck on sharp 90° edges while still sealing window-near-corner gaps. Added `createStaticCylinder()` helper to physics.js.
+- **Bed headboard collision** (`furniture.js`): fixed swapped X/Z bed physics dimensions (now rotation-aware) and added dedicated headboard physics body (1.0 tall panel at the head end).
+- **Rock placement clamps to roof** (`projectiles.js`): instead of breaking ray march below player feet, Y is clamped to player surface level + stone radius — preview sticks to the roof surface, rocks don't pop up after placement.
+- **Corner reverted to no-body** (`staticPhysics.js`): reverted cylinder corners back to `continue` (no corner body) for smooth exterior sliding. Added isThinPost extensions to window cells instead, sealing the window-near-corner gap.
+- **Ceiling clamp fix** (`player.js`): changed ceiling safety raycast to start from feet+0.1 (was feet-0.5), removed 0.3 guard threshold. Fixes jumping from 2nd floor bed into slanted/flat roof.
+- **Door knobs reverted** (`doors.js`): knobX back to positive (handle side, opposite hinge). Previous negation incorrectly placed knobs on hinge side.
+- **Survival guide rewrite** (`index.html`, `styles.css`, `controls.js`): replaced scrolling sections with tabbed layout (Controls / Touch / World). Touch tab only visible on mobile. Updated content: double jump, rock placement mode, bed sleeping, roof climbing, breakable windows.
+
+### Additional Fixes — corners, doors, rock placement, guide
+- **Corner gap sealed** (`staticPhysics.js`): added WALL_T x WALL_T physics box at corner cells to fill the diagonal gap between perpendicular wall extensions. Small enough (0.35 from center) not to protrude into building interiors.
+- **Door opening direction** (`doors.js`): stored wall direction per door. South/west wall doors now open with +PI/2 rotation (inward) instead of -PI/2 (which was outward). North/east walls keep -PI/2. All doors now open into the building interior.
+- **Rock placement on angled roof** (`projectiles.js`): detect when player is elevated above terrain (on roof/building) and clamp preview Y to player feet level instead of allowing 0.3 units below. Prevents preview from going below angled roof surface near the peak. Also fixes flat roof pop-up by using sz*0.4 offset instead of full sz.
+- **Survival guide: Rocks & Physics section** (`index.html`): added new section to World tab covering throwing, placement mode, rock splitting/knockback, and window breaking.
+
+### More Fixes — door knobs, roof ridge, rock collision, menu bounds
+- **Door knob position** (`doors.js`): rewrote door leaf builder to always place knobs at +X (free edge). Changed E-W door leaf rotation from +PI/2 to -PI/2 so leaf +X maps to +Z (free end) in parent space. No more per-side special-casing — single code path handles all wall directions. Also stored `wall` property per door and set opening rotation based on wall direction (south/west = +PI/2 inward, north/east = -PI/2 inward).
+- **Slanted roof ridge cap** (`staticPhysics.js`): added horizontal box along the ridge peak of gable roofs to seal the V-shaped gap between the two tilted slope bodies. Prevents jumping through the roof from beds below.
+- **Rock physics radius** (`vegetation.js`): increased physics sphere radius from `s * 0.65` to `s * 0.85` (matching 2D collision radius) for both environment rocks and placed rocks. Player no longer clips knee-deep into rock geometry.
+- **Menu wander boundary** (`menu.js`): added hard distance limit (5 units from scene center) preventing the character from walking behind scenery or into the fog on the main menu screen.
+
+### Physics Hardening — roofs, rocks, trees, menu
+- **Slanted roof thickness** (`staticPhysics.js`): increased SLOPE_THICK from 0.5 to 1.2 and widened ridge cap (1.0 wide, 1.2 tall). Prevents jumping through angled roof from 1st or 2nd floor beds.
+- **Jump velocity cap** (`player.js`): reduced safety factor from 0.85 to 0.7 — player reaches only 70% of theoretical ceiling height, adding more headroom margin.
+- **Rock physics radius** (`vegetation.js`): increased from `s * 0.85` to full `s` (matching visual dodecahedron radius). Player no longer clips ankle-deep into rocks or sinks a leg into large boulders.
+- **Per-tree trunk physics** (`vegetation.js`): added `createStaticCylinder` body for each tree trunk at its exact visual position and scale. Projectiles now collide with trunks instead of passing through.
+- **Menu shelter boundary** (`menu.js`): added invisible outer boundary colliders behind and beside the shelter walls, preventing the character from walking behind the shed and disappearing.
+
+### Physics Engine Migration — cannon-es → Rapier3D
+- **Replaced cannon-es with @dimforge/rapier3d-compat** (Rust/WASM physics engine). Motivation: cannon-es had no CCD causing player/rocks to fall through terrain, jump through ceilings/roofs, and required 10+ manual workaround hacks. Also degraded to 45 FPS with ~3,150 pure JS physics bodies.
+- **Full rewrite of `src/core/physics.js`**: RAPIER.init() (async), World creation, PhysicsBodyWrapper class with Vec3Proxy/QuatProxy to preserve existing `body.position.x`, `body.velocity.y`, `body.quaternion.setFromEuler()` access patterns. All body creation functions maintain same signatures.
+- **Native capsule** for player (replaces compound 2-sphere+cylinder). PlayerBodyWrapper subclass offsets position to report foot Y instead of capsule center.
+- **CCD enabled** on player and projectile bodies via `setCcdEnabled(true)`.
+- **Collision groups** migrated from cannon-es number flags to Rapier packed 32-bit format (membership << 16 | filter). Groups: DEFAULT(0x0001), PLAYER(0x0002), WINDOW(0x0004), PROJECTILE(0x0008), DOOR(0x0010).
+- **Material system** converted from ContactMaterial pairs to per-collider friction/restitution with applyMat() helper.
+- **Heightfield** now uses Rapier's Y-up native format (no rotation hack needed). Column-major Float32Array with scale vector.
+- **Raycast API**: new `raycastClosest(from, to, filterMask)` helper replaces `world.raycastClosest()` with CANNON.Vec3/RaycastResult.
+- **Fixed timestep accumulator** (1/60s, max 10 steps) replaces cannon-es's built-in sub-stepping.
+- **Player.js**: removed CANNON import, replaced all raycast calls with new API, replaced `new CANNON.Vec3(...)` force vectors with plain objects.
+- **Doors.js**: removed unused CANNON import, kinematic body sync works through wrapper's setNextKinematicTranslation/Rotation.
+- **StaticPhysics.js**: window collision groups passed at creation time via WINDOW_COLLISION_GROUP constant instead of post-creation property assignment.
+- **No changes needed** in projectiles.js, vegetation.js, furniture.js — all body access works through PhysicsBodyWrapper proxies.
+
+## 2026-02-24
+
+### Three.js 0.172.0 Upgrade & WebGPU Revert
+- **Three.js upgraded** from 0.162.0 to 0.172.0 via npm.
+- **WebGPU attempted and reverted**: WebGPURenderer tested but caused 3 issues — slower FPS (42 vs 48-62), broken `onBeforeCompile` (wall textures lost triplanar UVs), window frame flickering. Reverted to WebGLRenderer.
+- **Model scaling fix** (`modelLoader.js`, `player.js`, `menu.js`): Three.js 0.172.0 changed `Box3.setFromObject()` to include bone transforms for skinned meshes, inflating bounding boxes. Fixed by using raw `geometry.computeBoundingBox()` without any transforms to get true mesh dimensions.
+- **Window z-fighting fix** (`windows.js`): added `polygonOffset: true` with `polygonOffsetFactor: 1` to window wall material to resolve flickering with frame bars.
+- **Boundary shader simplified** (`boundary.js`): switched from ShaderMaterial to MeshBasicMaterial (retained from WebGPU compat attempt).
+- **Lensflare removed** (`lighting.js`): Lensflare addon had compatibility issues with 0.172.0; sun glow retained via sprites.
+
+### Static Geometry Batching (~1000+ draw calls → ~20-25)
+- **Vegetation batched** (`vegetation.js`): tree trunks merged into 1 mesh, canopy cones into 1 mesh, non-pickable rocks into 1 mesh. Pickable rocks remain individual. Used `mergeGeometries()` with transforms baked into geometry via `translate()`/`applyMatrix4()`.
+- **Furniture batched** (`furniture.js`): all bed, table, chair components collected by material via `collectGroupGeos()` helper, merged into ~4-6 meshes (one per shared material). Bed registry kept for interact detection.
+- **Floors batched** (`floors.js`): all ground floor slabs and mid-floor pieces merged into 1 mesh with floorMat. All stair steps merged into 1 mesh with stairMat.
+- **Roofs batched** (`walls.js`): flat roofs merged into 1 mesh, slant roofs merged into 1 mesh. Rotation+position baked via Matrix4.
+- **Window walls and frames batched** (`windows.js`): all ExtrudeGeometry wall segments merged into 1 mesh, all frame bars merged into 1 mesh. Glass panes kept individual for breakable window system.
+- **Not batched**: walls (already InstancedMesh), torches (all pickable with individual light references), doors (animated), animated models, terrain/water (already 1-2 meshes).
+
+### Three.js → Babylon.js Full Engine Migration
+- **Motivation**: Three.js shadow system had unresolvable shadow acne on walls after 15+ fix attempts. Every known Three.js technique was exhausted (bias, normalBias, VSM, BackSide, customDepthMaterial, polygon offset, frustum tightening, texel snapping, 4096 maps). Babylon.js's built-in CascadedShadowGenerator (CSM) handles shadows correctly out of the box.
+- **Babylon.js bundling**: installed `@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials` via npm. Pre-bundled via esbuild (`scripts/bundle-babylon.js`) into `lib/babylon.bundle.js`. Importmap maps `'babylonjs'` to the bundle. Game source stays as unbundled ES modules.
+- **Phase 1 — Core** (`scene.js`, `lighting.js`): `WebGLRenderer` → `Engine`, `PerspectiveCamera` → `FreeCamera` (inputs cleared), `PCFSoftShadowMap` → `CascadedShadowGenerator` with 4 cascades + PCF filtering + stabilizeCascades. `scene.useRightHandedSystem = true` to match Three.js conventions.
+- **Phase 2 — Terrain** (`terrainMeshes.js`): `PlaneGeometry` vertex displacement → `MeshBuilder.CreateGround` + `VertexData` manipulation. `MeshStandardMaterial` → `PBRMaterial`.
+- **Phase 3 — Walls** (`walls.js`): `InstancedMesh` → thin instances (`thinInstanceSetBuffer`). `onBeforeCompile` triplanar UV → `TriPlanarMaterial` from `@babylonjs/materials`. `mergeGeometries` → `Mesh.MergeMeshes`. Deleted all `customDepthMaterial`, `shadowSide`, polygon offset shadow hacks.
+- **Phase 4 — Floors/Windows/Furniture** (`floors.js`, `windows.js`, `furniture.js`): all `mergeGeometries` → `Mesh.MergeMeshes`. Window breaking uses direct VertexData position buffer modification.
+- **Phase 5 — Vegetation/Doors/Torches** (`vegetation.js`, `doors.js`, `torches.js`): merged geometry → `Mesh.MergeMeshes`. `THREE.Group` → `TransformNode` for doors. Torch `PointLight` pool pattern preserved. Leaf shadow dapple via `opacityTexture`.
+- **Phase 6 — Models/Player** (`modelLoader.js`, `player.js`): `GLTFLoader` → `SceneLoader.LoadAssetContainerAsync`. `SkeletonUtils.clone` → `container.instantiateModelsToScene()`. Created `createAnimMixer()` wrapper mimicking Three.js AnimationMixer API using Babylon AnimationGroup weight blending. Player camera: `FreeCamera` with `setTarget()`. Layer visibility: `mesh.layerMask` bitmask.
+- **Phase 7 — Game Systems** (`daynight.js`, `npcAI.js`, `projectiles.js`, `flowers.js`): `THREE.Color` → `Color3`. `THREE.Raycaster` → `scene.pickWithRay()` / `scene.multiPickWithRay()`. `Vector3.project()` → `Vector3.Project(pos, Matrix.Identity(), scene.getTransformMatrix(), viewport)`.
+- **Phase 8 — Effects/Menu** (`boundary.js`, `menu.js`): boundary hex shader → `Effect.ShadersStore` + `ShaderMaterial`. Menu: separate `new Scene(engine)` with own camera. Campfire sprites → billboard planes with `Mesh.BILLBOARDMODE_ALL`.
+- **Phase 9 — Cleanup**: removed `three` from `package.json` and `index.html` importmap. Updated `CLAUDE.md` tech stack, architecture tree, collision docs, model docs, known quirks.
+- **Key patterns**: all imports from `'babylonjs'`, `MeshBuilder.Create*()` for geometry, `PBRMaterial` for PBR, `StandardMaterial` for simple materials, `addShadowCaster()`/`enableShadowReceiving()` for shadows, `mesh.setEnabled()` for visibility, `mesh.dispose()` for removal, `mesh.metadata` instead of `userData`.
+- **What stayed unchanged**: Rapier 3D physics (`physics.js`), grid/terrain logic, all DOM/UI code, controls, touch, hotbar, hud, sleep, config, helpers.
+
+## 2026-02-25
+
+### Building Geometry Fixes
+- **Wall seam elimination** (`walls.js`, `windows.js`): merged all wall geometry (regular walls + window wall holes) into a single mesh with one material per building. Previously, window walls and regular walls were separate merged meshes with different materials — `zOffset` on the window wall material caused visible step/seam at cell boundaries. Moved `buildWallWithHoles()` from windows.js into walls.js. Stripped windows.js to only glass panes and wooden frames.
+- **Walk-through gap fix** (`staticPhysics.js`): added door-side fill physics bodies that seal the gap between door openings and adjacent thin-post corners. Without these, player could walk through walls next to doors near building corners.
+- **Corner physics bodies restored** (`staticPhysics.js`): re-added WALL_T × WALL_T physics boxes at corner cells to fill diagonal gaps between perpendicular wall extensions.
+
+### Ceiling & Roof Physics
+- **Ceiling slab for slanted roofs** (`staticPhysics.js`): added thin physics slab (0.15 thick) at wall tops for slanted-roof buildings using CEILING_COLLISION_GROUP. Prevents player from jumping through ceiling into attic.
+- **Slanted roof slope bodies** (`staticPhysics.js`): two tilted boxes + ridge cap tagged with CEILING_COLLISION_GROUP to fully seal the attic.
+- **Flat roof slab thinned** (`staticPhysics.js`): reduced from 1.0 to 0.3 thickness. Old 1.0-thick slab extended too far downward (bottom at Y=2.75 for 1-story), preventing jumping on beds.
+- **Collision group system** (`physics.js`): added GRP_CEILING (0x0020) and CEILING_COLLISION_GROUP export. Fixed Rapier `world.castRay` parameter order — `filterGroups` was being passed as `filterFlags` (position 4 instead of 5).
+
+### 3rd-Person Camera Indoor Fixes
+- **Switched camera collision to Babylon scene raycasts** (`player.js`): replaced Rapier `raycastClosest` with Babylon `scene.multiPickWithRay` for camera collision. Scene raycasts naturally ignore physics-only bodies (ceiling slabs), eliminating false snap-in from invisible ceiling colliders.
+- **Roof mesh skip in camera collision** (`player.js`): camera collision raycasts skip `slantRoofs` and `flatRoofs` meshes. The ceiling Y-clamp already prevents the camera from entering the attic, so roof meshes don't need to block the camera.
+- **Camera ceiling Y-clamp** (`player.js`): upward Rapier raycast from player finds ceiling height; camera desired Y clamped to `ceilingY - 0.5` to prevent FOV from seeing above wall tops. Margin of 0.5 accounts for wide 75° FOV.
+- **Temporal smoothing on camera fraction** (`player.js`): added `_camFracSmooth` state variable. Camera collision fraction snaps in instantly but eases out slowly (`dt * 5`), eliminating oscillation where the camera would snap to first-person during one jump frame then snap back the next.

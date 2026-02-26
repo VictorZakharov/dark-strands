@@ -1,5 +1,8 @@
 node_modules/
 dist/
+lib/babylon.bundle.js
+lib/babylon.bundle.js.map
+console.txt
 npm-debug.log*
 .DS_Store
 Thumbs.db

@@ -1,5 +1,10 @@
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { Scene, FreeCamera, HemisphericLight, DirectionalLight, PointLight,
+         MeshBuilder, Mesh, PBRMaterial, StandardMaterial, Texture, DynamicTexture,
+         Color3, Color4, Vector3, VertexData, SceneLoader, ShadowGenerator,
+         TransformNode } from 'babylonjs';
+import { CFG } from '../config.js';
+import { getEngine } from '../core/scene.js';
+import { createAnimMixer } from '../entities/modelLoader.js';
 
 let menuScene, menuCamera, menuMixer;
 let mouseX = 0, mouseY = 0;
@@ -11,17 +16,36 @@ let menuSnow = false;
 let menuCharModel = null;
 let menuCharActions = {};
 let menuCharCurrentAction = null;
-let menuCharPos = new THREE.Vector3();
+let menuCharPos = { x: 0, y: 0, z: 0 };
 let menuCharFacing = 0;
-let menuCharFacingOffset = Math.PI; // PI for soldier, 0 for fox
+let menuCharFacingOffset = Math.PI;
 const MENU_CHAR_SPEED = 4;
 const MENU_CHAR_R = 0.35;
 let menuKeys = {};
-let menuColliders = [];     // { x, z, r }
-let menuBoxColliders = [];  // { xMin, xMax, zMin, zMax }
+let menuColliders = [];
+let menuBoxColliders = [];
 
 const rnd = (a, b) => a + Math.random() * (b - a);
 const rndInt = (a, b) => Math.floor(rnd(a, b + 1));
+
+// Shared soft-circle texture for fire/ember particles (created once per menu scene)
+let softParticleTex = null;
+function getSoftParticleTex(scene) {
+  if (softParticleTex && !softParticleTex.isDisposed) return softParticleTex;
+  const sz = 64;
+  const dt = new DynamicTexture('softCircle', sz, scene, false);
+  const ctx = dt.getContext();
+  const g = ctx.createRadialGradient(sz / 2, sz / 2, 0, sz / 2, sz / 2, sz / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, sz, sz);
+  dt.update();
+  dt.hasAlpha = true;
+  softParticleTex = dt;
+  return dt;
+}
 
 function isOnPath(px, pz, ax, az, bx, bz, hw) {
   const dx = bx - ax, dz = bz - az;
@@ -41,44 +65,68 @@ function rndAvoid(xMin, xMax, zMin, zMax, cx, cz, tx, tz, hw) {
   return { x, z };
 }
 
-// --- Shared texture loader & materials ---
-const texLoader = new THREE.TextureLoader();
+// --- Shared materials (created lazily) ---
+let wallMat, groundMat, trunkMat, leafMat, rockMat, roofMat;
 
-function loadTex(path, rx, ry) {
-  const tex = texLoader.load(path);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(rx, ry);
-  tex.colorSpace = THREE.SRGBColorSpace;
+function loadTex(path, uScale, vScale, scene) {
+  const tex = new Texture(path, scene);
+  tex.uScale = uScale;
+  tex.vScale = vScale;
   return tex;
 }
 
-let wallMat, groundMat, trunkMat, leafMat, rockMat, roofMat;
+function initMaterials(scene) {
+  wallMat = new PBRMaterial('mWall', scene);
+  wallMat.albedoTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
+  wallMat.roughness = 0.9; wallMat.metallic = 0;
 
-function initMaterials() {
-  wallMat = new THREE.MeshStandardMaterial({ map: loadTex('./assets/textures/stone_wall.jpg', 1, 1), roughness: 0.9 });
-  trunkMat = new THREE.MeshStandardMaterial({ map: loadTex('./assets/textures/bark.jpg', 1, 2), roughness: 0.95 });
-  rockMat = new THREE.MeshStandardMaterial({ map: loadTex('./assets/textures/stone_wall.jpg', 1, 1), roughness: 0.95, flatShading: true });
-  roofMat = new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.85, side: THREE.DoubleSide });
+  trunkMat = new PBRMaterial('mTrunk', scene);
+  trunkMat.albedoTexture = loadTex('./assets/textures/bark.jpg', 1, 2, scene);
+  trunkMat.roughness = 0.95; trunkMat.metallic = 0;
+
+  rockMat = new PBRMaterial('mRock', scene);
+  rockMat.albedoTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
+  rockMat.roughness = 0.95; rockMat.metallic = 0;
+
+  roofMat = new PBRMaterial('mRoof', scene);
+  roofMat.albedoColor = Color3.FromHexString('#8B4513');
+  roofMat.roughness = 0.85; roofMat.metallic = 0;
+  roofMat.backFaceCulling = false;
 
   if (menuSnow) {
-    groundMat = new THREE.MeshStandardMaterial({ color: 0xdde4e8, roughness: 0.85 });
-    leafMat = new THREE.MeshStandardMaterial({ color: 0xc8cdd0, roughness: 0.9, flatShading: true });
+    groundMat = new PBRMaterial('mGround', scene);
+    groundMat.albedoColor = new Color3(0.867, 0.894, 0.910);
+    groundMat.roughness = 0.85; groundMat.metallic = 0;
+
+    leafMat = new PBRMaterial('mLeaf', scene);
+    leafMat.albedoColor = new Color3(0.784, 0.804, 0.816);
+    leafMat.roughness = 0.9; leafMat.metallic = 0;
   } else {
-    groundMat = new THREE.MeshStandardMaterial({ map: loadTex('./assets/textures/grass.jpg', 6, 6), roughness: 0.95 });
-    leafMat = new THREE.MeshStandardMaterial({ color: 0x3a8a3a, roughness: 0.9, flatShading: true });
+    groundMat = new PBRMaterial('mGround', scene);
+    groundMat.albedoTexture = loadTex('./assets/textures/grass.jpg', 6, 6, scene);
+    groundMat.roughness = 0.95; groundMat.metallic = 0;
+
+    leafMat = new PBRMaterial('mLeaf', scene);
+    leafMat.albedoColor = new Color3(0.227, 0.541, 0.227);
+    leafMat.roughness = 0.9; leafMat.metallic = 0;
   }
 }
 
 // --- Visibility & Collision helpers ---
+const MENU_WANDER_RADIUS = 5;
 
-const _projCheck = new THREE.Vector3();
-
-/** Check if a ground position is within the camera's visible area (with margin) */
 function isInCameraView(x, z) {
-  _projCheck.set(x, 0.5, z);
-  _projCheck.project(menuCamera);
-  // Reject if behind camera or outside NDC bounds with margin
-  return _projCheck.z < 1 && Math.abs(_projCheck.x) < 0.9 && Math.abs(_projCheck.y) < 0.85;
+  if (camLookAt) {
+    const dx = x - camLookAt.x, dz = z - camLookAt.z;
+    if (dx * dx + dz * dz > MENU_WANDER_RADIUS * MENU_WANDER_RADIUS) return false;
+  }
+  // Simple distance check from camera — more reliable than projection in Babylon
+  if (menuCamera) {
+    const cp = menuCamera.position;
+    const dx = x - cp.x, dz = z - cp.z;
+    if (dx * dx + dz * dz > 100) return false; // >10 units
+  }
+  return true;
 }
 
 function collidesMenu(x, z, r) {
@@ -98,130 +146,128 @@ function collidesMenu(x, z, r) {
 
 // --- Shared builders ---
 
-function createTree(x, z, scale) {
-  const group = new THREE.Group();
+function createTree(x, z, scale, scene) {
+  const parent = new TransformNode('tree', scene);
   const s = scale || rnd(1.4, 2.6);
   const trunkH = rnd(1.5, 2.2), trunkR = rnd(0.12, 0.18);
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(trunkR * 0.6, trunkR, trunkH, 6), trunkMat);
+  const trunk = MeshBuilder.CreateCylinder('trunk', {
+    diameterTop: trunkR * 0.6 * 2, diameterBottom: trunkR * 2, height: trunkH, tessellation: 6,
+  }, scene);
+  trunk.material = trunkMat;
   trunk.position.y = trunkH / 2;
-  trunk.castShadow = true;
-  group.add(trunk);
+  trunk.parent = parent;
+
   for (let i = 0, n = rndInt(3, 5); i < n; i++) {
     const frac = 1 - i / n;
-    const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(Math.max(rnd(0.8, 1.3) * (0.25 + 0.75 * frac), 0.25), rnd(0.8, 1.3), 6),
-      leafMat
-    );
+    const coneR = Math.max(rnd(0.8, 1.3) * (0.25 + 0.75 * frac), 0.25);
+    const cone = MeshBuilder.CreateCylinder('leaf', {
+      diameterTop: 0, diameterBottom: coneR * 2, height: rnd(0.8, 1.3), tessellation: 6,
+    }, scene);
+    cone.material = leafMat;
     cone.position.y = trunkH + i * rnd(0.45, 0.65);
-    cone.castShadow = true;
-    cone.receiveShadow = true;
-    group.add(cone);
+    cone.parent = parent;
   }
-  group.scale.set(s, s, s);
-  group.position.set(x, 0, z);
-  // Register collider (trunk + canopy footprint)
+  parent.scaling = new Vector3(s, s, s);
+  parent.position = new Vector3(x, 0, z);
   menuColliders.push({ x, z, r: s * 0.35 });
-  return group;
+  return parent;
 }
 
-function createRock(x, z, size) {
+function createRock(x, z, size, scene) {
   const s = size || rnd(0.2, 0.8);
-  const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(s, 1), rockMat);
-  rock.position.set(x, s * 0.35, z);
-  rock.rotation.set(rnd(0, Math.PI), rnd(0, Math.PI), 0);
-  rock.castShadow = true;
-  rock.receiveShadow = true;
-  // Register collider
+  const rock = MeshBuilder.CreateIcoSphere('rock', { radius: s, subdivisions: 2 }, scene);
+  rock.material = rockMat;
+  rock.position = new Vector3(x, s * 0.35, z);
+  rock.rotation = new Vector3(rnd(0, Math.PI), rnd(0, Math.PI), 0);
   if (s > 0.15) menuColliders.push({ x, z, r: s * 0.85 });
   return rock;
 }
 
 function addGround(scene, size) {
-  const g = new THREE.Mesh(new THREE.PlaneGeometry(size || 40, size || 40), groundMat);
-  g.rotation.x = -Math.PI / 2;
-  g.receiveShadow = true;
-  scene.add(g);
+  const g = MeshBuilder.CreateGround('mGround', { width: size || 40, height: size || 40 }, scene);
+  g.material = groundMat;
+  g.receiveShadows = true;
 }
 
-function setupShadows(light) {
-  light.castShadow = true;
-  light.shadow.mapSize.set(1024, 1024);
-  light.shadow.camera.left = -12;
-  light.shadow.camera.right = 12;
-  light.shadow.camera.top = 12;
-  light.shadow.camera.bottom = -12;
-  light.shadow.bias = -0.002;
+function setupShadows(light, scene) {
+  const sg = new ShadowGenerator(1024, light);
+  sg.usePercentageCloserFiltering = true;
+  sg.bias = 0.002;
+  return sg;
 }
 
-// --- Shelter builder (used by shelter template) ---
+// --- Shelter builder ---
 
 function buildShelter(scene) {
   const wallH = 3.5, wallT = 0.5;
   const shelterW = rnd(5, 7), shelterD = rnd(4, 5.5);
   const cx = rnd(-1.5, 0), cz = rnd(-3, -2);
 
-  const back = new THREE.Mesh(new THREE.BoxGeometry(shelterW, wallH, wallT), wallMat);
-  back.position.set(cx, wallH / 2, cz - shelterD / 2);
-  back.castShadow = true; back.receiveShadow = true;
-  scene.add(back);
+  const back = MeshBuilder.CreateBox('sBack', { width: shelterW, height: wallH, depth: wallT }, scene);
+  back.material = wallMat; back.position = new Vector3(cx, wallH / 2, cz - shelterD / 2);
 
-  const left = new THREE.Mesh(new THREE.BoxGeometry(wallT, wallH, shelterD), wallMat);
-  left.position.set(cx - shelterW / 2 + wallT / 2, wallH / 2, cz);
-  left.castShadow = true; left.receiveShadow = true;
-  scene.add(left);
+  const left = MeshBuilder.CreateBox('sLeft', { width: wallT, height: wallH, depth: shelterD }, scene);
+  left.material = wallMat; left.position = new Vector3(cx - shelterW / 2 + wallT / 2, wallH / 2, cz);
 
   const rightLen = shelterD * rnd(0.4, 0.6);
-  const right = new THREE.Mesh(new THREE.BoxGeometry(wallT, wallH, rightLen), wallMat);
-  right.position.set(cx + shelterW / 2 - wallT / 2, wallH / 2, cz - shelterD / 2 + rightLen / 2);
-  right.castShadow = true; right.receiveShadow = true;
-  scene.add(right);
+  const right = MeshBuilder.CreateBox('sRight', { width: wallT, height: wallH, depth: rightLen }, scene);
+  right.material = wallMat; right.position = new Vector3(cx + shelterW / 2 - wallT / 2, wallH / 2, cz - shelterD / 2 + rightLen / 2);
 
-  // Register wall box colliders
   menuBoxColliders.push(
     { xMin: cx - shelterW / 2, xMax: cx + shelterW / 2, zMin: cz - shelterD / 2 - wallT / 2, zMax: cz - shelterD / 2 + wallT / 2 },
     { xMin: cx - shelterW / 2, xMax: cx - shelterW / 2 + wallT, zMin: cz - shelterD / 2, zMax: cz + shelterD / 2 },
     { xMin: cx + shelterW / 2 - wallT, xMax: cx + shelterW / 2, zMin: cz - shelterD / 2, zMax: cz - shelterD / 2 + rightLen },
   );
 
-  // Gable roof
+  const pad = 8;
+  menuBoxColliders.push(
+    { xMin: cx - pad, xMax: cx + pad, zMin: cz - shelterD / 2 - pad, zMax: cz - shelterD / 2 - wallT / 2 },
+    { xMin: cx - shelterW / 2 - pad, xMax: cx - shelterW / 2, zMin: cz - pad, zMax: cz + pad },
+    { xMin: cx + shelterW / 2, xMax: cx + shelterW / 2 + pad, zMin: cz - pad, zMax: cz + shelterD / 2 },
+  );
+
+  // Gable roof — triangular prism custom mesh
   const oh = 0.6, span = shelterW + oh * 2, len = shelterD + oh * 2;
-  const shape = new THREE.Shape();
-  shape.moveTo(-span / 2, 0); shape.lineTo(0, 1.6); shape.lineTo(span / 2, 0); shape.closePath();
-  const roofGeo = new THREE.ExtrudeGeometry(shape, { depth: len, bevelEnabled: false });
-  roofGeo.translate(0, 0, -len / 2);
-  const roof = new THREE.Mesh(roofGeo, roofMat);
-  roof.position.set(cx, wallH, cz);
-  roof.rotation.y = Math.PI / 2;
-  roof.castShadow = true; roof.receiveShadow = true;
-  scene.add(roof);
+  const ridgeH = 1.6;
+  const halfSpan = span / 2, halfLen = len / 2;
+  const roofMesh = new Mesh('sRoof', scene);
+  const positions = [
+    -halfSpan, 0, -halfLen,  halfSpan, 0, -halfLen,  0, ridgeH, -halfLen,
+    -halfSpan, 0, halfLen,  0, ridgeH, halfLen,  halfSpan, 0, halfLen,
+    -halfSpan, 0, -halfLen,  0, ridgeH, -halfLen,  0, ridgeH, halfLen,  -halfSpan, 0, halfLen,
+    halfSpan, 0, -halfLen,  halfSpan, 0, halfLen,  0, ridgeH, halfLen,  0, ridgeH, -halfLen,
+    -halfSpan, 0, -halfLen,  -halfSpan, 0, halfLen,  halfSpan, 0, halfLen,  halfSpan, 0, -halfLen,
+  ];
+  const indices = [0,1,2, 3,4,5, 6,7,8,6,8,9, 10,11,12,10,12,13, 14,15,16,14,16,17];
+  const vd = new VertexData();
+  vd.positions = positions; vd.indices = indices;
+  VertexData.ComputeNormals(positions, indices, vd.normals = []);
+  vd.applyToMesh(roofMesh);
+  roofMesh.material = roofMat;
+  roofMesh.position = new Vector3(cx, wallH, cz);
 
   // Torch near doorway
   const doorEdgeZ = cz - shelterD / 2 + rightLen;
   const torchX = cx + shelterW / 2 - wallT / 2 - 0.15;
   const torchZ = doorEdgeZ - 0.3;
 
-  const stick = new THREE.Mesh(
-    new THREE.BoxGeometry(0.07, 0.45, 0.07),
-    new THREE.MeshStandardMaterial({ color: 0x553311, roughness: 0.9 })
-  );
-  stick.position.set(torchX, 1.65, torchZ);
-  scene.add(stick);
+  const stickMat = new PBRMaterial('sStick', scene);
+  stickMat.albedoColor = Color3.FromHexString('#553311'); stickMat.roughness = 0.9; stickMat.metallic = 0;
+  const stick = MeshBuilder.CreateBox('sTorch', { width: 0.07, height: 0.45, depth: 0.07 }, scene);
+  stick.material = stickMat; stick.position = new Vector3(torchX, 1.65, torchZ);
 
-  const flame = new THREE.Mesh(
-    new THREE.SphereGeometry(0.1, 6, 4),
-    new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff4400, emissiveIntensity: 2 })
-  );
-  flame.position.set(torchX, 1.9, torchZ);
-  scene.add(flame);
+  const flameMat = new PBRMaterial('sFlame', scene);
+  flameMat.albedoColor = Color3.FromHexString('#ff6600');
+  flameMat.emissiveColor = Color3.FromHexString('#ff4400');
+  flameMat.roughness = 1; flameMat.metallic = 0;
+  const flame = MeshBuilder.CreateSphere('sFlame', { diameter: 0.2, segments: 6 }, scene);
+  flame.material = flameMat; flame.position = new Vector3(torchX, 1.9, torchZ);
 
-  const tl = new THREE.PointLight(0xff8833, 4, 12, 1.5);
-  tl.position.set(torchX + 0.3, 1.9, torchZ + 0.5);
-  scene.add(tl);
+  const tl = new PointLight('sTorch', new Vector3(torchX + 0.3, 1.9, torchZ + 0.5), scene);
+  tl.diffuse = Color3.FromHexString('#ff8833'); tl.intensity = 4; tl.range = 12;
 
-  // Fill light at doorway
-  const dl = new THREE.PointLight(0xffaa66, 2, 8, 2);
-  dl.position.set(cx + shelterW / 2 + 0.5, 1.2, doorEdgeZ + 1.0);
-  scene.add(dl);
+  const dl = new PointLight('sDoorFill', new Vector3(cx + shelterW / 2 + 0.5, 1.2, doorEdgeZ + 1.0), scene);
+  dl.diffuse = Color3.FromHexString('#ffaa66'); dl.intensity = 2; dl.range = 8;
 
   return {
     cx, cz, shelterW, shelterD, wallH, wallT,
@@ -245,117 +291,99 @@ function updateMenuCharacter(dt) {
   if (!menuCharModel || !menuCharActions.idle) return;
 
   // Camera-relative directions
-  const camFwd = new THREE.Vector3();
-  menuCamera.getWorldDirection(camFwd);
+  const camFwd = camLookAt.subtract(menuCamera.position);
   camFwd.y = 0;
   camFwd.normalize();
-  const camRight = new THREE.Vector3(-camFwd.z, 0, camFwd.x);
+  const camRight = new Vector3(-camFwd.z, 0, camFwd.x);
 
-  const mv = new THREE.Vector3();
-  if (menuKeys['KeyW']) mv.add(camFwd);
-  if (menuKeys['KeyS']) mv.sub(camFwd);
-  if (menuKeys['KeyA']) mv.sub(camRight);
-  if (menuKeys['KeyD']) mv.add(camRight);
+  let mvX = 0, mvZ = 0;
+  if (menuKeys['KeyW']) { mvX += camFwd.x; mvZ += camFwd.z; }
+  if (menuKeys['KeyS']) { mvX -= camFwd.x; mvZ -= camFwd.z; }
+  if (menuKeys['KeyA']) { mvX -= camRight.x; mvZ -= camRight.z; }
+  if (menuKeys['KeyD']) { mvX += camRight.x; mvZ += camRight.z; }
 
-  const moving = mv.lengthSq() > 0;
+  const mvLen = Math.sqrt(mvX * mvX + mvZ * mvZ);
+  const moving = mvLen > 0;
 
   if (moving) {
-    mv.normalize();
-    const targetAngle = Math.atan2(mv.x, mv.z);
+    mvX /= mvLen; mvZ /= mvLen;
+    const targetAngle = Math.atan2(mvX, mvZ);
 
-    // Smooth rotation
     let diff = targetAngle - menuCharFacing;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
     menuCharFacing += diff * Math.min(1, dt * 12);
 
     const speed = MENU_CHAR_SPEED * dt;
-    const nx = menuCharPos.x + mv.x * speed;
-    const nz = menuCharPos.z + mv.z * speed;
+    const nx = menuCharPos.x + mvX * speed;
+    const nz = menuCharPos.z + mvZ * speed;
 
-    // Per-axis collision + camera boundary
     if (!collidesMenu(nx, menuCharPos.z, MENU_CHAR_R) && isInCameraView(nx, menuCharPos.z)) menuCharPos.x = nx;
     if (!collidesMenu(menuCharPos.x, nz, MENU_CHAR_R) && isInCameraView(menuCharPos.x, nz)) menuCharPos.z = nz;
   }
 
-  // Animation crossfade
   if (moving && menuCharCurrentAction !== menuCharActions.walk) {
     crossfadeMenu(menuCharCurrentAction, menuCharActions.walk);
   } else if (!moving && menuCharCurrentAction !== menuCharActions.idle) {
     crossfadeMenu(menuCharCurrentAction, menuCharActions.idle);
   }
 
-  // Update model position and facing
-  menuCharModel.position.set(menuCharPos.x, 0, menuCharPos.z);
-  menuCharModel.rotation.y = menuCharFacing + menuCharFacingOffset;
+  menuCharModel.position = new Vector3(menuCharPos.x, 0, menuCharPos.z);
+  menuCharModel.rotation = new Vector3(0, menuCharFacing + menuCharFacingOffset, 0);
 }
 
 // ==================== SCENE TEMPLATES ====================
 
 function templateShelterNight(scene) {
-  scene.background = new THREE.Color(0x060610);
-  scene.fog = new THREE.FogExp2(0x060610, 0.03);
+  scene.clearColor = new Color4(0.024, 0.024, 0.063, 1);
+  scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.03;
+  scene.fogColor = new Color3(0.024, 0.024, 0.063);
+  scene.ambientColor = new Color3(0.03, 0.03, 0.06);
 
-  scene.add(new THREE.AmbientLight(0x1a1a30, 0.5));
-  scene.add(new THREE.HemisphereLight(0x1a2244, 0x111108, 0.3));
-  const moon = new THREE.DirectionalLight(0x8899cc, 0.3);
-  moon.position.set(-5, 10, 5);
-  setupShadows(moon);
-  scene.add(moon); scene.add(moon.target);
+  new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.08;
+  const moon = new DirectionalLight('moon', new Vector3(5, -10, -5), scene);
+  moon.diffuse = new Color3(0.533, 0.6, 0.8); moon.intensity = 0.1;
+  setupShadows(moon, scene);
 
   addGround(scene);
   const s = buildShelter(scene);
 
   // Interior floor
-  const floorGeo = new THREE.PlaneGeometry(s.shelterW - s.wallT * 2, s.shelterD - s.wallT);
-  const floorMesh = new THREE.Mesh(floorGeo, new THREE.MeshStandardMaterial({
-    map: loadTex('./assets/textures/stone_wall.jpg', 2, 2), roughness: 0.85,
-  }));
-  floorMesh.rotation.x = -Math.PI / 2;
-  floorMesh.position.set(s.cx, 0.01, s.cz + s.wallT / 2);
-  floorMesh.receiveShadow = true;
-  scene.add(floorMesh);
+  const floorMesh = MeshBuilder.CreateGround('sFloor', { width: s.shelterW - s.wallT * 2, height: s.shelterD - s.wallT }, scene);
+  const floorMat = new PBRMaterial('sFloorMat', scene);
+  floorMat.albedoTexture = loadTex('./assets/textures/stone_wall.jpg', 2, 2, scene);
+  floorMat.roughness = 0.85; floorMat.metallic = 0;
+  floorMesh.material = floorMat;
+  floorMesh.position = new Vector3(s.cx, 0.01, s.cz + s.wallT / 2);
+  floorMesh.receiveShadows = true;
 
-  // Extra interior light — warm fill bouncing off walls
-  const interiorFill = new THREE.PointLight(0xffaa66, 3, 10, 1.5);
-  interiorFill.position.set(s.cx, 2.0, s.cz);
-  scene.add(interiorFill);
+  const interiorFill = new PointLight('sFill', new Vector3(s.cx, 2.0, s.cz), scene);
+  interiorFill.diffuse = Color3.FromHexString('#ffaa66'); interiorFill.intensity = 0.8; interiorFill.range = 8;
 
-  // Back wall light — prevents completely black back wall
-  const backWallLight = new THREE.PointLight(0xff9944, 2, 8, 2);
-  backWallLight.position.set(s.cx, 1.5, s.cz - s.shelterD / 2 + s.wallT + 0.5);
-  scene.add(backWallLight);
+  const backWallLight = new PointLight('sBack', new Vector3(s.cx, 1.5, s.cz - s.shelterD / 2 + s.wallT + 0.5), scene);
+  backWallLight.diffuse = Color3.FromHexString('#ff9944'); backWallLight.intensity = 0.5; backWallLight.range = 6;
 
-  // Soldier inside near torch, facing slightly toward camera
   const charX = s.torchX - rnd(0.4, 0.8);
   const charZ = s.torchZ + rnd(0.1, 0.4);
-
-  // Camera inside shelter, near left-back corner, looking toward soldier/torch
   const camX = s.cx - s.shelterW / 2 + s.wallT + rnd(0.6, 1.2);
   const camZ = s.cz - s.shelterD / 2 + s.wallT + rnd(0.5, 1.0);
   const cam = { x: camX, y: 1.5, z: camZ };
-  const look = new THREE.Vector3(charX, 1.0, charZ);
+  const look = new Vector3(charX, 1.0, charZ);
 
-  // Some trees visible outside through the doorway
   for (let i = 0; i < rndInt(2, 4); i++) {
-    const tx = s.cx + s.shelterW / 2 + rnd(2, 6);
-    const tz = s.cz + rnd(-3, 3);
-    scene.add(createTree(tx, tz, rnd(1.8, 2.8)));
+    createTree(s.cx + s.shelterW / 2 + rnd(2, 6), s.cz + rnd(-3, 3), rnd(1.8, 2.8), scene);
   }
   for (let i = 0; i < rndInt(1, 3); i++) {
-    const rx = s.cx + s.shelterW / 2 + rnd(1, 4);
-    const rz = s.cz + rnd(-2, 2);
-    scene.add(createRock(rx, rz, rnd(0.15, 0.4)));
+    createRock(s.cx + s.shelterW / 2 + rnd(1, 4), s.cz + rnd(-2, 2), rnd(0.15, 0.4), scene);
   }
 
-  // Soldier faces slightly toward camera (away from wall)
   const faceRot = Math.atan2(camX - charX, camZ - charZ) + Math.PI + rnd(-0.3, 0.3);
 
   return {
     baseCam: cam, lookAt: look,
     character: {
       url: './assets/models/Soldier.glb', anim: /idle/i,
-      pos: [charX, 0, charZ], rot: faceRot, scale: 0.6,
+      pos: [charX, 0, charZ], rot: faceRot, scale: CFG.SOLDIER_H,
     },
   };
 }
@@ -363,45 +391,48 @@ function templateShelterNight(scene) {
 function templateLakeside(scene) {
   const isDay = Math.random() < 0.5;
   if (isDay) {
-    scene.background = new THREE.Color(0x6688aa);
-    scene.fog = new THREE.FogExp2(0x6688aa, 0.03);
-    scene.add(new THREE.AmbientLight(0x889999, 0.6));
-    scene.add(new THREE.HemisphereLight(0x88aacc, 0x445522, 0.5));
-    const sun = new THREE.DirectionalLight(0xffeedd, 0.9);
-    sun.position.set(4, 8, 5);
-    setupShadows(sun); scene.add(sun); scene.add(sun.target);
+    scene.clearColor = new Color4(0.4, 0.533, 0.667, 1);
+    scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.03;
+    scene.fogColor = new Color3(0.4, 0.533, 0.667);
+    scene.ambientColor = new Color3(0.3, 0.3, 0.3);
+    new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.5;
+    const sun = new DirectionalLight('sun', new Vector3(-4, -8, -5), scene);
+    sun.diffuse = Color3.FromHexString('#ffeedd'); sun.intensity = 0.9;
+    setupShadows(sun, scene);
   } else {
-    scene.background = new THREE.Color(0x332244);
-    scene.fog = new THREE.FogExp2(0x332244, 0.035);
-    scene.add(new THREE.AmbientLight(0x443355, 0.5));
-    scene.add(new THREE.HemisphereLight(0x665544, 0x222211, 0.4));
-    const sun = new THREE.DirectionalLight(0xffaa66, 0.8);
-    sun.position.set(-4, 4, 6);
-    setupShadows(sun); scene.add(sun); scene.add(sun.target);
+    scene.clearColor = new Color4(0.2, 0.133, 0.267, 1);
+    scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.035;
+    scene.fogColor = new Color3(0.2, 0.133, 0.267);
+    scene.ambientColor = new Color3(0.05, 0.05, 0.08);
+    new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.12;
+    const sun = new DirectionalLight('sun', new Vector3(4, -4, -6), scene);
+    sun.diffuse = Color3.FromHexString('#ffaa66'); sun.intensity = 0.25;
+    setupShadows(sun, scene);
   }
 
   addGround(scene);
 
-  // Water plane (or ice in snow mode)
-  const waterMat = menuSnow
-    ? new THREE.MeshStandardMaterial({ color: 0xb8d4e3, roughness: 0.15, metalness: 0.1 })
-    : new THREE.MeshStandardMaterial({ color: 0x1a3355, transparent: true, opacity: 0.7, roughness: 0.2, metalness: 0.1 });
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(30, 20), waterMat);
-  water.rotation.x = -Math.PI / 2;
-  water.position.set(0, -0.08, -6);
-  scene.add(water);
+  const waterMat = new PBRMaterial('mWater', scene);
+  if (menuSnow) {
+    waterMat.albedoColor = new Color3(0.722, 0.831, 0.890); waterMat.roughness = 0.15;
+  } else {
+    waterMat.albedoColor = new Color3(0.102, 0.2, 0.333); waterMat.alpha = 0.7; waterMat.roughness = 0.2;
+  }
+  waterMat.metallic = 0.1;
+  const water = MeshBuilder.CreateGround('mWater', { width: 30, height: 20 }, scene);
+  water.material = waterMat; water.position = new Vector3(0, -0.08, -6);
 
   const cam = { x: 4, y: 1.5, z: 5 };
-  const look = new THREE.Vector3(0, 0.5, -2);
+  const look = new Vector3(0, 0.5, -2);
   const charX = rnd(-1, 1), charZ = rnd(-2.5, -1.5);
 
   for (let i = 0; i < rndInt(2, 4); i++) {
     const p = rndAvoid(-6, 4, 0, 5, cam.x, cam.z, charX, charZ, 2);
-    scene.add(createTree(p.x, p.z, rnd(1.8, 2.8)));
+    createTree(p.x, p.z, rnd(1.8, 2.8), scene);
   }
   for (let i = 0; i < rndInt(1, 3); i++) {
     const p = rndAvoid(-4, 3, -2, 1, cam.x, cam.z, charX, charZ, 1.5);
-    scene.add(createRock(p.x, p.z, rnd(0.2, 0.5)));
+    createRock(p.x, p.z, rnd(0.2, 0.5), scene);
   }
 
   const useFox = Math.random() < 0.4;
@@ -410,81 +441,80 @@ function templateLakeside(scene) {
     character: {
       url: useFox ? './assets/models/Fox.glb' : './assets/models/Soldier.glb',
       anim: useFox ? /survey/i : /idle/i,
-      pos: [charX, 0, charZ],
-      rot: Math.PI + rnd(-0.3, 0.3),
-      scale: useFox ? 1.6 : 0.6,
+      pos: [charX, 0, charZ], rot: Math.PI + rnd(-0.3, 0.3),
+      scale: useFox ? CFG.FOX_H : CFG.SOLDIER_H,
     },
   };
 }
 
 function templateForestFox(scene) {
-  scene.background = new THREE.Color(0x1a2a1a);
-  scene.fog = new THREE.FogExp2(0x1a2a1a, 0.05);
+  scene.clearColor = new Color4(0.102, 0.165, 0.102, 1);
+  scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.05;
+  scene.fogColor = new Color3(0.102, 0.165, 0.102);
+  scene.ambientColor = new Color3(0.15, 0.2, 0.15);
 
-  scene.add(new THREE.AmbientLight(0x446644, 0.6));
-  scene.add(new THREE.HemisphereLight(0x88aacc, 0x334422, 0.5));
-  const sun = new THREE.DirectionalLight(0xffeedd, 0.8);
-  sun.position.set(3, 8, 4);
-  setupShadows(sun); scene.add(sun); scene.add(sun.target);
+  new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.5;
+  const sun = new DirectionalLight('sun', new Vector3(-3, -8, -4), scene);
+  sun.diffuse = Color3.FromHexString('#ffeedd'); sun.intensity = 0.8;
+  setupShadows(sun, scene);
 
   addGround(scene);
 
   const cam = { x: 5, y: 1.5, z: 5 };
-  const look = new THREE.Vector3(0, 0.3, 0);
+  const look = new Vector3(0, 0.3, 0);
   const charX = rnd(-0.5, 0.5), charZ = rnd(-0.5, 0.5);
 
-  // Ring of trees around a clearing
   const treeCount = rndInt(6, 9);
   for (let i = 0; i < treeCount; i++) {
     const angle = (i / treeCount) * Math.PI * 2 + rnd(-0.3, 0.3);
     const dist = rnd(4, 7);
     const tx = Math.cos(angle) * dist, tz = Math.sin(angle) * dist;
     if (!isOnPath(tx, tz, cam.x, cam.z, charX, charZ, 2.5)) {
-      scene.add(createTree(tx, tz, rnd(1.8, 3.0)));
+      createTree(tx, tz, rnd(1.8, 3.0), scene);
     }
   }
   for (let i = 0; i < rndInt(2, 4); i++) {
     const p = rndAvoid(-3, 3, -3, 3, cam.x, cam.z, charX, charZ, 2);
-    scene.add(createRock(p.x, p.z, rnd(0.15, 0.4)));
+    createRock(p.x, p.z, rnd(0.15, 0.4), scene);
   }
 
   return {
     baseCam: cam, lookAt: look,
     character: {
       url: './assets/models/Fox.glb', anim: /survey/i,
-      pos: [charX, 0, charZ], rot: rnd(0, Math.PI * 2), scale: 1.6,
+      pos: [charX, 0, charZ], rot: rnd(0, Math.PI * 2), scale: CFG.FOX_H,
     },
   };
 }
 
 function templateRockyDay(scene) {
-  scene.background = new THREE.Color(0x778899);
-  scene.fog = new THREE.FogExp2(0x778899, 0.025);
+  scene.clearColor = new Color4(0.467, 0.533, 0.6, 1);
+  scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.025;
+  scene.fogColor = new Color3(0.467, 0.533, 0.6);
+  scene.ambientColor = new Color3(0.3, 0.3, 0.35);
 
-  scene.add(new THREE.AmbientLight(0x8899aa, 0.7));
-  scene.add(new THREE.HemisphereLight(0xaabbdd, 0x445533, 0.5));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.0);
-  sun.position.set(5, 10, 3);
-  setupShadows(sun); scene.add(sun); scene.add(sun.target);
+  new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.5;
+  const sun = new DirectionalLight('sun', new Vector3(-5, -10, -3), scene);
+  sun.diffuse = new Color3(1, 1, 1); sun.intensity = 1.0;
+  setupShadows(sun, scene);
 
   addGround(scene);
 
   const cam = { x: 5, y: 1.8, z: 6 };
-  const look = new THREE.Vector3(0, 0.8, 0);
+  const look = new Vector3(0, 0.8, 0);
   const charX = rnd(0.5, 1.5), charZ = rnd(-0.5, 0.5);
 
-  // Cluster of large rocks
   for (let i = 0; i < rndInt(4, 7); i++) {
     const angle = rnd(0, Math.PI * 2);
     const dist = rnd(0.5, 2.5);
     const rx = Math.cos(angle) * dist, rz = Math.sin(angle) * dist;
     if (!isOnPath(rx, rz, cam.x, cam.z, charX, charZ, 1.5)) {
-      scene.add(createRock(rx, rz, rnd(0.5, 1.5)));
+      createRock(rx, rz, rnd(0.5, 1.5), scene);
     }
   }
   for (let i = 0; i < rndInt(2, 4); i++) {
     const p = rndAvoid(-8, -2, -6, 3, cam.x, cam.z, charX, charZ, 2.5);
-    scene.add(createTree(p.x, p.z, rnd(2.0, 3.0)));
+    createTree(p.x, p.z, rnd(2.0, 3.0), scene);
   }
 
   const useFox = Math.random() < 0.3;
@@ -493,205 +523,171 @@ function templateRockyDay(scene) {
     character: {
       url: useFox ? './assets/models/Fox.glb' : './assets/models/Soldier.glb',
       anim: useFox ? /survey/i : /idle/i,
-      pos: [charX, 0, charZ],
-      rot: Math.PI * rnd(0.3, 0.7),
-      scale: useFox ? 1.6 : 0.6,
+      pos: [charX, 0, charZ], rot: Math.PI * rnd(0.3, 0.7),
+      scale: useFox ? CFG.FOX_H : CFG.SOLDIER_H,
     },
   };
 }
 
 // --- Campfire animation state ---
-let campfireFlames = [];   // { mesh, baseY, phase, speed, baseScale }
-let campfireEmbers = [];   // { mesh, vel, life, maxLife }
+let campfireFlames = [];
+let campfireEmbers = [];
 let campfireLight = null;
 let campfireLightBase = 0;
-
-function createFireTexture() {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const ctx = c.getContext('2d');
-  const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-  grad.addColorStop(0, 'rgba(255,220,100,1)');
-  grad.addColorStop(0.3, 'rgba(255,140,20,0.8)');
-  grad.addColorStop(0.6, 'rgba(255,60,0,0.4)');
-  grad.addColorStop(1, 'rgba(100,10,0,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 64, 64);
-  const tex = new THREE.CanvasTexture(c);
-  return tex;
-}
-
-function createEmberTexture() {
-  const c = document.createElement('canvas');
-  c.width = 16; c.height = 16;
-  const ctx = c.getContext('2d');
-  const grad = ctx.createRadialGradient(8, 8, 0, 8, 8, 8);
-  grad.addColorStop(0, 'rgba(255,200,50,1)');
-  grad.addColorStop(0.5, 'rgba(255,100,0,0.6)');
-  grad.addColorStop(1, 'rgba(255,50,0,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 16, 16);
-  return new THREE.CanvasTexture(c);
-}
 
 function updateCampfire(dt) {
   if (!campfireFlames.length) return;
   const t = performance.now() * 0.001;
 
-  // Animate flame sprites — flicker, sway, pulse
   for (const f of campfireFlames) {
     const wave = Math.sin(t * f.speed + f.phase);
     const wave2 = Math.cos(t * f.speed * 1.3 + f.phase * 0.7);
     f.mesh.position.y = f.baseY + wave * 0.04;
     f.mesh.position.x = f.baseX + wave2 * 0.03;
     const sc = f.baseScale * (0.85 + 0.3 * Math.sin(t * f.speed * 0.8 + f.phase));
-    f.mesh.scale.set(sc, sc * (1.0 + wave * 0.2), sc);
-    f.mesh.material.opacity = 0.5 + 0.4 * Math.sin(t * f.speed * 1.2 + f.phase * 2);
+    f.mesh.scaling = new Vector3(sc, sc * (1.0 + wave * 0.2), sc);
+    f.mesh.material.alpha = 0.5 + 0.4 * Math.sin(t * f.speed * 1.2 + f.phase * 2);
   }
 
-  // Animate embers — float upward, fade
   for (const e of campfireEmbers) {
     e.life -= dt;
     if (e.life <= 0) {
-      // Reset ember
-      e.mesh.position.set(rnd(-0.15, 0.15), rnd(0.2, 0.4), rnd(-0.15, 0.15));
-      e.vel.set(rnd(-0.2, 0.2), rnd(0.8, 1.8), rnd(-0.2, 0.2));
+      e.mesh.position = new Vector3(rnd(-0.15, 0.15), rnd(0.2, 0.4), rnd(-0.15, 0.15));
+      e.vx = rnd(-0.2, 0.2); e.vy = rnd(0.8, 1.8); e.vz = rnd(-0.2, 0.2);
       e.life = e.maxLife = rnd(1.0, 2.5);
     }
-    e.mesh.position.x += e.vel.x * dt;
-    e.mesh.position.y += e.vel.y * dt;
-    e.mesh.position.z += e.vel.z * dt;
-    e.vel.x += rnd(-2, 2) * dt; // wind wobble
+    e.mesh.position.x += e.vx * dt;
+    e.mesh.position.y += e.vy * dt;
+    e.mesh.position.z += e.vz * dt;
+    e.vx += rnd(-2, 2) * dt;
     const frac = e.life / e.maxLife;
-    e.mesh.material.opacity = frac * 0.9;
+    e.mesh.material.alpha = frac * 0.9;
     const sc = 0.04 + 0.06 * frac;
-    e.mesh.scale.set(sc, sc, sc);
+    e.mesh.scaling = new Vector3(sc, sc, sc);
   }
 
-  // Flicker the light
   if (campfireLight) {
     campfireLight.intensity = campfireLightBase + Math.sin(t * 8) * 0.5 + Math.sin(t * 13) * 0.3 + Math.sin(t * 21) * 0.15;
   }
 }
 
 function templateCampfire(scene) {
-  scene.background = new THREE.Color(0x050508);
-  scene.fog = new THREE.FogExp2(0x050508, 0.06);
-
-  scene.add(new THREE.AmbientLight(0x0a0a15, 0.3));
+  scene.clearColor = new Color4(0.02, 0.02, 0.031, 1);
+  scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.06;
+  scene.fogColor = new Color3(0.02, 0.02, 0.031);
+  scene.ambientColor = new Color3(0.04, 0.04, 0.08);
 
   addGround(scene);
 
   const fx = 0, fz = 0;
 
-  // --- Rock ring (10 rocks, varied sizes, tighter circle) ---
+  // Rock ring
   for (let i = 0; i < 10; i++) {
     const a = (i / 10) * Math.PI * 2 + rnd(-0.15, 0.15);
     const rd = rnd(0.42, 0.52);
-    scene.add(createRock(fx + Math.cos(a) * rd, fz + Math.sin(a) * rd, rnd(0.08, 0.14)));
+    createRock(fx + Math.cos(a) * rd, fz + Math.sin(a) * rd, rnd(0.08, 0.14), scene);
   }
   menuColliders.push({ x: fx, z: fz, r: 0.7 });
 
-  // --- Crossed logs (3 logs with bark texture) ---
-  const logMat = new THREE.MeshStandardMaterial({
-    map: loadTex('./assets/textures/bark.jpg', 1, 1), roughness: 0.9,
-    emissive: 0x331100, emissiveIntensity: 0.3,
-  });
+  // Crossed logs
+  const logMat = new PBRMaterial('mLog', scene);
+  logMat.albedoTexture = loadTex('./assets/textures/bark.jpg', 1, 1, scene);
+  logMat.roughness = 0.9; logMat.metallic = 0;
+  logMat.emissiveColor = new Color3(0.2, 0.067, 0);
   for (let i = 0; i < 3; i++) {
     const a = (i / 3) * Math.PI + rnd(-0.2, 0.2);
-    const log = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.55, 5), logMat);
-    log.position.set(fx, 0.06, fz);
-    log.rotation.z = rnd(0.15, 0.35);
-    log.rotation.y = a;
-    log.castShadow = true;
-    scene.add(log);
+    const log = MeshBuilder.CreateCylinder('log', { diameterTop: 0.08, diameterBottom: 0.1, height: 0.55, tessellation: 5 }, scene);
+    log.material = logMat;
+    log.position = new Vector3(fx, 0.06, fz);
+    log.rotation = new Vector3(0, a, rnd(0.15, 0.35));
   }
 
-  // --- Charred base (dark disc under fire) ---
-  const charMat = new THREE.MeshStandardMaterial({
-    color: 0x111111, emissive: 0x220800, emissiveIntensity: 0.5, roughness: 1,
-  });
-  const charBase = new THREE.Mesh(new THREE.CircleGeometry(0.3, 8), charMat);
-  charBase.rotation.x = -Math.PI / 2;
-  charBase.position.set(fx, 0.005, fz);
-  scene.add(charBase);
+  // Charred base
+  const charMat = new PBRMaterial('mChar', scene);
+  charMat.albedoColor = new Color3(0.067, 0.067, 0.067);
+  charMat.emissiveColor = new Color3(0.133, 0.031, 0);
+  charMat.roughness = 1; charMat.metallic = 0;
+  const charBase = MeshBuilder.CreateDisc('charBase', { radius: 0.3, tessellation: 8 }, scene);
+  charBase.material = charMat;
+  charBase.rotation = new Vector3(Math.PI / 2, 0, 0);
+  charBase.position = new Vector3(fx, 0.005, fz);
 
-  // --- Fire sprites (layered, animated) ---
-  const fireTex = createFireTexture();
+  // Fire — use billboarded planes instead of sprites
   campfireFlames = [];
   const flameConfigs = [
-    { y: 0.28, scale: 0.4, speed: 4.5 },   // core
-    { y: 0.38, scale: 0.32, speed: 5.5 },   // mid
-    { y: 0.48, scale: 0.22, speed: 6.5 },   // tip
-    { y: 0.22, scale: 0.35, speed: 3.8 },   // side flame 1
-    { y: 0.32, scale: 0.28, speed: 5.0 },   // side flame 2
+    { y: 0.28, scale: 0.4, speed: 4.5 },
+    { y: 0.38, scale: 0.32, speed: 5.5 },
+    { y: 0.48, scale: 0.22, speed: 6.5 },
+    { y: 0.22, scale: 0.35, speed: 3.8 },
+    { y: 0.32, scale: 0.28, speed: 5.0 },
   ];
+  const pTex = getSoftParticleTex(scene);
   for (const fc of flameConfigs) {
-    const mat = new THREE.SpriteMaterial({
-      map: fireTex, blending: THREE.AdditiveBlending,
-      transparent: true, opacity: 0.7, depthWrite: false,
-      color: new THREE.Color().setHSL(rnd(0.04, 0.1), 1, 0.6),
-    });
-    const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(fc.scale, fc.scale * 1.4, fc.scale);
-    sprite.position.set(fx + rnd(-0.05, 0.05), fc.y, fz + rnd(-0.05, 0.05));
-    scene.add(sprite);
+    const mat = new StandardMaterial('flameMat', scene);
+    mat.emissiveColor = new Color3(1.0, rnd(0.3, 0.6), 0);
+    mat.disableLighting = true;
+    mat.opacityTexture = pTex;
+    mat.alphaMode = 1; // ALPHA_ADD
+    const plane = MeshBuilder.CreatePlane('flame', { size: fc.scale }, scene);
+    plane.material = mat;
+    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    plane.position = new Vector3(fx + rnd(-0.05, 0.05), fc.y, fz + rnd(-0.05, 0.05));
+    plane.isPickable = false;
     campfireFlames.push({
-      mesh: sprite, baseY: fc.y, baseX: sprite.position.x,
+      mesh: plane, baseY: fc.y, baseX: plane.position.x,
       phase: rnd(0, Math.PI * 2), speed: fc.speed, baseScale: fc.scale,
     });
   }
 
-  // --- Glowing ember core (small bright mesh in center) ---
-  const coreMat = new THREE.MeshStandardMaterial({
-    color: 0xff4400, emissive: 0xff6600, emissiveIntensity: 4, roughness: 1,
-  });
-  const core = new THREE.Mesh(new THREE.DodecahedronGeometry(0.08, 0), coreMat);
-  core.position.set(fx, 0.12, fz);
-  scene.add(core);
+  // Glowing ember core
+  const coreMat = new PBRMaterial('mCore', scene);
+  coreMat.albedoColor = Color3.FromHexString('#ff4400');
+  coreMat.emissiveColor = Color3.FromHexString('#ff6600');
+  coreMat.roughness = 1; coreMat.metallic = 0;
+  const core = MeshBuilder.CreateIcoSphere('core', { radius: 0.08, subdivisions: 0 }, scene);
+  core.material = coreMat; core.position = new Vector3(fx, 0.12, fz);
 
-  // --- Floating ember particles ---
-  const emberTex = createEmberTexture();
+  // Floating ember particles
   campfireEmbers = [];
   for (let i = 0; i < 12; i++) {
-    const mat = new THREE.SpriteMaterial({
-      map: emberTex, blending: THREE.AdditiveBlending,
-      transparent: true, opacity: 0.8, depthWrite: false,
-    });
-    const sprite = new THREE.Sprite(mat);
+    const mat = new StandardMaterial('emberMat', scene);
+    mat.emissiveColor = new Color3(1.0, rnd(0.4, 0.8), 0);
+    mat.disableLighting = true;
+    mat.opacityTexture = pTex;
+    mat.alphaMode = 1; // ALPHA_ADD
     const sc = rnd(0.03, 0.08);
-    sprite.scale.set(sc, sc, sc);
-    sprite.position.set(fx + rnd(-0.15, 0.15), rnd(0.2, 1.0), fz + rnd(-0.15, 0.15));
-    scene.add(sprite);
+    const plane = MeshBuilder.CreatePlane('ember', { size: sc }, scene);
+    plane.material = mat;
+    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    plane.position = new Vector3(fx + rnd(-0.15, 0.15), rnd(0.2, 1.0), fz + rnd(-0.15, 0.15));
+    plane.isPickable = false;
     campfireEmbers.push({
-      mesh: sprite,
-      vel: new THREE.Vector3(rnd(-0.2, 0.2), rnd(0.8, 1.8), rnd(-0.2, 0.2)),
-      life: rnd(0.3, 2.5),
-      maxLife: rnd(1.0, 2.5),
+      mesh: plane,
+      vx: rnd(-0.2, 0.2), vy: rnd(0.8, 1.8), vz: rnd(-0.2, 0.2),
+      life: rnd(0.3, 2.5), maxLife: rnd(1.0, 2.5),
     });
   }
 
-  // --- Warm ground glow (subtle disc below fire) ---
-  const glowMat = new THREE.MeshStandardMaterial({
-    color: 0x000000, emissive: 0xff6622, emissiveIntensity: 0.6,
-    transparent: true, opacity: 0.3, roughness: 1,
-  });
-  const glowDisc = new THREE.Mesh(new THREE.CircleGeometry(1.5, 16), glowMat);
-  glowDisc.rotation.x = -Math.PI / 2;
-  glowDisc.position.set(fx, 0.01, fz);
-  scene.add(glowDisc);
+  // Warm ground glow
+  const glowMat = new PBRMaterial('mGlow', scene);
+  glowMat.albedoColor = new Color3(0, 0, 0);
+  glowMat.emissiveColor = Color3.FromHexString('#ff6622');
+  glowMat.alpha = 0.3; glowMat.roughness = 1; glowMat.metallic = 0;
+  const glowDisc = MeshBuilder.CreateDisc('glow', { radius: 1.5, tessellation: 16 }, scene);
+  glowDisc.material = glowMat;
+  glowDisc.rotation = new Vector3(Math.PI / 2, 0, 0);
+  glowDisc.position = new Vector3(fx, 0.01, fz);
 
-  // --- Lights ---
-  campfireLightBase = 5;
-  campfireLight = new THREE.PointLight(0xff8833, campfireLightBase, 14, 1.5);
-  campfireLight.position.set(fx, 0.6, fz);
-  scene.add(campfireLight);
-  // Secondary fill (warm uplight for character illumination)
-  const fillLight = new THREE.PointLight(0xff6622, 2, 8, 2);
-  fillLight.position.set(fx, 0.15, fz);
-  scene.add(fillLight);
+  // Lights
+  campfireLightBase = 1.5;
+  campfireLight = new PointLight('fireLight', new Vector3(fx, 0.6, fz), scene);
+  campfireLight.diffuse = Color3.FromHexString('#ff8833');
+  campfireLight.intensity = campfireLightBase; campfireLight.range = 10;
 
-  // Place character at a fixed distance from fire, facing it directly
+  const fillLight = new PointLight('fireFill', new Vector3(fx, 0.15, fz), scene);
+  fillLight.diffuse = Color3.FromHexString('#ff6622');
+  fillLight.intensity = 0.5; fillLight.range = 6;
+
   const charAngle = rnd(-0.6, 0.6);
   const charDist = rnd(1.5, 2.0);
   const charX = fx + Math.sin(charAngle) * charDist;
@@ -699,15 +695,15 @@ function templateCampfire(scene) {
   const dirToFire = Math.atan2(fx - charX, fz - charZ);
 
   const cam = { x: 3, y: 1.2, z: 4 };
-  const look = new THREE.Vector3(0, 0.4, 0);
+  const look = new Vector3(0, 0.4, 0);
 
   for (let i = 0; i < rndInt(3, 5); i++) {
     const p = rndAvoid(-6, 4, -7, -2, cam.x, cam.z, charX, charZ, 2);
-    scene.add(createTree(p.x, p.z, rnd(1.8, 2.8)));
+    createTree(p.x, p.z, rnd(1.8, 2.8), scene);
   }
   for (let i = 0; i < rndInt(1, 2); i++) {
     const p = rndAvoid(-6, -2, -2, 3, cam.x, cam.z, charX, charZ, 2);
-    scene.add(createTree(p.x, p.z, rnd(1.6, 2.4)));
+    createTree(p.x, p.z, rnd(1.6, 2.4), scene);
   }
 
   const useFox = Math.random() < 0.3;
@@ -717,9 +713,8 @@ function templateCampfire(scene) {
     character: {
       url: useFox ? './assets/models/Fox.glb' : './assets/models/Soldier.glb',
       anim: useFox ? /survey/i : /idle/i,
-      pos: [charX, 0, charZ],
-      rot: faceRot,
-      scale: useFox ? 1.6 : 0.6,
+      pos: [charX, 0, charZ], rot: faceRot,
+      scale: useFox ? CFG.FOX_H : CFG.SOLDIER_H,
     },
   };
 }
@@ -742,24 +737,18 @@ function onMouseMove(e) {
   mouseY = (e.clientY / window.innerHeight - 0.5) * 2;
 
   if (menuCamera && camBase) {
-    menuCamera.position.set(
+    menuCamera.position = new Vector3(
       camBase.x + mouseX * 0.5,
       camBase.y - mouseY * 0.3,
       camBase.z
     );
-    menuCamera.lookAt(camLookAt);
+    menuCamera.setTarget(camLookAt);
   }
 
   const panel = document.getElementById('menu-panel');
   if (panel) {
     panel.style.transform = `translate(${mouseX * 12}px, ${mouseY * 8}px)`;
   }
-}
-
-function onMenuResize() {
-  if (!menuCamera) return;
-  menuCamera.aspect = window.innerWidth / window.innerHeight;
-  menuCamera.updateProjectionMatrix();
 }
 
 function onMenuKeyDown(e) {
@@ -781,93 +770,125 @@ export function initMenuScene() {
   menuCharActions = {};
   menuCharCurrentAction = null;
   menuKeys = {};
+  campfireFlames = [];
+  campfireEmbers = [];
+  campfireLight = null;
 
-  // Randomize snow for menu (50% chance)
   menuSnow = Math.random() < 0.5;
 
-  initMaterials();
+  const engine = getEngine();
+  menuScene = new Scene(engine);
+  menuScene.useRightHandedSystem = true;
+  // PBR materials need an environment texture to show colors properly (not grey)
+  menuScene.createDefaultEnvironment({ createGround: false, createSkybox: false });
 
-  menuScene = new THREE.Scene();
+  initMaterials(menuScene);
 
-  // Pick a random template (never same as last, persists across reloads)
+  // Pick random template
   let lastIdx = -1;
   try { lastIdx = parseInt(localStorage.getItem('menuLastTemplate') || '-1', 10); } catch (e) {}
   let idx;
-  do {
-    idx = Math.floor(Math.random() * TEMPLATES.length);
-  } while (idx === lastIdx && TEMPLATES.length > 1);
+  do { idx = Math.floor(Math.random() * TEMPLATES.length); } while (idx === lastIdx && TEMPLATES.length > 1);
   try { localStorage.setItem('menuLastTemplate', String(idx)); } catch (e) {}
-  const template = TEMPLATES[idx];
-  const config = template(menuScene);
+
+  const config = TEMPLATES[idx](menuScene);
+
+  // Scale IBL environment intensity based on scene brightness so night scenes stay dark
+  const cc = menuScene.clearColor;
+  const brightness = cc.r * 0.299 + cc.g * 0.587 + cc.b * 0.114;
+  menuScene.environmentIntensity = brightness < 0.25 ? 0.0 : 0.6;
 
   camBase = { x: config.baseCam.x, y: config.baseCam.y, z: config.baseCam.z };
   camLookAt = config.lookAt;
 
-  menuCamera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 120);
-  menuCamera.position.set(camBase.x, camBase.y, camBase.z);
-  menuCamera.lookAt(camLookAt);
+  menuCamera = new FreeCamera('menuCam', new Vector3(camBase.x, camBase.y, camBase.z), menuScene);
+  menuCamera.fov = 50 * Math.PI / 180;
+  menuCamera.minZ = 0.1; menuCamera.maxZ = 120;
+  menuCamera.inputs.clear();
+  menuCamera.setTarget(camLookAt);
+  menuScene.activeCamera = menuCamera;
 
-  // Load character model with WASD control
+  // Load character model
   if (config.character) {
     const ch = config.character;
     const isFox = ch.url.includes('Fox');
     menuCharFacingOffset = isFox ? 0 : Math.PI;
     menuCharFacing = ch.rot - menuCharFacingOffset;
-    menuCharPos.set(ch.pos[0], 0, ch.pos[2]);
+    menuCharPos = { x: ch.pos[0], y: 0, z: ch.pos[2] };
 
-    const loader = new GLTFLoader();
-    loader.load(ch.url, (gltf) => {
+    SceneLoader.ImportMeshAsync('', ch.url, '', menuScene).then(result => {
       if (disposed) return;
-      const model = gltf.scene;
-      const box = new THREE.Box3().setFromObject(model);
-      const size = box.getSize(new THREE.Vector3());
-      model.scale.multiplyScalar(ch.scale / Math.max(size.x, size.y, size.z));
-      model.traverse(c => {
-        if (c.isMesh) {
-          c.castShadow = true;
-          c.receiveShadow = true;
-          if (!isFox) {
-            c.material = c.material.clone();
-            const hue = Math.random();
-            c.material.color.multiply(new THREE.Color().setHSL(hue, 0.4, 0.75));
+      const meshes = result.meshes;
+      const animGroups = result.animationGroups;
+      const rootMesh = meshes[0];
+
+      // Normalize scale
+      rootMesh.scaling = new Vector3(1, 1, 1);
+      rootMesh.computeWorldMatrix(true);
+      for (const m of rootMesh.getChildMeshes()) m.computeWorldMatrix(true);
+      const bounds = rootMesh.getHierarchyBoundingVectors(true);
+      const geoH = bounds.max.y - bounds.min.y;
+      if (geoH > 0) {
+        const s = ch.scale / geoH;
+        rootMesh.scaling = new Vector3(s, s, s);
+      }
+
+      // Tint soldier with random hue
+      if (!isFox) {
+        for (const mesh of rootMesh.getChildMeshes()) {
+          if (mesh.material) {
+            mesh.material = mesh.material.clone(mesh.material.name + '_menu');
+            if (mesh.material.albedoColor) {
+              const hue = Math.random();
+              // Simple HSL-like tint
+              const r = 0.75 + 0.2 * Math.cos(hue * Math.PI * 2);
+              const g = 0.75 + 0.2 * Math.cos(hue * Math.PI * 2 + 2.09);
+              const b = 0.75 + 0.2 * Math.cos(hue * Math.PI * 2 + 4.19);
+              const c = mesh.material.albedoColor;
+              mesh.material.albedoColor = new Color3(c.r * r, c.g * g, c.b * b);
+            }
           }
         }
-      });
-      model.position.set(ch.pos[0], ch.pos[1], ch.pos[2]);
-      model.rotation.y = ch.rot;
-      menuScene.add(model);
+      }
 
-      menuCharModel = model;
-      menuMixer = new THREE.AnimationMixer(model);
-      const clips = gltf.animations;
+      rootMesh.position = new Vector3(ch.pos[0], ch.pos[1], ch.pos[2]);
+      rootMesh.rotation = new Vector3(0, ch.rot, 0);
 
-      const idleClip = clips.find(c => /idle|survey/i.test(c.name)) || clips[0];
-      const walkClip = clips.find(c => /walk/i.test(c.name)) || clips[1] || idleClip;
+      menuCharModel = rootMesh;
+      menuMixer = createAnimMixer(animGroups);
 
-      menuCharActions.idle = menuMixer.clipAction(idleClip);
-      menuCharActions.walk = menuMixer.clipAction(walkClip);
+      const idleGroup = animGroups.find(c => /idle|survey/i.test(c.name)) || animGroups[0];
+      const walkGroup = animGroups.find(c => /walk/i.test(c.name)) || animGroups[1] || idleGroup;
 
-      if (menuCharActions.walk !== menuCharActions.idle) {
+      menuCharActions.idle = menuMixer.clipAction(idleGroup);
+      menuCharActions.walk = menuMixer.clipAction(walkGroup);
+
+      if (menuCharActions.walk && menuCharActions.walk._group) {
         menuCharActions.walk.timeScale = 0.9;
       }
 
+      // Start all groups playing with weight control
+      if (idleGroup) { idleGroup.play(true); idleGroup.setWeightForAllAnimatables(1); }
+      if (walkGroup && walkGroup !== idleGroup) { walkGroup.play(true); walkGroup.setWeightForAllAnimatables(0); }
+
       menuCharActions.idle.play();
       menuCharCurrentAction = menuCharActions.idle;
+    }).catch(err => {
+      console.warn('Menu character load failed:', err);
     });
   }
 
   document.addEventListener('mousemove', onMouseMove);
   document.addEventListener('keydown', onMenuKeyDown);
   document.addEventListener('keyup', onMenuKeyUp);
-  window.addEventListener('resize', onMenuResize);
 }
 
-export function renderMenu(renderer, dt) {
+export function renderMenu(engine, dt) {
   if (!menuScene || !menuCamera) return;
   if (menuMixer && dt) menuMixer.update(dt);
   updateMenuCharacter(dt);
   if (dt) updateCampfire(dt);
-  renderer.render(menuScene, menuCamera);
+  menuScene.render();
 }
 
 export function disposeMenu() {
@@ -875,19 +896,12 @@ export function disposeMenu() {
   document.removeEventListener('mousemove', onMouseMove);
   document.removeEventListener('keydown', onMenuKeyDown);
   document.removeEventListener('keyup', onMenuKeyUp);
-  window.removeEventListener('resize', onMenuResize);
 
   const panel = document.getElementById('menu-panel');
   if (panel) panel.style.transform = '';
 
   if (menuScene) {
-    menuScene.traverse(obj => {
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) {
-        if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());
-        else obj.material.dispose();
-      }
-    });
+    menuScene.dispose();
     menuScene = null;
   }
   menuCamera = null;
