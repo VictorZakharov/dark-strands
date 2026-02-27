@@ -58,7 +58,7 @@ src/
   world/
     grid.js                # 2D collision grid, walkability checks
     generator.js           # Procedural building placement
-    terrainMeshes.js       # Ground plane (displaced mesh) and water plane
+    terrainMeshes.js       # Ground plane (displaced mesh) and Gerstner wave ocean (custom ShaderMaterial)
     walls.js               # Building walls (merged geometry with window holes, triplanar UV) and roofs
     floors.js              # Ground floor slabs, mid-floor pieces, stair steps
     windows.js             # Glass panes (breakable) and wooden window frames

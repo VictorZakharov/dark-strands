@@ -590,6 +590,28 @@
 
 ## 2026-02-26
 
+### Enhance torch visuals
+- **Billboarded glow halos** (`torches.js`): added soft radial-gradient `DynamicTexture` (128px) for a camera-facing halo plane behind each torch flame. Uses additive blending for a warm glow aura.
+- **Teardrop flame shape** (`torches.js`): torch flame spheres scaled to 0.8x1.4x0.8 for a taller, more natural teardrop silhouette.
+- **Flashy embers/sparks** (`torches.js`): overhauled ember `ParticleSystem` — brighter white-hot→orange→red color gradient, wider angular speed (±6 rad/s swirl), velocity damping over lifetime, and size gradient from 0.02→0.05→0.01 for spark-like appearance.
+- **Robust particle management** (`torches.js`): timer-based distance check (every 0.5s) for starting/stopping ember systems within 30 units. Ensures particles don't accumulate on distant torches.
+- **Day/night torch sync** (`daynight.js`): torch halo and flame visibility tied to day/night cycle brightness.
+
+### Full-screen loading sequence
+- **Robust loading screen** (`main.js`, `styles.css`): redesigned loading sequence with full-screen overlay, progress bar, and warm-up rendering phase. Scene renders several frames before hiding the loading screen to prevent flash of unrendered content.
+
+### Gerstner wave ocean shader
+- **Animated ocean** (`terrainMeshes.js` or shader): replaced flat transparent water plane with custom `ShaderMaterial` using Gerstner wave vertex displacement on a 128x128 subdivided mesh with 4 overlapping wave patterns.
+- **Fragment shader effects**: Fresnel reflection, Blinn-Phong sun specular, fake subsurface scattering (SSS), and manual linear fog matching the scene.
+- **Game time sync**: wave animation syncs with game time including fast-forward (Q key).
+- **Y-clamp**: prevents wave peaks from poking through terrain at shoreline edges.
+
+### Fix stuck state on pointer lock failure
+- **Pointer lock resilience** (`main.js`, `controls.js`): async `buildWorld()` could cause the click gesture to expire, making `requestPointerLock()` fail silently — leaving the user stuck on a blank 3D scene with no UI.
+- Set `gameStarted=true` immediately after `buildWorld` so the game loop activates regardless of pointer lock (clicking canvas re-locks later).
+- Export `setGameStarted()` from `controls.js` for `main.js` to call.
+- Wrapped `buildWorld()` in try/catch to restore menu UI on build failure.
+
 ### Torch floor-cull and lighting fixes
 - **Floor-cull keeps embers/flames visible** (`torches.js`): floor-cull now only zeros PointLight intensity for torches on a different floor than the player. `_lit` flag stays true (based on `baseIntensity`) so ember particles and emissive flame meshes remain visually active even when the light is culled. Previously embers stopped and torches looked "dead" on floor transitions.
 - **Robust floor-cull trigger** (`torches.js`): changed condition from `if (isInside)` to `if (isInside || _stablePlayerFloor > 0)` — ensures floor-cull always activates when player is on any upper floor, even if the grid cell check fails near wall edges.
