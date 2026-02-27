@@ -1,7 +1,8 @@
-import { Scene, FreeCamera, HemisphericLight, DirectionalLight, PointLight,
-         MeshBuilder, Mesh, PBRMaterial, StandardMaterial, Texture, DynamicTexture,
-         Color3, Color4, Vector3, VertexData, SceneLoader, ShadowGenerator,
-         TransformNode } from 'babylonjs';
+import { Scene, FreeCamera, HemisphericLight, PointLight,
+         MeshBuilder, PBRMaterial, Texture,
+         Color3, Color4, Vector3, SceneLoader,
+         TransformNode, ParticleHelper, DefaultRenderingPipeline,
+         ImageProcessingConfiguration } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getEngine } from '../core/scene.js';
 import { createAnimMixer } from '../entities/modelLoader.js';
@@ -28,24 +29,6 @@ let menuBoxColliders = [];
 const rnd = (a, b) => a + Math.random() * (b - a);
 const rndInt = (a, b) => Math.floor(rnd(a, b + 1));
 
-// Shared soft-circle texture for fire/ember particles (created once per menu scene)
-let softParticleTex = null;
-function getSoftParticleTex(scene) {
-  if (softParticleTex && !softParticleTex.isDisposed) return softParticleTex;
-  const sz = 64;
-  const dt = new DynamicTexture('softCircle', sz, scene, false);
-  const ctx = dt.getContext();
-  const g = ctx.createRadialGradient(sz / 2, sz / 2, 0, sz / 2, sz / 2, sz / 2);
-  g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, sz, sz);
-  dt.update();
-  dt.hasAlpha = true;
-  softParticleTex = dt;
-  return dt;
-}
 
 function isOnPath(px, pz, ax, az, bx, bz, hw) {
   const dx = bx - ax, dz = bz - az;
@@ -66,7 +49,7 @@ function rndAvoid(xMin, xMax, zMin, zMax, cx, cz, tx, tz, hw) {
 }
 
 // --- Shared materials (created lazily) ---
-let wallMat, groundMat, trunkMat, leafMat, rockMat, roofMat;
+let groundMat, trunkMat, leafMat, rockMat;
 
 function loadTex(path, uScale, vScale, scene) {
   const tex = new Texture(path, scene);
@@ -76,10 +59,6 @@ function loadTex(path, uScale, vScale, scene) {
 }
 
 function initMaterials(scene) {
-  wallMat = new PBRMaterial('mWall', scene);
-  wallMat.albedoTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
-  wallMat.roughness = 0.9; wallMat.metallic = 0;
-
   trunkMat = new PBRMaterial('mTrunk', scene);
   trunkMat.albedoTexture = loadTex('./assets/textures/bark.jpg', 1, 2, scene);
   trunkMat.roughness = 0.95; trunkMat.metallic = 0;
@@ -87,11 +66,6 @@ function initMaterials(scene) {
   rockMat = new PBRMaterial('mRock', scene);
   rockMat.albedoTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
   rockMat.roughness = 0.95; rockMat.metallic = 0;
-
-  roofMat = new PBRMaterial('mRoof', scene);
-  roofMat.albedoColor = Color3.FromHexString('#8B4513');
-  roofMat.roughness = 0.85; roofMat.metallic = 0;
-  roofMat.backFaceCulling = false;
 
   if (menuSnow) {
     groundMat = new PBRMaterial('mGround', scene);
@@ -189,95 +163,6 @@ function addGround(scene, size) {
   g.receiveShadows = true;
 }
 
-function setupShadows(light, scene) {
-  const sg = new ShadowGenerator(1024, light);
-  sg.usePercentageCloserFiltering = true;
-  sg.bias = 0.002;
-  return sg;
-}
-
-// --- Shelter builder ---
-
-function buildShelter(scene) {
-  const wallH = 3.5, wallT = 0.5;
-  const shelterW = rnd(5, 7), shelterD = rnd(4, 5.5);
-  const cx = rnd(-1.5, 0), cz = rnd(-3, -2);
-
-  const back = MeshBuilder.CreateBox('sBack', { width: shelterW, height: wallH, depth: wallT }, scene);
-  back.material = wallMat; back.position = new Vector3(cx, wallH / 2, cz - shelterD / 2);
-
-  const left = MeshBuilder.CreateBox('sLeft', { width: wallT, height: wallH, depth: shelterD }, scene);
-  left.material = wallMat; left.position = new Vector3(cx - shelterW / 2 + wallT / 2, wallH / 2, cz);
-
-  const rightLen = shelterD * rnd(0.4, 0.6);
-  const right = MeshBuilder.CreateBox('sRight', { width: wallT, height: wallH, depth: rightLen }, scene);
-  right.material = wallMat; right.position = new Vector3(cx + shelterW / 2 - wallT / 2, wallH / 2, cz - shelterD / 2 + rightLen / 2);
-
-  menuBoxColliders.push(
-    { xMin: cx - shelterW / 2, xMax: cx + shelterW / 2, zMin: cz - shelterD / 2 - wallT / 2, zMax: cz - shelterD / 2 + wallT / 2 },
-    { xMin: cx - shelterW / 2, xMax: cx - shelterW / 2 + wallT, zMin: cz - shelterD / 2, zMax: cz + shelterD / 2 },
-    { xMin: cx + shelterW / 2 - wallT, xMax: cx + shelterW / 2, zMin: cz - shelterD / 2, zMax: cz - shelterD / 2 + rightLen },
-  );
-
-  const pad = 8;
-  menuBoxColliders.push(
-    { xMin: cx - pad, xMax: cx + pad, zMin: cz - shelterD / 2 - pad, zMax: cz - shelterD / 2 - wallT / 2 },
-    { xMin: cx - shelterW / 2 - pad, xMax: cx - shelterW / 2, zMin: cz - pad, zMax: cz + pad },
-    { xMin: cx + shelterW / 2, xMax: cx + shelterW / 2 + pad, zMin: cz - pad, zMax: cz + shelterD / 2 },
-  );
-
-  // Gable roof — triangular prism custom mesh
-  const oh = 0.6, span = shelterW + oh * 2, len = shelterD + oh * 2;
-  const ridgeH = 1.6;
-  const halfSpan = span / 2, halfLen = len / 2;
-  const roofMesh = new Mesh('sRoof', scene);
-  const positions = [
-    -halfSpan, 0, -halfLen,  halfSpan, 0, -halfLen,  0, ridgeH, -halfLen,
-    -halfSpan, 0, halfLen,  0, ridgeH, halfLen,  halfSpan, 0, halfLen,
-    -halfSpan, 0, -halfLen,  0, ridgeH, -halfLen,  0, ridgeH, halfLen,  -halfSpan, 0, halfLen,
-    halfSpan, 0, -halfLen,  halfSpan, 0, halfLen,  0, ridgeH, halfLen,  0, ridgeH, -halfLen,
-    -halfSpan, 0, -halfLen,  -halfSpan, 0, halfLen,  halfSpan, 0, halfLen,  halfSpan, 0, -halfLen,
-  ];
-  const indices = [0,1,2, 3,4,5, 6,7,8,6,8,9, 10,11,12,10,12,13, 14,15,16,14,16,17];
-  const vd = new VertexData();
-  vd.positions = positions; vd.indices = indices;
-  VertexData.ComputeNormals(positions, indices, vd.normals = []);
-  vd.applyToMesh(roofMesh);
-  roofMesh.material = roofMat;
-  roofMesh.position = new Vector3(cx, wallH, cz);
-
-  // Torch near doorway
-  const doorEdgeZ = cz - shelterD / 2 + rightLen;
-  const torchX = cx + shelterW / 2 - wallT / 2 - 0.15;
-  const torchZ = doorEdgeZ - 0.3;
-
-  const stickMat = new PBRMaterial('sStick', scene);
-  stickMat.albedoColor = Color3.FromHexString('#553311'); stickMat.roughness = 0.9; stickMat.metallic = 0;
-  const stick = MeshBuilder.CreateBox('sTorch', { width: 0.07, height: 0.45, depth: 0.07 }, scene);
-  stick.material = stickMat; stick.position = new Vector3(torchX, 1.65, torchZ);
-
-  const flameMat = new PBRMaterial('sFlame', scene);
-  flameMat.albedoColor = Color3.FromHexString('#ff6600');
-  flameMat.emissiveColor = Color3.FromHexString('#ff4400');
-  flameMat.roughness = 1; flameMat.metallic = 0;
-  const flame = MeshBuilder.CreateSphere('sFlame', { diameter: 0.2, segments: 6 }, scene);
-  flame.material = flameMat; flame.position = new Vector3(torchX, 1.9, torchZ);
-
-  const tl = new PointLight('sTorch', new Vector3(torchX + 0.3, 1.9, torchZ + 0.5), scene);
-  tl.diffuse = Color3.FromHexString('#ff8833'); tl.intensity = 4; tl.range = 12;
-
-  const dl = new PointLight('sDoorFill', new Vector3(cx + shelterW / 2 + 0.5, 1.2, doorEdgeZ + 1.0), scene);
-  dl.diffuse = Color3.FromHexString('#ffaa66'); dl.intensity = 2; dl.range = 8;
-
-  return {
-    cx, cz, shelterW, shelterD, wallH, wallT,
-    xMin: cx - shelterW / 2 - 1, xMax: cx + shelterW / 2 + 1,
-    zMin: cz - shelterD / 2 - 1, zMax: cz + shelterD / 2 + 1,
-    doorX: cx + shelterW / 2, doorZ: cz + shelterD * 0.15,
-    torchX, torchZ,
-  };
-}
-
 // ==================== MENU CHARACTER UPDATE ====================
 
 function crossfadeMenu(from, to, dur) {
@@ -332,243 +217,44 @@ function updateMenuCharacter(dt) {
   menuCharModel.rotation = new Vector3(0, menuCharFacing + menuCharFacingOffset, 0);
 }
 
-// ==================== SCENE TEMPLATES ====================
-
-function templateShelterNight(scene) {
-  scene.clearColor = new Color4(0.024, 0.024, 0.063, 1);
-  scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.03;
-  scene.fogColor = new Color3(0.024, 0.024, 0.063);
-  scene.ambientColor = new Color3(0.03, 0.03, 0.06);
-
-  new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.08;
-  const moon = new DirectionalLight('moon', new Vector3(5, -10, -5), scene);
-  moon.diffuse = new Color3(0.533, 0.6, 0.8); moon.intensity = 0.1;
-  setupShadows(moon, scene);
-
-  addGround(scene);
-  const s = buildShelter(scene);
-
-  // Interior floor
-  const floorMesh = MeshBuilder.CreateGround('sFloor', { width: s.shelterW - s.wallT * 2, height: s.shelterD - s.wallT }, scene);
-  const floorMat = new PBRMaterial('sFloorMat', scene);
-  floorMat.albedoTexture = loadTex('./assets/textures/stone_wall.jpg', 2, 2, scene);
-  floorMat.roughness = 0.85; floorMat.metallic = 0;
-  floorMesh.material = floorMat;
-  floorMesh.position = new Vector3(s.cx, 0.01, s.cz + s.wallT / 2);
-  floorMesh.receiveShadows = true;
-
-  const interiorFill = new PointLight('sFill', new Vector3(s.cx, 2.0, s.cz), scene);
-  interiorFill.diffuse = Color3.FromHexString('#ffaa66'); interiorFill.intensity = 0.8; interiorFill.range = 8;
-
-  const backWallLight = new PointLight('sBack', new Vector3(s.cx, 1.5, s.cz - s.shelterD / 2 + s.wallT + 0.5), scene);
-  backWallLight.diffuse = Color3.FromHexString('#ff9944'); backWallLight.intensity = 0.5; backWallLight.range = 6;
-
-  const charX = s.torchX - rnd(0.4, 0.8);
-  const charZ = s.torchZ + rnd(0.1, 0.4);
-  const camX = s.cx - s.shelterW / 2 + s.wallT + rnd(0.6, 1.2);
-  const camZ = s.cz - s.shelterD / 2 + s.wallT + rnd(0.5, 1.0);
-  const cam = { x: camX, y: 1.5, z: camZ };
-  const look = new Vector3(charX, 1.0, charZ);
-
-  for (let i = 0; i < rndInt(2, 4); i++) {
-    createTree(s.cx + s.shelterW / 2 + rnd(2, 6), s.cz + rnd(-3, 3), rnd(1.8, 2.8), scene);
-  }
-  for (let i = 0; i < rndInt(1, 3); i++) {
-    createRock(s.cx + s.shelterW / 2 + rnd(1, 4), s.cz + rnd(-2, 2), rnd(0.15, 0.4), scene);
-  }
-
-  const faceRot = Math.atan2(camX - charX, camZ - charZ) + Math.PI + rnd(-0.3, 0.3);
-
-  return {
-    baseCam: cam, lookAt: look,
-    character: {
-      url: './assets/models/Soldier.glb', anim: /idle/i,
-      pos: [charX, 0, charZ], rot: faceRot, scale: CFG.SOLDIER_H,
-    },
-  };
-}
-
-function templateLakeside(scene) {
-  const isDay = Math.random() < 0.5;
-  if (isDay) {
-    scene.clearColor = new Color4(0.4, 0.533, 0.667, 1);
-    scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.03;
-    scene.fogColor = new Color3(0.4, 0.533, 0.667);
-    scene.ambientColor = new Color3(0.3, 0.3, 0.3);
-    new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.5;
-    const sun = new DirectionalLight('sun', new Vector3(-4, -8, -5), scene);
-    sun.diffuse = Color3.FromHexString('#ffeedd'); sun.intensity = 0.9;
-    setupShadows(sun, scene);
-  } else {
-    scene.clearColor = new Color4(0.2, 0.133, 0.267, 1);
-    scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.035;
-    scene.fogColor = new Color3(0.2, 0.133, 0.267);
-    scene.ambientColor = new Color3(0.05, 0.05, 0.08);
-    new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.12;
-    const sun = new DirectionalLight('sun', new Vector3(4, -4, -6), scene);
-    sun.diffuse = Color3.FromHexString('#ffaa66'); sun.intensity = 0.25;
-    setupShadows(sun, scene);
-  }
-
-  addGround(scene);
-
-  const waterMat = new PBRMaterial('mWater', scene);
-  if (menuSnow) {
-    waterMat.albedoColor = new Color3(0.722, 0.831, 0.890); waterMat.roughness = 0.15;
-  } else {
-    waterMat.albedoColor = new Color3(0.102, 0.2, 0.333); waterMat.alpha = 0.7; waterMat.roughness = 0.2;
-  }
-  waterMat.metallic = 0.1;
-  const water = MeshBuilder.CreateGround('mWater', { width: 30, height: 20 }, scene);
-  water.material = waterMat; water.position = new Vector3(0, -0.08, -6);
-
-  const cam = { x: 4, y: 1.5, z: 5 };
-  const look = new Vector3(0, 0.5, -2);
-  const charX = rnd(-1, 1), charZ = rnd(-2.5, -1.5);
-
-  for (let i = 0; i < rndInt(2, 4); i++) {
-    const p = rndAvoid(-6, 4, 0, 5, cam.x, cam.z, charX, charZ, 2);
-    createTree(p.x, p.z, rnd(1.8, 2.8), scene);
-  }
-  for (let i = 0; i < rndInt(1, 3); i++) {
-    const p = rndAvoid(-4, 3, -2, 1, cam.x, cam.z, charX, charZ, 1.5);
-    createRock(p.x, p.z, rnd(0.2, 0.5), scene);
-  }
-
-  const useFox = Math.random() < 0.4;
-  return {
-    baseCam: cam, lookAt: look,
-    character: {
-      url: useFox ? './assets/models/Fox.glb' : './assets/models/Soldier.glb',
-      anim: useFox ? /survey/i : /idle/i,
-      pos: [charX, 0, charZ], rot: Math.PI + rnd(-0.3, 0.3),
-      scale: useFox ? CFG.FOX_H : CFG.SOLDIER_H,
-    },
-  };
-}
-
-function templateForestFox(scene) {
-  scene.clearColor = new Color4(0.102, 0.165, 0.102, 1);
-  scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.05;
-  scene.fogColor = new Color3(0.102, 0.165, 0.102);
-  scene.ambientColor = new Color3(0.15, 0.2, 0.15);
-
-  new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.5;
-  const sun = new DirectionalLight('sun', new Vector3(-3, -8, -4), scene);
-  sun.diffuse = Color3.FromHexString('#ffeedd'); sun.intensity = 0.8;
-  setupShadows(sun, scene);
-
-  addGround(scene);
-
-  const cam = { x: 5, y: 1.5, z: 5 };
-  const look = new Vector3(0, 0.3, 0);
-  const charX = rnd(-0.5, 0.5), charZ = rnd(-0.5, 0.5);
-
-  const treeCount = rndInt(6, 9);
-  for (let i = 0; i < treeCount; i++) {
-    const angle = (i / treeCount) * Math.PI * 2 + rnd(-0.3, 0.3);
-    const dist = rnd(4, 7);
-    const tx = Math.cos(angle) * dist, tz = Math.sin(angle) * dist;
-    if (!isOnPath(tx, tz, cam.x, cam.z, charX, charZ, 2.5)) {
-      createTree(tx, tz, rnd(1.8, 3.0), scene);
-    }
-  }
-  for (let i = 0; i < rndInt(2, 4); i++) {
-    const p = rndAvoid(-3, 3, -3, 3, cam.x, cam.z, charX, charZ, 2);
-    createRock(p.x, p.z, rnd(0.15, 0.4), scene);
-  }
-
-  return {
-    baseCam: cam, lookAt: look,
-    character: {
-      url: './assets/models/Fox.glb', anim: /survey/i,
-      pos: [charX, 0, charZ], rot: rnd(0, Math.PI * 2), scale: CFG.FOX_H,
-    },
-  };
-}
-
-function templateRockyDay(scene) {
-  scene.clearColor = new Color4(0.467, 0.533, 0.6, 1);
-  scene.fogMode = Scene.FOGMODE_EXP2; scene.fogDensity = 0.025;
-  scene.fogColor = new Color3(0.467, 0.533, 0.6);
-  scene.ambientColor = new Color3(0.3, 0.3, 0.35);
-
-  new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.5;
-  const sun = new DirectionalLight('sun', new Vector3(-5, -10, -3), scene);
-  sun.diffuse = new Color3(1, 1, 1); sun.intensity = 1.0;
-  setupShadows(sun, scene);
-
-  addGround(scene);
-
-  const cam = { x: 5, y: 1.8, z: 6 };
-  const look = new Vector3(0, 0.8, 0);
-  const charX = rnd(0.5, 1.5), charZ = rnd(-0.5, 0.5);
-
-  for (let i = 0; i < rndInt(4, 7); i++) {
-    const angle = rnd(0, Math.PI * 2);
-    const dist = rnd(0.5, 2.5);
-    const rx = Math.cos(angle) * dist, rz = Math.sin(angle) * dist;
-    if (!isOnPath(rx, rz, cam.x, cam.z, charX, charZ, 1.5)) {
-      createRock(rx, rz, rnd(0.5, 1.5), scene);
-    }
-  }
-  for (let i = 0; i < rndInt(2, 4); i++) {
-    const p = rndAvoid(-8, -2, -6, 3, cam.x, cam.z, charX, charZ, 2.5);
-    createTree(p.x, p.z, rnd(2.0, 3.0), scene);
-  }
-
-  const useFox = Math.random() < 0.3;
-  return {
-    baseCam: cam, lookAt: look,
-    character: {
-      url: useFox ? './assets/models/Fox.glb' : './assets/models/Soldier.glb',
-      anim: useFox ? /survey/i : /idle/i,
-      pos: [charX, 0, charZ], rot: Math.PI * rnd(0.3, 0.7),
-      scale: useFox ? CFG.FOX_H : CFG.SOLDIER_H,
-    },
-  };
-}
+// ==================== CAMPFIRE SCENE ====================
 
 // --- Campfire animation state ---
-let campfireFlames = [];
-let campfireEmbers = [];
+let campfireParticleSet = null;
+let campfirePendingSet = null;  // loaded but waiting for scene to warm up
 let campfireLight = null;
+let campfireFillLight = null;
 let campfireLightBase = 0;
+let menuPipeline = null;
+let menuFrameCount = 0;
 
 function updateCampfire(dt) {
-  if (!campfireFlames.length) return;
+  if (!campfireLight) return;
   const t = performance.now() * 0.001;
 
-  for (const f of campfireFlames) {
-    const wave = Math.sin(t * f.speed + f.phase);
-    const wave2 = Math.cos(t * f.speed * 1.3 + f.phase * 0.7);
-    f.mesh.position.y = f.baseY + wave * 0.04;
-    f.mesh.position.x = f.baseX + wave2 * 0.03;
-    const sc = f.baseScale * (0.85 + 0.3 * Math.sin(t * f.speed * 0.8 + f.phase));
-    f.mesh.scaling = new Vector3(sc, sc * (1.0 + wave * 0.2), sc);
-    f.mesh.material.alpha = 0.5 + 0.4 * Math.sin(t * f.speed * 1.2 + f.phase * 2);
+  // Organic flicker: layered sine waves + random chaos (scaled to base intensity)
+  const base = campfireLightBase;
+  const wave1 = Math.sin(t * 8.3) * base * 0.12;
+  const wave2 = Math.sin(t * 13.7) * base * 0.08;
+  const wave3 = Math.sin(t * 21.1) * base * 0.04;
+  const chaos = (Math.random() - 0.5) * base * 0.15;
+
+  // Occasional bright flash spike (~5% chance per frame)
+  const flash = Math.random() < 0.05 ? rnd(base * 0.2, base * 0.4) : 0;
+
+  campfireLight.intensity = Math.max(base * 0.5, base + wave1 + wave2 + wave3 + chaos + flash);
+
+  // Subtle color temperature shift (red ↔ yellow)
+  const tempShift = Math.sin(t * 3.1) * 0.08;
+  campfireLight.diffuse.r = Math.min(1, 1.0 + tempShift * 0.5);
+  campfireLight.diffuse.g = 0.533 + tempShift;
+  campfireLight.diffuse.b = 0.2 - tempShift * 0.3;
+
+  // Fill light follows at lower intensity
+  if (campfireFillLight) {
+    campfireFillLight.intensity = 0.6 + wave1 * 0.15 + chaos * 0.1;
   }
 
-  for (const e of campfireEmbers) {
-    e.life -= dt;
-    if (e.life <= 0) {
-      e.mesh.position = new Vector3(rnd(-0.15, 0.15), rnd(0.2, 0.4), rnd(-0.15, 0.15));
-      e.vx = rnd(-0.2, 0.2); e.vy = rnd(0.8, 1.8); e.vz = rnd(-0.2, 0.2);
-      e.life = e.maxLife = rnd(1.0, 2.5);
-    }
-    e.mesh.position.x += e.vx * dt;
-    e.mesh.position.y += e.vy * dt;
-    e.mesh.position.z += e.vz * dt;
-    e.vx += rnd(-2, 2) * dt;
-    const frac = e.life / e.maxLife;
-    e.mesh.material.alpha = frac * 0.9;
-    const sc = 0.04 + 0.06 * frac;
-    e.mesh.scaling = new Vector3(sc, sc, sc);
-  }
-
-  if (campfireLight) {
-    campfireLight.intensity = campfireLightBase + Math.sin(t * 8) * 0.5 + Math.sin(t * 13) * 0.3 + Math.sin(t * 21) * 0.15;
-  }
 }
 
 function templateCampfire(scene) {
@@ -577,138 +263,141 @@ function templateCampfire(scene) {
   scene.fogColor = new Color3(0.02, 0.02, 0.031);
   scene.ambientColor = new Color3(0.04, 0.04, 0.08);
 
+  new HemisphericLight('hemi', new Vector3(0, 1, 0), scene).intensity = 0.15;
+
   addGround(scene);
 
   const fx = 0, fz = 0;
 
-  // Rock ring
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2 + rnd(-0.15, 0.15);
-    const rd = rnd(0.42, 0.52);
-    createRock(fx + Math.cos(a) * rd, fz + Math.sin(a) * rd, rnd(0.08, 0.14), scene);
+  // --- Even stone ring (12 stones, uniform spacing) ---
+  const stoneCount = 12;
+  const ringR = 0.48;
+  const stoneMat = new PBRMaterial('mStone', scene);
+  stoneMat.albedoTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
+  stoneMat.roughness = 0.95; stoneMat.metallic = 0;
+  for (let i = 0; i < stoneCount; i++) {
+    const a = (i / stoneCount) * Math.PI * 2;
+    const sx = fx + Math.cos(a) * ringR;
+    const sz = fz + Math.sin(a) * ringR;
+    const s = rnd(0.09, 0.12);
+    const stone = MeshBuilder.CreateIcoSphere('rStone', { radius: s, subdivisions: 1 }, scene);
+    stone.material = stoneMat;
+    stone.position = new Vector3(sx, s * 0.45, sz);
+    stone.rotation = new Vector3(rnd(-0.2, 0.2), a, rnd(-0.2, 0.2));
+    stone.scaling = new Vector3(1, rnd(0.7, 0.9), 1); // slightly flattened
   }
-  menuColliders.push({ x: fx, z: fz, r: 0.7 });
+  menuColliders.push({ x: fx, z: fz, r: 1.2 });
 
-  // Crossed logs
+  // --- Proper log stack (teepee-style leaning + flat base logs) ---
   const logMat = new PBRMaterial('mLog', scene);
   logMat.albedoTexture = loadTex('./assets/textures/bark.jpg', 1, 1, scene);
   logMat.roughness = 0.9; logMat.metallic = 0;
-  logMat.emissiveColor = new Color3(0.2, 0.067, 0);
-  for (let i = 0; i < 3; i++) {
-    const a = (i / 3) * Math.PI + rnd(-0.2, 0.2);
-    const log = MeshBuilder.CreateCylinder('log', { diameterTop: 0.08, diameterBottom: 0.1, height: 0.55, tessellation: 5 }, scene);
+  logMat.emissiveColor = new Color3(0.15, 0.05, 0);
+
+  // Two base logs (lying flat, crossed)
+  for (let i = 0; i < 2; i++) {
+    const a = i * Math.PI / 2 + rnd(-0.15, 0.15);
+    const log = MeshBuilder.CreateCylinder('baseLog', {
+      diameterTop: 0.06, diameterBottom: 0.08, height: 0.5, tessellation: 6,
+    }, scene);
     log.material = logMat;
-    log.position = new Vector3(fx, 0.06, fz);
-    log.rotation = new Vector3(0, a, rnd(0.15, 0.35));
+    log.position = new Vector3(fx, 0.04, fz);
+    log.rotation = new Vector3(Math.PI / 2, a, 0);
   }
 
-  // Charred base
+  // Three leaning logs (teepee style, meeting at top)
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2 + rnd(-0.1, 0.1);
+    const log = MeshBuilder.CreateCylinder('leanLog', {
+      diameterTop: 0.04, diameterBottom: 0.07, height: 0.45, tessellation: 6,
+    }, scene);
+    log.material = logMat;
+    const dist = 0.12;
+    log.position = new Vector3(fx + Math.cos(a) * dist * 0.3, 0.18, fz + Math.sin(a) * dist * 0.3);
+    log.rotation = new Vector3(0, a, 0.45); // lean inward
+  }
+
+  // Charred base — subtle, blends with ground
   const charMat = new PBRMaterial('mChar', scene);
-  charMat.albedoColor = new Color3(0.067, 0.067, 0.067);
-  charMat.emissiveColor = new Color3(0.133, 0.031, 0);
+  charMat.albedoColor = new Color3(0.12, 0.1, 0.08);
   charMat.roughness = 1; charMat.metallic = 0;
-  const charBase = MeshBuilder.CreateDisc('charBase', { radius: 0.3, tessellation: 8 }, scene);
+  charMat.alpha = 0.6;
+  const charBase = MeshBuilder.CreateDisc('charBase', { radius: 0.35, tessellation: 12 }, scene);
   charBase.material = charMat;
   charBase.rotation = new Vector3(Math.PI / 2, 0, 0);
   charBase.position = new Vector3(fx, 0.005, fz);
 
-  // Fire — use billboarded planes instead of sprites
-  campfireFlames = [];
-  const flameConfigs = [
-    { y: 0.28, scale: 0.4, speed: 4.5 },
-    { y: 0.38, scale: 0.32, speed: 5.5 },
-    { y: 0.48, scale: 0.22, speed: 6.5 },
-    { y: 0.22, scale: 0.35, speed: 3.8 },
-    { y: 0.32, scale: 0.28, speed: 5.0 },
-  ];
-  const pTex = getSoftParticleTex(scene);
-  for (const fc of flameConfigs) {
-    const mat = new StandardMaterial('flameMat', scene);
-    mat.emissiveColor = new Color3(1.0, rnd(0.3, 0.6), 0);
-    mat.disableLighting = true;
-    mat.opacityTexture = pTex;
-    mat.alphaMode = 1; // ALPHA_ADD
-    const plane = MeshBuilder.CreatePlane('flame', { size: fc.scale }, scene);
-    plane.material = mat;
-    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
-    plane.position = new Vector3(fx + rnd(-0.05, 0.05), fc.y, fz + rnd(-0.05, 0.05));
-    plane.isPickable = false;
-    campfireFlames.push({
-      mesh: plane, baseY: fc.y, baseX: plane.position.x,
-      phase: rnd(0, Math.PI * 2), speed: fc.speed, baseScale: fc.scale,
-    });
-  }
-
-  // Glowing ember core
-  const coreMat = new PBRMaterial('mCore', scene);
-  coreMat.albedoColor = Color3.FromHexString('#ff4400');
-  coreMat.emissiveColor = Color3.FromHexString('#ff6600');
-  coreMat.roughness = 1; coreMat.metallic = 0;
-  const core = MeshBuilder.CreateIcoSphere('core', { radius: 0.08, subdivisions: 0 }, scene);
-  core.material = coreMat; core.position = new Vector3(fx, 0.12, fz);
-
-  // Floating ember particles
-  campfireEmbers = [];
-  for (let i = 0; i < 12; i++) {
-    const mat = new StandardMaterial('emberMat', scene);
-    mat.emissiveColor = new Color3(1.0, rnd(0.4, 0.8), 0);
-    mat.disableLighting = true;
-    mat.opacityTexture = pTex;
-    mat.alphaMode = 1; // ALPHA_ADD
-    const sc = rnd(0.03, 0.08);
-    const plane = MeshBuilder.CreatePlane('ember', { size: sc }, scene);
-    plane.material = mat;
-    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
-    plane.position = new Vector3(fx + rnd(-0.15, 0.15), rnd(0.2, 1.0), fz + rnd(-0.15, 0.15));
-    plane.isPickable = false;
-    campfireEmbers.push({
-      mesh: plane,
-      vx: rnd(-0.2, 0.2), vy: rnd(0.8, 1.8), vz: rnd(-0.2, 0.2),
-      life: rnd(0.3, 2.5), maxLife: rnd(1.0, 2.5),
-    });
-  }
+  // === Fire particles (fetched from CDN, started after warm-up in initMenuScene) ===
+  const FIRE_SCALE = 0.25;
+  const firePromise = ParticleHelper.CreateAsync('fire', scene).then(pset => {
+    if (disposed) { pset.dispose(); return; }
+    for (const ps of pset.systems) {
+      ps.emitter = new Vector3(fx, 0.1, fz);
+      ps.minSize *= FIRE_SCALE;
+      ps.maxSize *= FIRE_SCALE;
+      ps.minEmitBox.scaleInPlace(FIRE_SCALE);
+      ps.maxEmitBox.scaleInPlace(FIRE_SCALE);
+      ps.minEmitPower *= FIRE_SCALE;
+      ps.maxEmitPower *= FIRE_SCALE;
+      ps.emitRate *= 0.6;
+      if (ps.gravity) ps.gravity.scaleInPlace(FIRE_SCALE);
+    }
+    // Don't start yet — wait for scene to render a few frames so geometry is visible
+    campfirePendingSet = pset;
+  }).catch(err => console.warn('Fire particles failed:', err));
 
   // Warm ground glow
   const glowMat = new PBRMaterial('mGlow', scene);
   glowMat.albedoColor = new Color3(0, 0, 0);
   glowMat.emissiveColor = Color3.FromHexString('#ff6622');
-  glowMat.alpha = 0.3; glowMat.roughness = 1; glowMat.metallic = 0;
+  glowMat.alpha = 0.15; glowMat.roughness = 1; glowMat.metallic = 0;
   const glowDisc = MeshBuilder.CreateDisc('glow', { radius: 1.5, tessellation: 16 }, scene);
   glowDisc.material = glowMat;
   glowDisc.rotation = new Vector3(Math.PI / 2, 0, 0);
   glowDisc.position = new Vector3(fx, 0.01, fz);
 
   // Lights
-  campfireLightBase = 1.5;
+  campfireLightBase = 2.5;
   campfireLight = new PointLight('fireLight', new Vector3(fx, 0.6, fz), scene);
   campfireLight.diffuse = Color3.FromHexString('#ff8833');
   campfireLight.intensity = campfireLightBase; campfireLight.range = 10;
 
-  const fillLight = new PointLight('fireFill', new Vector3(fx, 0.15, fz), scene);
-  fillLight.diffuse = Color3.FromHexString('#ff6622');
-  fillLight.intensity = 0.5; fillLight.range = 6;
+  campfireFillLight = new PointLight('fireFill', new Vector3(fx, 0.15, fz), scene);
+  campfireFillLight.diffuse = Color3.FromHexString('#ff6622');
+  campfireFillLight.intensity = 0.8; campfireFillLight.range = 6;
 
+  // --- Randomized character (fox or soldier) ---
+  const useFox = Math.random() < 0.35;
   const charAngle = rnd(-0.6, 0.6);
-  const charDist = rnd(1.5, 2.0);
+  const charDist = rnd(2.0, 2.5);
   const charX = fx + Math.sin(charAngle) * charDist;
   const charZ = fz - Math.cos(charAngle) * charDist;
   const dirToFire = Math.atan2(fx - charX, fz - charZ);
+  const faceRot = useFox ? dirToFire : dirToFire + Math.PI;
 
   const cam = { x: 3, y: 1.2, z: 4 };
   const look = new Vector3(0, 0.4, 0);
 
-  for (let i = 0; i < rndInt(3, 5); i++) {
-    const p = rndAvoid(-6, 4, -7, -2, cam.x, cam.z, charX, charZ, 2);
-    createTree(p.x, p.z, rnd(1.8, 2.8), scene);
+  // --- Randomized tree placement (avoid campfire and camera-character line) ---
+  const treeCount = rndInt(3, 6);
+  for (let i = 0; i < treeCount; i++) {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const p = rndAvoid(-7, 5, -7, 4, cam.x, cam.z, charX, charZ, 2);
+      const dfc = p.x * p.x + p.z * p.z;
+      if (dfc > 4) { createTree(p.x, p.z, rnd(1.6, 2.8), scene); break; } // >2 units from fire center
+    }
   }
-  for (let i = 0; i < rndInt(1, 2); i++) {
-    const p = rndAvoid(-6, -2, -2, 3, cam.x, cam.z, charX, charZ, 2);
-    createTree(p.x, p.z, rnd(1.6, 2.4), scene);
+  // A few scattered rocks (also avoid campfire)
+  for (let i = 0; i < rndInt(1, 3); i++) {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const p = rndAvoid(-5, 3, -5, 3, cam.x, cam.z, charX, charZ, 1.5);
+      const dfc = p.x * p.x + p.z * p.z;
+      if (dfc > 2.25) { createRock(p.x, p.z, rnd(0.15, 0.4), scene); break; } // >1.5 units from fire
+    }
   }
 
-  const useFox = Math.random() < 0.3;
-  const faceRot = useFox ? dirToFire : dirToFire + Math.PI;
   return {
+    firePromise,
     baseCam: cam, lookAt: look,
     character: {
       url: useFox ? './assets/models/Fox.glb' : './assets/models/Soldier.glb',
@@ -718,16 +407,6 @@ function templateCampfire(scene) {
     },
   };
 }
-
-// ==================== TEMPLATE REGISTRY ====================
-
-const TEMPLATES = [
-  templateShelterNight,
-  templateLakeside,
-  templateForestFox,
-  templateRockyDay,
-  templateCampfire,
-];
 
 // ==================== EVENT HANDLERS ====================
 
@@ -770,9 +449,12 @@ export function initMenuScene() {
   menuCharActions = {};
   menuCharCurrentAction = null;
   menuKeys = {};
-  campfireFlames = [];
-  campfireEmbers = [];
+  campfireParticleSet = null;
+  campfirePendingSet = null;
   campfireLight = null;
+  campfireFillLight = null;
+  menuPipeline = null;
+  menuFrameCount = 0;
 
   menuSnow = Math.random() < 0.5;
 
@@ -786,19 +468,10 @@ export function initMenuScene() {
 
   initMaterials(menuScene);
 
-  // Pick random template
-  let lastIdx = -1;
-  try { lastIdx = parseInt(localStorage.getItem('menuLastTemplate') || '-1', 10); } catch (e) {}
-  let idx;
-  do { idx = Math.floor(Math.random() * TEMPLATES.length); } while (idx === lastIdx && TEMPLATES.length > 1);
-  try { localStorage.setItem('menuLastTemplate', String(idx)); } catch (e) {}
+  const config = templateCampfire(menuScene);
 
-  const config = TEMPLATES[idx](menuScene);
-
-  // Scale IBL environment intensity based on scene brightness so night scenes stay dark
-  const cc = menuScene.clearColor;
-  const brightness = cc.r * 0.299 + cc.g * 0.587 + cc.b * 0.114;
-  menuScene.environmentIntensity = brightness < 0.25 ? 0.0 : 0.6;
+  // Keep IBL low so campfire light dominates, but non-zero so PBR materials render
+  menuScene.environmentIntensity = 0.15;
 
   camBase = { x: config.baseCam.x, y: config.baseCam.y, z: config.baseCam.z };
   camLookAt = config.lookAt;
@@ -810,7 +483,19 @@ export function initMenuScene() {
   menuCamera.setTarget(camLookAt);
   menuScene.activeCamera = menuCamera;
 
-  // Load character model
+  // ACES tone mapping + bloom for fire glow
+  menuScene.imageProcessingConfiguration.toneMappingEnabled = true;
+  menuScene.imageProcessingConfiguration.toneMappingType = ImageProcessingConfiguration.TONEMAPPING_ACES;
+  menuScene.imageProcessingConfiguration.exposure = 1.2;
+
+  menuPipeline = new DefaultRenderingPipeline('menuPipeline', true, menuScene);
+  menuPipeline.bloomEnabled = true;
+  menuPipeline.bloomThreshold = 0.8;
+  menuPipeline.bloomWeight = 1;
+  menuPipeline.bloomKernel = 64;
+  menuPipeline.bloomScale = 0.5;
+
+  // Load character model (fire-and-forget, not blocking)
   if (config.character) {
     const ch = config.character;
     const isFox = ch.url.includes('Fox');
@@ -895,6 +580,13 @@ export function initMenuScene() {
 
 export function renderMenu(engine, dt) {
   if (!menuScene || !menuCamera) return;
+  menuFrameCount++;
+  // Start fire particles only after scene has rendered enough frames for geometry to be visible
+  if (campfirePendingSet && menuFrameCount > 10) {
+    campfireParticleSet = campfirePendingSet;
+    campfirePendingSet = null;
+    campfireParticleSet.start();
+  }
   if (menuMixer && dt) menuMixer.update(dt);
   updateMenuCharacter(dt);
   if (dt) updateCampfire(dt);
@@ -910,6 +602,10 @@ export function disposeMenu() {
   const panel = document.getElementById('menu-panel');
   if (panel) panel.style.transform = '';
 
+  // Stop and release particle set before dropping scene ref
+  if (campfireParticleSet) campfireParticleSet.dispose();
+  if (campfirePendingSet) campfirePendingSet.dispose();
+
   // Don't call menuScene.dispose() — WebGPU may still reference textures in
   // in-flight command buffers, causing "Destroyed texture" errors.  Just stop
   // rendering; the scene and its resources will be GC'd when all refs are cleared.
@@ -922,7 +618,10 @@ export function disposeMenu() {
   menuKeys = {};
   menuColliders = [];
   menuBoxColliders = [];
-  campfireFlames = [];
-  campfireEmbers = [];
+  campfireParticleSet = null;
+  campfirePendingSet = null;
   campfireLight = null;
+  campfireFillLight = null;
+  menuPipeline = null;
+  menuFrameCount = 0;
 }
