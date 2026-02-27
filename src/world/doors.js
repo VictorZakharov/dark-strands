@@ -220,6 +220,8 @@ export function getDoorByCell(gx, gz) {
   return null;
 }
 
+export function getAllDoors() { return doors; }
+
 export function getNearestDoor() {
   const p = getPlayerState();
   const scene = getScene();

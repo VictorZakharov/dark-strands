@@ -639,3 +639,14 @@
 - **Enhanced light flicker** (`menu.js`): layered sine waves + random chaos + occasional bright flash spikes + color temperature shift on main light.
 - **Removed unused code** (`menu.js`): `buildShelter`, `setupShadows`, `wallMat`/`roofMat`, `StandardMaterial`/`DynamicTexture`/`DirectionalLight`/`ShadowGenerator` imports, ember core mesh.
 - **Saved custom fire backup** (`campfire-custom-particles.bak.js`): custom 4-layer ParticleSystem fire effect (fire core, flame tips, embers/sparks, smoke) with procedural DynamicTextures and enhanced flicker, in case we want to revisit it later.
+
+
+## 2026-02-27
+
+- **Door torch placement overhaul** (`torches.js`, `doors.js`): Replaced grid-based door detection with ray-plane intersection against actual door panel geometry. Torches can now be placed flush on either side of a door regardless of whether it's open or closed. The torch moves with the door when it opens/closes.
+  - Added `findDoorPanelHit()` — tests both faces of every door panel using ray-plane intersection, with bounds checking along the panel and vertical limits
+  - Added `getAllDoors()` export to `doors.js` for iterating door panels
+  - Modified `findPlacementTarget()` to compute door panel hit first, then ray-march for walls/ground; door hit returned if no closer surface found
+  - Simplified grid-based `isDoorCell` handler to only handle lintel (above-door-gap) placement; door panel case now handled by `findDoorPanelHit`
+  - Fixed stick rotation on door re-parenting: world normal is now converted to door-local space via `Vector3.TransformNormal` with the inverse world matrix, so the tilt stays correct as the door rotates
+  - Added `doorGroup.computeWorldMatrix(true)` before re-parenting to ensure fresh matrix when door is mid-rotation
