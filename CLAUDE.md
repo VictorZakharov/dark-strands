@@ -84,6 +84,7 @@ src/
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
     projectiles.js         # Stone throwing with Havok dynamic bodies
     menu.js                # Procedural campfire menu scene
+    campfire-custom-particles.bak.js  # BACKUP: Custom 4-layer ParticleSystem fire (fire core, flame tips, embers, smoke) with procedural DynamicTextures — saved before switching to ParticleHelper.CreateAsync("fire")
   utils/
     helpers.js             # Grid↔world coordinate conversion, rng utilities
 ```

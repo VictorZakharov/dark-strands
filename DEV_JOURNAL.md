@@ -606,3 +606,14 @@
 - **Flat roof backface culling** (`walls.js`): set `flatMat.backFaceCulling = false` so flat roof bottom face is visible from inside buildings (looking up at ceiling no longer shows sky).
 - **Camera eye clamp** (`player.js`): increased first-person ceiling margin from 0.15 to 0.35 to prevent camera clipping into attic space.
 - **Double-click guard** (`main.js`): added `building` flag to prevent Play button double-click from building the world twice (was causing 800+ meshes and 9000+ draw calls).
+
+### Menu campfire overhaul
+- **Locked menu to campfire scene** (`menu.js`): removed 4 unused templates (shelter, lakeside, forest, rocky) and TEMPLATES array/localStorage random selection. Menu always shows campfire; randomizes character (fox/soldier), tree placement, and summer/winter biome.
+- **ParticleHelper fire preset** (`menu.js`): replaced 5 billboard flame planes + 12 manual ember meshes with `ParticleHelper.CreateAsync("fire")` from Babylon.js CDN, scaled to 0.25x. Added `NoiseProceduralTexture` export to `babylon-entry.js` (required by fire preset).
+- **Bloom + ACES tone mapping** (`menu.js`): added `DefaultRenderingPipeline` with bloom (threshold 0.8, weight 1, kernel 64) and ACES tone mapping (exposure 1.2) for fire glow effect.
+- **Upgraded campfire geometry** (`menu.js`): 12 evenly-spaced flattened stones in ring, 2 flat crossed base logs + 3 leaning teepee-style logs, subtle charred base disc.
+- **Fire particle delay** (`menu.js`): fire particles load from CDN but don't start until 10+ frames rendered, preventing floating fire on dark background before geometry is visible.
+- **Campfire collision** (`menu.js`): collision radius 1.2 blocks character from walking into fire circle. Trees avoid >2 units from center, rocks >1.5 units. Character spawns 2.0–2.5 units away.
+- **Enhanced light flicker** (`menu.js`): layered sine waves + random chaos + occasional bright flash spikes + color temperature shift on main light.
+- **Removed unused code** (`menu.js`): `buildShelter`, `setupShadows`, `wallMat`/`roofMat`, `StandardMaterial`/`DynamicTexture`/`DirectionalLight`/`ShadowGenerator` imports, ember core mesh.
+- **Saved custom fire backup** (`campfire-custom-particles.bak.js`): custom 4-layer ParticleSystem fire effect (fire core, flame tips, embers/sparks, smoke) with procedural DynamicTextures and enhanced flicker, in case we want to revisit it later.
