@@ -2,7 +2,7 @@
 
 ## AI 3D Model Generation — Service Research (Feb 2026)
 
-Services for generating 3D models from images or text prompts. All must export GLB/GLTF for use in this Three.js project.
+Services for generating 3D models from images or text prompts. All must export GLB/GLTF for use in this Babylon.js project.
 
 ### Top Picks
 
@@ -79,14 +79,15 @@ Services for generating 3D models from images or text prompts. All must export G
 - **Scanning real objects:** Polycam (free GLTF)
 - **Avoid:** Shap-E (quality too low for 2026 standards)
 
-### Workflow: AI Model → Three.js
+### Workflow: AI Model → Babylon.js
 
 1. Generate model on chosen service (image or text prompt)
 2. Export as GLB
 3. *(If high-poly)* Open in Blender → Decimate modifier → re-export as GLB
-4. Place in `assets/models/`
-5. Add entry to `MODEL_REGISTRY` in `src/entities/models.js`
-6. Models auto-scale to `targetHeight` on load
+4. Strip unused UV channels (uv2–uv6) to stay within WebGPU's 8 vertex buffer limit
+5. Place in `assets/models/`
+6. Add entry to `MODEL_REGISTRY` in `src/entities/models.js`
+7. Models auto-scale to `targetHeight` on load
 
 ## Free 3D Model Libraries
 

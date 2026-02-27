@@ -52,7 +52,7 @@ src/
   main.js                  # Entry point, game loop, init orchestration
   config.js                # All tunable constants (CFG object)
   core/
-    scene.js               # Engine, Scene, FreeCamera setup
+    scene.js               # WebGPU/WebGL2 engine, Scene, FreeCamera setup
     lighting.js            # DirectionalLight (CSM), HemisphericLight, sun glow
     physics.js             # Havok physics world, body helpers, step, raycast
   world/
@@ -224,8 +224,11 @@ A timestamped development journal is maintained in `DEV_JOURNAL.md` at the proje
 Keep entries append-only — never edit or remove previous entries.
 
 ## Known Quirks
-- Babylon.js is pre-bundled into `lib/babylon.bundle.js` (~3.5MB); game source stays unbundled ES modules
+- Babylon.js is pre-bundled into `lib/babylon.bundle.js` (~8MB); game source stays unbundled ES modules
+- WebGPU engine with automatic WebGL2 fallback; `engine.compatibilityMode = false` for full WebGPU optimizations
 - Pointer lock requires HTTPS or localhost
 - The blocker overlay handles click-to-play (not the canvas)
-- PointLight shadows are expensive (cube maps = 6 passes each). Max 3 shadow-casting torches, only in multi-story buildings
-- `scene.useRightHandedSystem = true` to match Three.js coordinate conventions used throughout the codebase
+- PointLight shadows are expensive (cube maps = 6 passes each). Max 2 shadow-casting torches via shadow slot system
+- `scene.useRightHandedSystem = true` to match original Three.js coordinate conventions used throughout the codebase
+- WebGPU workarounds: strip unused UV channels (uv2-uv6) from GLTF models; skip LensFlareSystem on WebGPU; defer menu scene cleanup instead of explicit dispose
+- Menu fire particles fetched from Babylon.js CDN (`ParticleHelper.CreateAsync("fire")`) — requires internet on first load
