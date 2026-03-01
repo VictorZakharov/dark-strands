@@ -165,6 +165,15 @@ export function buildWalls(scene) {
 
     const ext = CFG.CELL / 2 + CFG.WALL_T / 2; // extend past thin-post center to cover corner gaps
 
+    /** Extension toward a thin-post neighbor.
+     *  NS walls get full ext at corners; EW walls shrink by WALL_T
+     *  so the perpendicular NS wall covers the corner without z-fighting overlap. */
+    function extAmount(gx, gz, wallIsNS) {
+        if (!isThinPost(gx, gz)) return 0;
+        if (wallIsNS || !cornerCells.has(`${gx},${gz}`)) return ext;
+        return ext - CFG.WALL_T;
+    }
+
     // Pre-compute window data per cell for wall-with-holes geometry
     const cellWindows = new Map();
     for (const b of buildings) {
@@ -202,11 +211,11 @@ export function buildWalls(scene) {
                 const isNS = cw.wall === 'south' || cw.wall === 'north';
                 let extLeft = 0, extRight = 0;
                 if (isNS) {
-                    extLeft = isThinPost(x - 1, z) ? ext : 0;
-                    extRight = isThinPost(x + 1, z) ? ext : 0;
+                    extLeft = extAmount(x - 1, z, true);
+                    extRight = extAmount(x + 1, z, true);
                 } else {
-                    extLeft = isThinPost(x, z - 1) ? ext : 0;
-                    extRight = isThinPost(x, z + 1) ? ext : 0;
+                    extLeft = extAmount(x, z - 1, false);
+                    extRight = extAmount(x, z + 1, false);
                 }
 
                 const halfW = CFG.CELL / 2;
@@ -250,14 +259,14 @@ export function buildWalls(scene) {
                 let sx, sz, px = p.x, pz = p.z;
                 if (facesNS && !facesEW) {
                     sx = CFG.CELL; sz = CFG.WALL_T;
-                    const extW = isThinPost(x - 1, z) ? ext : 0;
-                    const extE = isThinPost(x + 1, z) ? ext : 0;
+                    const extW = extAmount(x - 1, z, true);
+                    const extE = extAmount(x + 1, z, true);
                     sx += extW + extE;
                     px += (extE - extW) / 2;
                 } else if (facesEW && !facesNS) {
                     sx = CFG.WALL_T; sz = CFG.CELL;
-                    const extN = isThinPost(x, z - 1) ? ext : 0;
-                    const extS = isThinPost(x, z + 1) ? ext : 0;
+                    const extN = extAmount(x, z - 1, false);
+                    const extS = extAmount(x, z + 1, false);
                     sz += extN + extS;
                     pz += (extS - extN) / 2;
                 } else {
@@ -283,13 +292,13 @@ export function buildWalls(scene) {
             let px = p.x, pz = p.z;
 
             if (isNS) {
-                const extW = isThinPost(d.gx - 1, d.gz) ? ext : 0;
-                const extE = isThinPost(d.gx + 1, d.gz) ? ext : 0;
+                const extW = extAmount(d.gx - 1, d.gz, true);
+                const extE = extAmount(d.gx + 1, d.gz, true);
                 sx += extW + extE;
                 px += (extE - extW) / 2;
             } else {
-                const extN = isThinPost(d.gx, d.gz - 1) ? ext : 0;
-                const extS = isThinPost(d.gx, d.gz + 1) ? ext : 0;
+                const extN = extAmount(d.gx, d.gz - 1, false);
+                const extS = extAmount(d.gx, d.gz + 1, false);
                 sz += extN + extS;
                 pz += (extS - extN) / 2;
             }
@@ -328,7 +337,7 @@ export function buildWalls(scene) {
                 if (!n.check) continue;
                 const ngx = isNS ? d.gx + n.sign : d.gx;
                 const ngz = isNS ? d.gz : d.gz + n.sign;
-                const fw = cornerCells.has(`${ngx},${ngz}`) ? ext : fillW;
+                const fw = cornerCells.has(`${ngx},${ngz}`) ? (isNS ? ext : ext - CFG.WALL_T) : fillW;
 
                 const bottom = -0.5;
                 for (let floor = 0; floor < b.stories; floor++) {
