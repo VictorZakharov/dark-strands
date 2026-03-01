@@ -214,7 +214,7 @@ export function createWorldPhysicsBodies() {
             const intBack = g2w(0, b.z).z;
             const intFront = g2w(0, b.z + b.h - 1).z;
             const stairLeft = stairP.x - CFG.CELL / 2;
-            const stairRight = stairP.x + CFG.CELL / 2;
+            const stairRight = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2;
             const stairFront = g2w(0, s.gzEnd).z + CFG.CELL / 2;
             const floorY = CFG.WALL_H;
 
@@ -237,7 +237,7 @@ export function createWorldPhysicsBodies() {
                 createStaticBox(p3w / 2, PHYS_FLOOR_THICK / 2, p3d / 2, stairRight + p3w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p3d / 2, 'ceiling');
             }
             // Piece 4: behind stairwell
-            const stairBack = stairP.z - CFG.CELL / 2;
+            const stairBack = g2w(0, b.z).z + CFG.WALL_T / 2;
             const p4d = stairBack - intBack;
             if (p2w > 0.1 && p4d > 0.1) {
                 createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p4d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p4d / 2, 'ceiling');
@@ -245,14 +245,20 @@ export function createWorldPhysicsBodies() {
 
             // --- Stair steps ---
             const stairP2 = g2w(s.gx, s.gzEnd);
-            const stairWidth = CFG.CELL * 0.95;
-            const stairX = stairP.x + (CFG.CELL - stairWidth) / 2;
-            const zMin = stairP.z - CFG.CELL / 2;
+            // Extend stair physics flush with adjacent perimeter walls
+            const eastWallInner = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2;
+            const stairLeftEdge = stairP.x - CFG.CELL / 2;
+            const stairWidth = eastWallInner - stairLeftEdge;
+            const stairX = (stairLeftEdge + eastWallInner) / 2;
+            const northWallInner = g2w(0, b.z).z + CFG.WALL_T / 2;
+            const zMin = northWallInner;
             const zMax = stairP2.z + CFG.CELL / 2;
             const totalDepth = zMax - zMin;
-            // Use 16 steps so step height (0.22) < player sphere radius (0.35)
+            // Use 16 steps so step height (0.23) < player sphere radius (0.35)
+            // Stairs reach floor top surface (WALL_H + 0.125) so last step is flush
             const numSteps = 16;
-            const stepH = CFG.WALL_H / numSteps;
+            const stairTopY = CFG.WALL_H + 0.125;
+            const stepH = stairTopY / numSteps;
             const stepD = totalDepth / numSteps;
 
             for (let i = 0; i < numSteps; i++) {
