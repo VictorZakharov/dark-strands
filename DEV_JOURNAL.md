@@ -663,4 +663,5 @@
   - Set explicit orthographic frustum bounds (`autoUpdateExtends = false`, ortho ±50) on the directional light to prevent auto-resize flickering as visible geometry changes per frame
   - Set explicit shadow depth range (`shadowMinZ = 1`, `shadowMaxZ = 200`) to prevent depth bound fluctuation
   - Implemented texel snapping in `updateSunShadow()` — projects light position onto the light's image plane, snaps to shadow map texel boundaries, then reconstructs world position. Prevents "shadow swimming" as sun/player move continuously
-  - Increased shadow bias (0.003→0.005) and normalBias (0.01→0.02) to reduce shadow acne on walls at grazing angles
+  - Enabled `forceBackFacesOnly` on the shadow generator — renders only back-facing triangles to the shadow map, eliminating self-shadowing (shadow acne) on walls at grazing sun angles. Walls are 0.7-unit-thick boxes so back-face rendering works without light leaking
+  - Increased shadow bias (0.003→0.005) and normalBias (0.01→0.04) for additional grazing-angle tolerance

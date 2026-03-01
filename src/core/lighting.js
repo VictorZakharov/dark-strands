@@ -86,8 +86,9 @@ export function initLighting(scene) {
   sunCSM.usePercentageCloserFiltering = true;
   sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
   sunCSM.setDarkness(0.1);
+  sunCSM.forceBackFacesOnly = true;
   sunCSM.bias        = 0.005;
-  sunCSM.normalBias  = 0.02;
+  sunCSM.normalBias  = 0.04;
 
   // --- Sun visual (glowing radial gradient in the sky) ---
   sunGroup = new TransformNode('sunGroup', scene);
