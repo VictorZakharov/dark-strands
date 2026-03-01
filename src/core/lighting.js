@@ -84,9 +84,9 @@ export function initLighting(scene) {
   // texel-level changes, single pass (no cascade overhead)
   sunCSM = new ShadowGenerator(SHADOW_MAP_SIZE, sunLight);
   sunCSM.useBlurExponentialShadowMap = true;
-  sunCSM.blurScale    = 2;
-  sunCSM.blurBoxOffset = 1;
-  sunCSM.depthScale   = 50;
+  sunCSM.blurScale    = 4;
+  sunCSM.blurBoxOffset = 2;
+  sunCSM.depthScale   = 80;
   sunCSM.setDarkness(0.1);
   sunCSM.forceBackFacesOnly = true;
 
@@ -122,10 +122,15 @@ export function initLighting(scene) {
   }
 }
 
+// Reusable vectors for texel snapping (avoid per-frame allocation)
+const _lightRight = new Vector3();
+const _lightUp    = new Vector3();
+const _worldUp    = new Vector3(0, 1, 0);
+
 /**
  * Move the shadow camera to follow the player each frame.
- * Snaps the light position to shadow-map texel boundaries to prevent
- * sub-texel swimming/flickering as the player moves.
+ * Snaps the light position to shadow-map texel boundaries in light-view
+ * space to prevent sub-texel swimming/flickering as the sun orbits.
  */
 export function updateSunShadow(px, py, pz) {
   if (!sunLight) return;
@@ -136,14 +141,30 @@ export function updateSunShadow(px, py, pz) {
   let ly = py - d.y * 70;
   let lz = pz - d.z * 70;
 
-  // Texel snapping: project to light space, round to texel grid, project back.
-  // orthoRight - orthoLeft = frustum width in world units.
-  const frustumW = sunLight.orthoRight - sunLight.orthoLeft;   // 120
-  const texelSize = frustumW / SHADOW_MAP_SIZE;                 // 120/2048 ≈ 0.0586
+  // Build light-view axes: right and up perpendicular to light direction
+  Vector3.CrossToRef(d, _worldUp, _lightRight);
+  _lightRight.normalize();
+  Vector3.CrossToRef(_lightRight, d, _lightUp);
+  _lightUp.normalize();
 
-  // Snap X and Z to texel grid (Y is height, less critical)
-  lx = Math.round(lx / texelSize) * texelSize;
-  lz = Math.round(lz / texelSize) * texelSize;
+  // Project position onto light-view plane
+  const projR = lx * _lightRight.x + ly * _lightRight.y + lz * _lightRight.z;
+  const projU = lx * _lightUp.x    + ly * _lightUp.y    + lz * _lightUp.z;
+  const projD = lx * d.x           + ly * d.y           + lz * d.z;
+
+  // Snap to texel grid in light-view space
+  const frustumW = sunLight.orthoRight - sunLight.orthoLeft;   // 120
+  const texelSize = frustumW / SHADOW_MAP_SIZE;                 // ~0.0586
+
+  const snapR = Math.round(projR / texelSize) * texelSize;
+  const snapU = Math.round(projU / texelSize) * texelSize;
+
+  // Reconstruct world position from snapped light-view coordinates
+  const dR = snapR - projR;
+  const dU = snapU - projU;
+  lx += dR * _lightRight.x + dU * _lightUp.x;
+  ly += dR * _lightRight.y + dU * _lightUp.y;
+  lz += dR * _lightRight.z + dU * _lightUp.z;
 
   sunLight.position.set(lx, ly, lz);
 }

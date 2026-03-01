@@ -158,7 +158,8 @@ export function buildFloors(scene) {
         if (merged) {
             merged.name = 'mergedMidFloors';
             merged.material = midFloorMat;
-            addShadowCaster(merged);
+            // Mid-floors are interior geometry — don't register as sun shadow
+            // casters to avoid casting shadows through exterior walls
             enableShadowReceiving(merged);
         }
     }
@@ -169,7 +170,8 @@ export function buildFloors(scene) {
         if (merged) {
             merged.name = 'mergedStairs';
             merged.material = stairMat;
-            addShadowCaster(merged);
+            // Stairs are interior geometry — don't register as sun shadow
+            // casters to avoid casting stair-step shadows on exterior walls
             enableShadowReceiving(merged);
         }
     }
