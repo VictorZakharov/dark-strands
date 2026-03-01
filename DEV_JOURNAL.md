@@ -660,8 +660,8 @@
 
 - **Fixed shadow flickering on buildings during day/night cycle** (`lighting.js`, `player.js`, `main.js`):
   - Removed duplicate conflicting shadow light position/direction updates — `player.js` was setting `sunLight.position` and `sunLight.direction` and then `main.js` immediately overwrote both with different computed values
-  - Set explicit orthographic frustum bounds (`autoUpdateExtends = false`, ortho ±50) on the directional light to prevent auto-resize flickering as visible geometry changes per frame
-  - Set explicit shadow depth range (`shadowMinZ = 1`, `shadowMaxZ = 200`) to prevent depth bound fluctuation
-  - Implemented texel snapping in `updateSunShadow()` — projects light position onto the light's image plane, snaps to shadow map texel boundaries, then reconstructs world position. Prevents "shadow swimming" as sun/player move continuously
-  - Enabled `forceBackFacesOnly` on the shadow generator — renders only back-facing triangles to the shadow map, eliminating self-shadowing (shadow acne) on walls at grazing sun angles. Walls are 0.7-unit-thick boxes so back-face rendering works without light leaking
-  - Increased shadow bias (0.003→0.005) and normalBias (0.01→0.04) for additional grazing-angle tolerance
+  - Switched from `ShadowGenerator` to `CascadedShadowGenerator` with `stabilizeCascades = true` — Babylon.js's built-in solution for shadow swimming/flickering. CSM snaps each cascade's projection to texel boundaries internally, no manual texel snapping needed
+  - Added `CascadedShadowGenerator` export to `lib/babylon-entry.js` and rebuilt the Babylon.js bundle
+  - 4 cascades with `lambda = 0.5`, `shadowMaxZ = 100`, `autoCalcDepthBounds = true` for optimal cascade distribution
+  - Enabled `forceBackFacesOnly` to eliminate self-shadowing (shadow acne) on walls at grazing sun angles
+  - Reduced bias/normalBias (0.002/0.01) — forceBackFacesOnly handles acne, so lower bias avoids the "Peter Pan" shadow gap between roof and wall
