@@ -657,3 +657,10 @@
   - Added generic `hasLineOfSight(from, to)` to `physics.js` — casts a Havok physics raycast between two points and returns false if any solid body (wall, floor, roof, door, stairs) blocks the path
   - Applied LOS check to all 6 `getNearest*` functions: `getNearestPickableTorch`, `getNearestFlower`, `getNearestPickableRock`, `getNearestInFlightRock`, `getNearestSoldier`, `getNearestBed`
   - No indoor/outdoor heuristics — purely physics-based obstacle detection
+
+- **Fixed shadow flickering on buildings during day/night cycle** (`lighting.js`, `player.js`, `main.js`):
+  - Removed duplicate conflicting shadow light position/direction updates — `player.js` was setting `sunLight.position` and `sunLight.direction` and then `main.js` immediately overwrote both with different computed values
+  - Set explicit orthographic frustum bounds (`autoUpdateExtends = false`, ortho ±50) on the directional light to prevent auto-resize flickering as visible geometry changes per frame
+  - Set explicit shadow depth range (`shadowMinZ = 1`, `shadowMaxZ = 200`) to prevent depth bound fluctuation
+  - Implemented texel snapping in `updateSunShadow()` — projects light position onto the light's image plane, snaps to shadow map texel boundaries, then reconstructs world position. Prevents "shadow swimming" as sun/player move continuously
+  - Increased shadow bias (0.003→0.005) and normalBias (0.01→0.02) to reduce shadow acne on walls at grazing angles

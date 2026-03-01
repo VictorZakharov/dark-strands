@@ -3,7 +3,6 @@ import { CFG } from '../config.js';
 import { createPlayerBody, raycastClosest } from '../core/physics.js';
 import { getScene, getCamera, getEngine } from '../core/scene.js';
 import { isRightMouseDown } from '../systems/controls.js';
-import { getSunOffset } from '../systems/daynight.js';
 import { getNpcCollision } from '../systems/npcAI.js';
 import { getTerrainHeight } from '../world/terrain.js';
 import { spawnBoundaryHit, setBoundaryContact } from '../world/boundary.js';
@@ -461,7 +460,7 @@ export function syncPlayerFromPhysics() {
   else if (_boundaryShieldCD > 0) _boundaryShieldCD--;
 }
 
-export function updatePlayer(dt, camera, sunLight, keys) {
+export function updatePlayer(dt, camera, keys) {
   const underwater = !CFG.SNOW_MODE && (state.y + CFG.PLAYER_H) < CFG.WATER_Y;
 
   // Player animation state
@@ -690,10 +689,4 @@ export function updatePlayer(dt, camera, sunLight, keys) {
   _lastCamPos.copyFrom(camera.position);
   // Babylon FreeCamera: forward direction = target - position
   _lastCamFwd.copyFrom(camera.getTarget()).subtractInPlace(camera.position).normalize();
-
-  // Shadow follows player (CSM handles this mostly, but we still position the directional light)
-  const off = getSunOffset();
-  sunLight.position = new Vector3(state.x + off.x, off.y, state.z + off.z);
-  // Directional light in Babylon.js uses .direction, not .target
-  sunLight.direction = new Vector3(-off.x, -off.y, -off.z).normalize();
 }

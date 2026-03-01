@@ -281,7 +281,7 @@ function gameLoop(time) {
     stepPhysics(gdt);
     syncPlayerFromPhysics();
     kickNearbyRock(scene);
-    updatePlayer(gdt, camera, getSunLight(), activeKeys);
+    updatePlayer(gdt, camera, activeKeys);
     updateDayNight(gdt, scene);
 
     // Update sun light direction from day/night offset and shadow camera position

@@ -7,6 +7,9 @@ import { isWebGPU } from './scene.js';
 let sunLight, hemiLight, sunCSM;
 let stars = null, sunGroup = null, sunLensflare = null;
 
+const SHADOW_FRUSTUM = 50;   // ortho half-extent (100×100 world units)
+const SHADOW_MAP_SIZE = 2048;
+
 export function getSunLight() { return sunLight; }
 export function getHemiLight() { return hemiLight; }
 export function getSunCSM() { return sunCSM; }
@@ -69,13 +72,22 @@ export function initLighting(scene) {
   sunLight.intensity = 1.5;
   sunLight.position = new Vector3(30, 60, 30);
 
+  // Fixed orthographic frustum — prevents auto-resize flickering during day/night
+  sunLight.autoUpdateExtends = false;
+  sunLight.orthoLeft   = -SHADOW_FRUSTUM;
+  sunLight.orthoRight  =  SHADOW_FRUSTUM;
+  sunLight.orthoTop    =  SHADOW_FRUSTUM;
+  sunLight.orthoBottom = -SHADOW_FRUSTUM;
+  sunLight.shadowMinZ  = 1;
+  sunLight.shadowMaxZ  = 200;
+
   // Shadow generator — PCF (Percentage Closer Filtering) for sharp, reliable shadows.
-  sunCSM = new ShadowGenerator(2048, sunLight);
+  sunCSM = new ShadowGenerator(SHADOW_MAP_SIZE, sunLight);
   sunCSM.usePercentageCloserFiltering = true;
   sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
   sunCSM.setDarkness(0.1);
-  sunCSM.bias        = 0.003;
-  sunCSM.normalBias  = 0.01;
+  sunCSM.bias        = 0.005;
+  sunCSM.normalBias  = 0.02;
 
   // --- Sun visual (glowing radial gradient in the sky) ---
   sunGroup = new TransformNode('sunGroup', scene);
@@ -111,17 +123,43 @@ export function initLighting(scene) {
 
 /**
  * Move the shadow camera to follow the player each frame.
- * Call from the game loop with the player's world position.
+ * Snaps the light position to the shadow map texel grid in light-space
+ * to prevent shadow swimming when the sun or player moves continuously.
  */
 export function updateSunShadow(px, py, pz) {
   if (!sunLight) return;
-  // Position light opposite to direction, centered on player (matches working prototype)
   const d = sunLight.direction;
-  sunLight.position.set(
-    px - d.x * 70,
-    py - d.y * 70,
-    pz - d.z * 70
-  );
+
+  // Position light opposite to direction, centered on player
+  let lx = px - d.x * 70;
+  let ly = py - d.y * 70;
+  let lz = pz - d.z * 70;
+
+  // Texel snapping — project position onto the light's image plane (perpendicular
+  // to direction), round to texel boundaries, then reconstruct world position.
+  const rlen = Math.sqrt(d.x * d.x + d.z * d.z);
+  if (rlen > 0.0001) {
+    // Light-space right = normalize(cross(worldUp, lightDir))
+    const rx = d.z / rlen;
+    const rz = -d.x / rlen;
+    // Light-space up = cross(lightDir, right)
+    const upx = -d.y * d.x / rlen;
+    const upy = rlen;
+    const upz = -d.y * d.z / rlen;
+
+    const texelSize = (SHADOW_FRUSTUM * 2) / SHADOW_MAP_SIZE;
+
+    const projR = lx * rx + lz * rz;
+    const projU = lx * upx + ly * upy + lz * upz;
+    const dR = Math.round(projR / texelSize) * texelSize - projR;
+    const dU = Math.round(projU / texelSize) * texelSize - projU;
+
+    lx += dR * rx + dU * upx;
+    ly += dU * upy;
+    lz += dR * rz + dU * upz;
+  }
+
+  sunLight.position.set(lx, ly, lz);
 }
 
 /** Register a mesh as a shadow caster with the CSM generator */
