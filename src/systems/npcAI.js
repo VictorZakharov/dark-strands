@@ -7,6 +7,7 @@ import { getTerrainHeight } from '../world/terrain.js';
 import { collidesWithRock, getRockPushback } from '../world/vegetation.js';
 import { collidesWithDoorPanel, getDoorPanelPushback } from '../world/doors.js';
 import { getCamera, getScene, getEngine } from '../core/scene.js';
+import { hasLineOfSight } from '../core/physics.js';
 
 const npcs = [];
 const NPC_RADIUS = 0.5;
@@ -444,6 +445,8 @@ export function getNearestSoldier() {
   let best = null;
   let bestDist = TALK_DIST;
 
+  const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+
   for (const npc of npcs) {
     if (npc.type !== 'soldier') continue;
     const pos = npc.model.position;
@@ -451,6 +454,7 @@ export function getNearestSoldier() {
     const dz = p.z - pos.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < bestDist) {
+      if (!hasLineOfSight(eyePos, { x: pos.x, y: pos.y + 1.0, z: pos.z })) continue;
       bestDist = dist;
       best = npc;
     }

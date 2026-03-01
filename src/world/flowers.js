@@ -6,6 +6,7 @@ import { getTerrainHeight } from './terrain.js';
 import { isInsideBuilding } from './generator.js';
 import { collidesWithRock } from './vegetation.js';
 import { CFG } from '../config.js';
+import { hasLineOfSight } from '../core/physics.js';
 // Shadow caster registration removed for flowers — too small for visible shadows
 
 const flowers = [];
@@ -169,12 +170,16 @@ export function getNearestFlower() {
   let best = null;
   let bestDist = PICK_DIST;
 
+  const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+
   for (const f of flowers) {
     if (!f.active) continue;
     const dx = p.x - f.wx;
     const dz = p.z - f.wz;
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < bestDist) {
+      const ty = getTerrainHeight(f.wx, f.wz);
+      if (!hasLineOfSight(eyePos, { x: f.wx, y: ty + 0.3, z: f.wz })) continue;
       bestDist = dist;
       best = f;
     }
