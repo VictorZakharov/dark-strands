@@ -72,6 +72,7 @@ export function getPlayerModel() { return playerModel; }
 export function getCamBlend() { return camBlend; }
 export function getPlayerBody() { return playerBody; }
 
+
 /**
  * Visual scene raycast from origin along direction.
  * Returns array of { point: Vector3, distance: number, pickedMesh: Mesh }.
@@ -185,6 +186,14 @@ export function initPlayer(scene) {
 
 function crossfade(from, to, duration = 0.2) {
   if (from === to) return;
+  // Zero out any animation not involved in this crossfade — prevents orphaned
+  // weights when a previous crossfade is interrupted mid-transition.
+  for (const action of [idleAction, walkAction, runAction]) {
+    if (action && action !== from && action !== to) {
+      action._group.setWeightForAllAnimatables(0);
+      action._weight = 0;
+    }
+  }
   to.reset().setEffectiveWeight(1).fadeIn(duration).play();
   from.fadeOut(duration);
   currentAction = to;
