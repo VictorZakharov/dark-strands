@@ -151,6 +151,10 @@ function toggleHelp() {
 
 export function isHelpVisible() { return helpVisible; }
 
+function clearKeys() {
+  for (const k in keys) keys[k] = false;
+}
+
 export function getKeys() { return keys; }
 export function isPointerLocked() { return pointerLocked; }
 export function setGameStarted(v) { gameStarted = v; }
@@ -286,6 +290,7 @@ export function initControls() {
       document.body.style.cursor = '';
       ignoreMovesFor(150);
     } else {
+      clearKeys();
       if (isAltMode()) exitAltMode();
       hideFlowerPreview();
       hideHeldTorch();
@@ -429,6 +434,9 @@ export function initControls() {
     if (isAltMode()) { cursorDown(); return; }
     doUseItem();
   });
+
+  // Clear stuck keys when window loses focus (Alt+Tab, taskbar click, etc.)
+  window.addEventListener('blur', clearKeys);
 
   if (isTouchDevice) {
     blocker.addEventListener('touchstart', (e) => {
