@@ -1,7 +1,7 @@
 import { HemisphericLight, DirectionalLight, Vector3,
          Color3, MeshBuilder, ShaderMaterial, Effect,
          TransformNode, LensFlareSystem, LensFlare,
-         ShadowGenerator, CascadedShadowGenerator } from 'babylonjs';
+         ShadowGenerator } from 'babylonjs';
 import { isWebGPU } from './scene.js';
 
 let sunLight, hemiLight, sunCSM;
@@ -71,19 +71,24 @@ export function initLighting(scene) {
   sunLight.intensity = 1.5;
   sunLight.position = new Vector3(30, 60, 30);
 
-  // Cascaded Shadow Map — stabilizeCascades prevents shadow swimming/flickering
-  sunCSM = new CascadedShadowGenerator(SHADOW_MAP_SIZE, sunLight);
-  sunCSM.numCascades = 4;
-  sunCSM.stabilizeCascades = true;
-  sunCSM.lambda = 0.5;
-  sunCSM.shadowMaxZ = 100;
-  sunCSM.autoCalcDepthBounds = true;
-  sunCSM.usePercentageCloserFiltering = true;
-  sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+  // Fixed ortho frustum — prevents shadow resizing/flickering each frame
+  sunLight.autoUpdateExtends = false;
+  sunLight.orthoLeft   = -60;
+  sunLight.orthoRight  =  60;
+  sunLight.orthoTop    =  60;
+  sunLight.orthoBottom = -60;
+  sunLight.shadowMinZ  =  1;
+  sunLight.shadowMaxZ  = 200;
+
+  // Blurred Exponential Shadow Map — immune to shadow acne, blur stabilizes
+  // texel-level changes, single pass (no cascade overhead)
+  sunCSM = new ShadowGenerator(SHADOW_MAP_SIZE, sunLight);
+  sunCSM.useBlurExponentialShadowMap = true;
+  sunCSM.blurScale    = 2;
+  sunCSM.blurBoxOffset = 1;
+  sunCSM.depthScale   = 50;
   sunCSM.setDarkness(0.1);
   sunCSM.forceBackFacesOnly = true;
-  sunCSM.bias       = 0.002;
-  sunCSM.normalBias = 0.01;
 
   // --- Sun visual (glowing radial gradient in the sky) ---
   sunGroup = new TransformNode('sunGroup', scene);
@@ -119,16 +124,28 @@ export function initLighting(scene) {
 
 /**
  * Move the shadow camera to follow the player each frame.
- * CSM's stabilizeCascades handles texel snapping internally.
+ * Snaps the light position to shadow-map texel boundaries to prevent
+ * sub-texel swimming/flickering as the player moves.
  */
 export function updateSunShadow(px, py, pz) {
   if (!sunLight) return;
   const d = sunLight.direction;
-  sunLight.position.set(
-    px - d.x * 70,
-    py - d.y * 70,
-    pz - d.z * 70
-  );
+
+  // Raw desired position (offset from player along reverse light dir)
+  let lx = px - d.x * 70;
+  let ly = py - d.y * 70;
+  let lz = pz - d.z * 70;
+
+  // Texel snapping: project to light space, round to texel grid, project back.
+  // orthoRight - orthoLeft = frustum width in world units.
+  const frustumW = sunLight.orthoRight - sunLight.orthoLeft;   // 120
+  const texelSize = frustumW / SHADOW_MAP_SIZE;                 // 120/2048 ≈ 0.0586
+
+  // Snap X and Z to texel grid (Y is height, less critical)
+  lx = Math.round(lx / texelSize) * texelSize;
+  lz = Math.round(lz / texelSize) * texelSize;
+
+  sunLight.position.set(lx, ly, lz);
 }
 
 /** Register a mesh as a shadow caster with the CSM generator */
