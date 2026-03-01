@@ -966,8 +966,33 @@ function getSmokeTexture(scene) {
   return dt;
 }
 
+/** Wrap a particle system's updateFunction to kill particles at a ceiling Y */
+function _applyCeilingClamp(ps, ceilingY) {
+  const fadeStart = ceilingY - 0.3;
+  const orig = ps.updateFunction;
+  ps.updateFunction = function(particles) {
+    orig(particles);
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (p.position.y >= ceilingY) {
+        p.age = p.lifeTime; // Kill particle at ceiling
+      } else if (p.position.y > fadeStart) {
+        // Fade out as approaching ceiling
+        const t = (p.position.y - fadeStart) / (ceilingY - fadeStart);
+        p.color.a *= (1 - t);
+      }
+    }
+  };
+}
+
 function createEmberSystem(scene, torch) {
   if (torch.particles) return; // Already exists
+
+  // Compute ceiling Y for this torch's floor to prevent particles
+  // from propagating through the floor above (e.g. 1st→2nd floor)
+  const flameY = torch.flame.position.y;
+  const ceilingY = (Math.floor(flameY / CFG.WALL_H) + 1) * CFG.WALL_H;
+
   // === EMBERS — bright sparks rising and swirling ===
   const embers = new ParticleSystem(`embers_${torch.light.name}`, 30, scene); // Increased from 20
   embers.particleTexture = getEmberTexture(scene);
@@ -1063,6 +1088,11 @@ function createEmberSystem(scene, torch) {
   smoke.addColorGradient(1.0, new Color4(0.15, 0.15, 0.15, 0.0));
 
   smoke.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+
+  // Clamp particles at floor ceiling to prevent propagation through floors
+  _applyCeilingClamp(embers, ceilingY);
+  _applyCeilingClamp(sparks, ceilingY);
+  _applyCeilingClamp(smoke, ceilingY);
 
   torch.particles = embers;
   torch.smokeParticles = smoke;
