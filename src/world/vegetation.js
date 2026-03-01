@@ -7,7 +7,7 @@ import { getTerrainHeight } from './terrain.js';
 import { getPlayerState } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
-import { createStaticSphere, createStaticCylinder } from '../core/physics.js';
+import { createStaticSphere, createStaticCylinder, hasLineOfSight } from '../core/physics.js';
 
 let barkTex, leafTex, rockTex;
 
@@ -429,12 +429,16 @@ export function getNearestPickableRock() {
   const p = getPlayerState();
   let best = null;
   let bestDist = CFG.ROCK_PICK_DIST;
+
+  const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+
   for (const rc of rockColliders) {
     if (!rc.active || rc.size > CFG.ROCK_PICK_MAX_SIZE) continue;
     const dx = p.x - rc.x;
     const dz = p.z - rc.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
     if (dist < bestDist) {
+      if (!hasLineOfSight(eyePos, { x: rc.x, y: rc.top, z: rc.z })) continue;
       bestDist = dist;
       best = rc;
     }

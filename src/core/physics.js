@@ -511,5 +511,32 @@ export function raycastClosest(from, to, excludePlayer = true, filterGroups) {
   };
 }
 
+/**
+ * Check if there is an unobstructed line of sight between two points.
+ * Uses Havok physics raycast — any static body (wall, floor, roof, door, etc.)
+ * blocking the path returns false. Excludes player capsule automatically.
+ */
+export function hasLineOfSight(from, to) {
+  if (!physicsEngine) return true; // no physics = can't check, allow
+  if (!_rayResult) _rayResult = new PhysicsRaycastResult();
+
+  const _from = new Vector3(from.x, from.y, from.z);
+  const _to   = new Vector3(to.x,   to.y,   to.z);
+
+  _rayResult.reset();
+  physicsEngine.raycastToRef(_from, _to, _rayResult, { collideWith: GRP_ALL & ~GRP_PLAYER });
+
+  // If nothing was hit, line of sight is clear.
+  // If something was hit, check whether it's closer than the target.
+  if (!_rayResult.hasHit) return true;
+
+  const hp = _rayResult.hitPointWorld;
+  const hitDist2 = (hp.x - from.x) ** 2 + (hp.y - from.y) ** 2 + (hp.z - from.z) ** 2;
+  const tgtDist2 = (to.x - from.x) ** 2 + (to.y - from.y) ** 2 + (to.z - from.z) ** 2;
+
+  // Small tolerance so objects right against walls are still reachable
+  return hitDist2 >= tgtDist2 - 0.01;
+}
+
 /** Collision filter that excludes ceiling slabs from camera raycasts */
 export const CAM_RAY_GROUPS = { membership: GRP_DEFAULT, filter: GRP_ALL & ~GRP_CEILING };

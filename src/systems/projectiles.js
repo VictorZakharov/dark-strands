@@ -6,7 +6,7 @@ import { isWalkable, isWindowCell } from '../world/grid.js';
 import { w2g } from '../utils/helpers.js';
 import { tryBreakWindow, isWindowBrokenAt } from '../world/windows.js';
 import { getPlayerState, getPlayerBody } from '../entities/player.js';
-import { createProjectileSphere, removeBody } from '../core/physics.js';
+import { createProjectileSphere, removeBody, hasLineOfSight } from '../core/physics.js';
 import { spawnBoundaryHit } from '../world/boundary.js';
 import { getScene, getCamera } from '../core/scene.js';
 // Shadow caster registration removed for stones — too small for visible shadows
@@ -279,14 +279,18 @@ export function getNearestInFlightRock() {
   let best = null;
   let bestDist = CFG.ROCK_PICK_DIST;
 
+  const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+
   for (const pr of projectiles) {
     if (!pr.alive) continue;
     if (pr.age < 0.5) continue;
-    const dx = p.x - pr.body.position.x;
-    const dy = (p.y + CFG.PLAYER_H * 0.5) - pr.body.position.y;
-    const dz = p.z - pr.body.position.z;
+    const bpos = pr.body.position;
+    const dx = p.x - bpos.x;
+    const dy = (p.y + CFG.PLAYER_H * 0.5) - bpos.y;
+    const dz = p.z - bpos.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (dist < bestDist) {
+      if (!hasLineOfSight(eyePos, { x: bpos.x, y: bpos.y, z: bpos.z })) continue;
       bestDist = dist;
       best = pr;
     }

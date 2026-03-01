@@ -650,3 +650,10 @@
   - Simplified grid-based `isDoorCell` handler to only handle lintel (above-door-gap) placement; door panel case now handled by `findDoorPanelHit`
   - Fixed stick rotation on door re-parenting: world normal is now converted to door-local space via `Vector3.TransformNormal` with the inverse world matrix, so the tilt stays correct as the door rotates
   - Added `doorGroup.computeWorldMatrix(true)` before re-parenting to ensure fresh matrix when door is mid-rotation
+
+## 2026-03-01
+
+- **Line-of-sight checks for all interact targets** (`physics.js`, `torches.js`, `flowers.js`, `vegetation.js`, `furniture.js`, `npcAI.js`, `projectiles.js`): Fixed bug where items could be picked up or interacted with through solid walls/floors (e.g. grabbing torches inside a building from outside, sleeping in a bed on the 2nd floor from the 1st floor)
+  - Added generic `hasLineOfSight(from, to)` to `physics.js` — casts a Havok physics raycast between two points and returns false if any solid body (wall, floor, roof, door, stairs) blocks the path
+  - Applied LOS check to all 6 `getNearest*` functions: `getNearestPickableTorch`, `getNearestFlower`, `getNearestPickableRock`, `getNearestInFlightRock`, `getNearestSoldier`, `getNearestBed`
+  - No indoor/outdoor heuristics — purely physics-based obstacle detection

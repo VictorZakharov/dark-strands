@@ -3,7 +3,7 @@ import { CFG } from '../config.js';
 import { getGrid, isStairCell, isDoorCell, isWindowCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
-import { createStaticBox } from '../core/physics.js';
+import { createStaticBox, hasLineOfSight } from '../core/physics.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
 let barkTex, woodTex, blanketTex;
@@ -14,9 +14,11 @@ export function getNearestBed(playerState, maxDist = 2.5) {
     let nearest = null;
     let mindSq = maxDist * maxDist;
     const px = playerState.x, pz = playerState.z;
+    const eyePos = { x: px, y: playerState.y + CFG.PLAYER_H * 0.8, z: pz };
     for (const b of beds) {
         const dSq = (b.x - px) ** 2 + (b.z - pz) ** 2;
         if (dSq < mindSq) {
+            if (!hasLineOfSight(eyePos, { x: b.x, y: b.y + 0.3, z: b.z })) continue;
             mindSq = dSq;
             nearest = b;
         }

@@ -14,6 +14,7 @@ import { CFG } from '../config.js';
 import { getPlayerState, getCamBlend } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
 import { getTerrainHeight } from './terrain.js';
+import { hasLineOfSight } from '../core/physics.js';
 import { getInventory } from './flowers.js';
 // addShadowCaster removed from torch sticks — too small for visible shadows
 
@@ -326,6 +327,8 @@ export function getNearestPickableTorch() {
 
     const dist = Vector3.Distance(eyePos, targetPos);
     if (dist < bestDist) {
+      // Reject if a wall/floor/door blocks the path
+      if (!hasLineOfSight(eyePos, targetPos)) continue;
       bestDist = dist;
       best = t;
     }
