@@ -571,6 +571,12 @@
 - Removed unused `createShardBody` from `physics.js` (was for Havok-based glass shards, replaced by SPS approach).
 - Removed `particle.png` texture (no longer needed).
 
+### Fix Torch Light Bleeding Through 2nd Floor
+- **Bug**: `main.js` registered ground floor slabs (`getMergedFloors()`) as torch shadow casters but NOT the mid-floor slabs between stories. Torch PointLight shadows couldn't block light from 1st-floor torches reaching the 2nd floor.
+- **Fix** (`floors.js`): exported `mergedMidFloors` mesh via new `getMergedMidFloors()` getter.
+- **Fix** (`main.js`): registered `mergedMidFloors` as torch shadow caster alongside the existing ground floor slab. The 2 shadow-slot torch lights now properly cast shadows from mid-floor slabs, blocking light between stories.
+- **Note**: walls were initially added as torch shadow casters too but reverted — the merged wall mesh is too large and caused ~6700+ draw calls (6 cube faces × 2 shadow lights × all wall geometry).
+
 ### WebGPU Engine
 - Switched from `Engine` (WebGL2) to `WebGPUEngine` with async init and automatic WebGL2 fallback (`scene.js`).
 - **Workarounds for Babylon.js 8.x WebGPU issues**: strip unused UV channels (uv2–uv6) from GLTF models to stay within 8 vertex buffer limit; skip `LensFlareSystem` on WebGPU (null texture binding crash); defer menu scene cleanup instead of explicit dispose (prevents "destroyed texture" swap chain errors).
