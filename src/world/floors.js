@@ -65,6 +65,7 @@ export function buildFloors(scene) {
     midFloorMat.specularColor = new Color3(0.02, 0.02, 0.02);
 
     const floorMeshes = [];
+    const midFloorMeshes = [];
     const stairMeshes = [];
 
     for (const b of getBuildings()) {
@@ -91,7 +92,7 @@ export function buildFloors(scene) {
             const intFront = g2w(0, b.z + b.h - 1).z;
 
             const stairLeft = stairP.x - CFG.CELL / 2;
-            const stairRight = stairP.x + CFG.CELL / 2;
+            const stairRight = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2;
             const stairFront = g2w(0, s.gzEnd).z + CFG.CELL / 2;
 
             const floorY = CFG.WALL_H;
@@ -101,7 +102,7 @@ export function buildFloors(scene) {
             if (p1w > 0.1 && p1d > 0.1) {
                 const box = createTempBox('midFloorP1', p1w, FLOOR_THICK, p1d,
                     intLeft + p1w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p1d / 2, scene);
-                floorMeshes.push(box);
+                midFloorMeshes.push(box);
             }
 
             const p2w = stairRight - stairLeft;
@@ -109,7 +110,7 @@ export function buildFloors(scene) {
             if (p2w > 0.1 && p2d > 0.1) {
                 const box = createTempBox('midFloorP2', p2w, FLOOR_THICK, p2d,
                     stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, stairFront + p2d / 2, scene);
-                floorMeshes.push(box);
+                midFloorMeshes.push(box);
             }
 
             const p3w = intRight - stairRight;
@@ -117,15 +118,15 @@ export function buildFloors(scene) {
             if (p3w > 0.1 && p3d > 0.1) {
                 const box = createTempBox('midFloorP3', p3w, FLOOR_THICK, p3d,
                     stairRight + p3w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p3d / 2, scene);
-                floorMeshes.push(box);
+                midFloorMeshes.push(box);
             }
 
-            const stairBack = stairP.z - CFG.CELL / 2;
+            const stairBack = g2w(0, b.z).z + CFG.WALL_T / 2;
             const p4d = stairBack - intBack;
             if (p2w > 0.1 && p4d > 0.1) {
                 const box = createTempBox('midFloorP4', p2w, FLOOR_THICK, p4d,
                     stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p4d / 2, scene);
-                floorMeshes.push(box);
+                midFloorMeshes.push(box);
             }
 
             collectStairSteps(stairMeshes, b, scene);
@@ -134,7 +135,7 @@ export function buildFloors(scene) {
             const fullH = (b.h - 1) * CFG.CELL + CFG.WALL_T - 0.06;
             const box = createTempBox('midFloorFull', fullW, FLOOR_THICK, fullH,
                 c.x, CFG.WALL_H - 0.125, c.z, scene);
-            floorMeshes.push(box);
+            midFloorMeshes.push(box);
         }
     }
 
@@ -147,6 +148,18 @@ export function buildFloors(scene) {
             addShadowCaster(merged);
             enableShadowReceiving(merged);
             _mergedFloors = merged;
+        }
+    }
+
+    // Merge all mid-floors into one mesh (separate material with backFaceCulling
+    // to avoid z-fighting between adjacent pieces and stair boundary faces)
+    if (midFloorMeshes.length > 0) {
+        const merged = Mesh.MergeMeshes(midFloorMeshes, true, true, undefined, false, true);
+        if (merged) {
+            merged.name = 'mergedMidFloors';
+            merged.material = midFloorMat;
+            addShadowCaster(merged);
+            enableShadowReceiving(merged);
         }
     }
 
@@ -167,14 +180,22 @@ function collectStairSteps(collector, b, scene) {
     const stairP1 = g2w(s.gx, s.gzStart);
     const stairP2 = g2w(s.gx, s.gzEnd);
 
-    const stairWidth = CFG.CELL * 0.95;
-    const stairX = stairP1.x + (CFG.CELL - stairWidth) / 2;
-    const zMin = stairP1.z - CFG.CELL / 2;
+    // Extend stairs flush with adjacent perimeter walls
+    const eastWallInner = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2;
+    const stairLeftEdge = stairP1.x - CFG.CELL / 2;
+    const stairWidth = eastWallInner - stairLeftEdge;
+    const stairX = (stairLeftEdge + eastWallInner) / 2;
+    const northWallInner = g2w(0, b.z).z + CFG.WALL_T / 2;
+    const zMin = northWallInner;
     const zMax = stairP2.z + CFG.CELL / 2;
     const totalDepth = zMax - zMin;
 
+    const FLOOR_THICK = 0.5;
+    const FLOOR_TOP_OFFSET = -0.125;
+    const floorTopY = CFG.WALL_H + FLOOR_TOP_OFFSET + FLOOR_THICK / 2;
+
     const numSteps = 8;
-    const stepH = CFG.WALL_H / numSteps;
+    const stepH = floorTopY / numSteps;
     const stepD = totalDepth / numSteps;
 
     for (let i = 0; i < numSteps; i++) {
