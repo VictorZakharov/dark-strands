@@ -7,6 +7,9 @@ import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 let _mergedFloors = null;
 export function getMergedFloors() { return _mergedFloors; }
 
+let _mergedMidFloors = null;
+export function getMergedMidFloors() { return _mergedMidFloors; }
+
 function loadTex(path, scene) {
     const tex = new Texture(path, scene);
     tex.uScale = 1;
@@ -160,6 +163,7 @@ export function buildFloors(scene) {
             merged.material = midFloorMat;
             addShadowCaster(merged);
             enableShadowReceiving(merged);
+            _mergedMidFloors = merged;
         }
     }
 
