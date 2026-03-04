@@ -222,25 +222,25 @@ export function createWorldPhysicsBodies() {
             const p1w = stairLeft - intLeft;
             const p1d = intFront - intBack;
             if (p1w > 0.1 && p1d > 0.1) {
-                createStaticBox(p1w / 2, PHYS_FLOOR_THICK / 2, p1d / 2, intLeft + p1w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p1d / 2, 'ceiling');
+                createStaticBox(p1w / 2, PHYS_FLOOR_THICK / 2, p1d / 2, intLeft + p1w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p1d / 2, 'ceiling', CEILING_COLLISION_GROUP);
             }
             // Piece 2: above stairwell
             const p2w = stairRight - stairLeft;
             const p2d = intFront - stairFront;
             if (p2w > 0.1 && p2d > 0.1) {
-                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p2d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, stairFront + p2d / 2, 'ceiling');
+                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p2d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, stairFront + p2d / 2, 'ceiling', CEILING_COLLISION_GROUP);
             }
             // Piece 3: right of stairwell
             const p3w = intRight - stairRight;
             const p3d = intFront - intBack;
             if (p3w > 0.1 && p3d > 0.1) {
-                createStaticBox(p3w / 2, PHYS_FLOOR_THICK / 2, p3d / 2, stairRight + p3w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p3d / 2, 'ceiling');
+                createStaticBox(p3w / 2, PHYS_FLOOR_THICK / 2, p3d / 2, stairRight + p3w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p3d / 2, 'ceiling', CEILING_COLLISION_GROUP);
             }
             // Piece 4: behind stairwell
             const stairBack = g2w(0, b.z).z + CFG.WALL_T / 2;
             const p4d = stairBack - intBack;
             if (p2w > 0.1 && p4d > 0.1) {
-                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p4d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p4d / 2, 'ceiling');
+                createStaticBox(p2w / 2, PHYS_FLOOR_THICK / 2, p4d / 2, stairLeft + p2w / 2, floorY + FLOOR_TOP_OFFSET, intBack + p4d / 2, 'ceiling', CEILING_COLLISION_GROUP);
             }
 
             // --- Stair steps ---
@@ -286,7 +286,7 @@ export function createWorldPhysicsBodies() {
             // Full floor, no stairwell
             const fullW = (b.w - 1) * CFG.CELL + CFG.WALL_T - 0.06;
             const fullH = (b.h - 1) * CFG.CELL + CFG.WALL_T - 0.06;
-            createStaticBox(fullW / 2, PHYS_FLOOR_THICK / 2, fullH / 2, c.x, CFG.WALL_H + FLOOR_TOP_OFFSET, c.z, 'ceiling');
+            createStaticBox(fullW / 2, PHYS_FLOOR_THICK / 2, fullH / 2, c.x, CFG.WALL_H + FLOOR_TOP_OFFSET, c.z, 'ceiling', CEILING_COLLISION_GROUP);
         }
     }
 

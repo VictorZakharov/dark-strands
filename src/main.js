@@ -5,7 +5,7 @@ import { initLighting } from './core/lighting.js';
 import { initGrid } from './world/grid.js';
 import { generateBuildings } from './world/generator.js';
 import { buildGround, buildWater, getWaterMaterial } from './world/terrainMeshes.js';
-import { buildFloors, getMergedFloors, getMergedMidFloors } from './world/floors.js';
+import { buildFloors, getMergedFloors, getMergedMidFloors, getMergedStairs } from './world/floors.js';
 import { buildWalls, buildRoofs } from './world/walls.js';
 import { buildWindows } from './world/windows.js';
 import { createWorldPhysicsBodies } from './world/staticPhysics.js';
@@ -442,6 +442,8 @@ async function buildWorld() {
   if (floorMesh) addTorchShadowCaster(floorMesh);
   const midFloorMesh = getMergedMidFloors();
   if (midFloorMesh) addTorchShadowCaster(midFloorMesh);
+  const stairMesh = getMergedStairs();
+  if (stairMesh) addTorchShadowCaster(stairMesh);
   placeTorches(scene);
   placeDoors(scene);
   placeDoorTorches(scene);

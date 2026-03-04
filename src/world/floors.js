@@ -10,6 +10,9 @@ export function getMergedFloors() { return _mergedFloors; }
 let _mergedMidFloors = null;
 export function getMergedMidFloors() { return _mergedMidFloors; }
 
+let _mergedStairs = null;
+export function getMergedStairs() { return _mergedStairs; }
+
 function loadTex(path, scene) {
     const tex = new Texture(path, scene);
     tex.uScale = 1;
@@ -62,14 +65,25 @@ export function buildFloors(scene) {
     const stairMat = new StandardMaterial('stairMat', scene);
     stairMat.diffuseTexture = loadTex('./assets/textures/wood_planks.jpg', scene);
     stairMat.specularColor = new Color3(0.02, 0.02, 0.02);
+    stairMat.backFaceCulling = false;
 
     const midFloorMat = new StandardMaterial('midFloorMat', scene);
-    midFloorMat.diffuseTexture = loadTex('./assets/textures/stone_wall.jpg', scene);
+    midFloorMat.diffuseTexture = loadTex('./assets/textures/wood_planks.jpg', scene);
     midFloorMat.specularColor = new Color3(0.02, 0.02, 0.02);
+    midFloorMat.zOffset = 2; // push behind walls at junctions
 
     const floorMeshes = [];
     const midFloorMeshes = [];
-    const stairMeshes = [];
+    const stairPos = [], stairNorm = [], stairUv = [], stairIdx = [];
+    let stairVerts = 0;
+    function appendStair(geom) {
+        const off = stairVerts;
+        for (let i = 0; i < geom.positions.length; i++) stairPos.push(geom.positions[i]);
+        for (let i = 0; i < geom.normals.length; i++) stairNorm.push(geom.normals[i]);
+        for (let i = 0; i < geom.uvs.length; i++) stairUv.push(geom.uvs[i]);
+        for (let i = 0; i < geom.indices.length; i++) stairIdx.push(geom.indices[i] + off);
+        stairVerts += geom.positions.length / 3;
+    }
 
     for (const b of getBuildings()) {
         const c = getBuildingCenter(b);
@@ -89,10 +103,13 @@ export function buildFloors(scene) {
             const s = b.stair;
             const stairP = g2w(s.gx, s.gzStart);
 
-            const intLeft = g2w(b.x, 0).x;
-            const intRight = g2w(b.x + b.w - 1, 0).x;
-            const intBack = g2w(0, b.z).z;
-            const intFront = g2w(0, b.z + b.h - 1).z;
+            // Mid-floor extends to the wall inner face + 0.03 overlap into the wall.
+            // Combined with zOffset=2, walls always win at junctions so the floor
+            // doesn't bleed through from outside the building.
+            const intLeft = g2w(b.x, 0).x + CFG.WALL_T / 2 - 0.03;
+            const intRight = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2 + 0.03;
+            const intBack = g2w(0, b.z).z + CFG.WALL_T / 2 - 0.03;
+            const intFront = g2w(0, b.z + b.h - 1).z - CFG.WALL_T / 2 + 0.03;
 
             const stairLeft = stairP.x - CFG.CELL / 2;
             const stairRight = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2;
@@ -132,10 +149,11 @@ export function buildFloors(scene) {
                 midFloorMeshes.push(box);
             }
 
-            collectStairSteps(stairMeshes, b, scene);
+            appendStair(buildStairGeometry(b));
         } else if (b.stories === 2) {
-            const fullW = (b.w - 1) * CFG.CELL + CFG.WALL_T - 0.06;
-            const fullH = (b.h - 1) * CFG.CELL + CFG.WALL_T - 0.06;
+            // Inner face to inner face + 0.06 (0.03 overlap per side)
+            const fullW = (b.w - 1) * CFG.CELL - CFG.WALL_T + 0.06;
+            const fullH = (b.h - 1) * CFG.CELL - CFG.WALL_T + 0.06;
             const box = createTempBox('midFloorFull', fullW, FLOOR_THICK, fullH,
                 c.x, CFG.WALL_H - 0.125, c.z, scene);
             midFloorMeshes.push(box);
@@ -167,30 +185,34 @@ export function buildFloors(scene) {
         }
     }
 
-    // Merge all stairs into one mesh
-    if (stairMeshes.length > 0) {
-        const merged = Mesh.MergeMeshes(stairMeshes, true, true, undefined, false, true);
-        if (merged) {
-            merged.name = 'mergedStairs';
-            merged.material = stairMat;
-            addShadowCaster(merged);
-            enableShadowReceiving(merged);
-        }
+    // Build stairs as a single mesh from raw geometry
+    if (stairPos.length > 0) {
+        const mesh = new Mesh('mergedStairs', scene);
+        const vd = new VertexData();
+        vd.positions = new Float32Array(stairPos);
+        vd.normals   = new Float32Array(stairNorm);
+        vd.uvs       = new Float32Array(stairUv);
+        vd.indices   = new Uint32Array(stairIdx);
+        vd.applyToMesh(mesh);
+        mesh.material = stairMat;
+        addShadowCaster(mesh);
+        enableShadowReceiving(mesh);
+        _mergedStairs = mesh;
     }
 }
 
-function collectStairSteps(collector, b, scene) {
+/* ─────────────────────────────────────────────────────────────────────
+ * Build single-mesh staircase geometry (treads, risers, side profiles,
+ * back wall, bottom) — no overlapping faces, no z-fighting.
+ * ─────────────────────────────────────────────────────────────────── */
+function buildStairGeometry(b) {
     const s = b.stair;
     const stairP1 = g2w(s.gx, s.gzStart);
     const stairP2 = g2w(s.gx, s.gzEnd);
 
-    // Extend stairs flush with adjacent perimeter walls
-    const eastWallInner = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2;
-    const stairLeftEdge = stairP1.x - CFG.CELL / 2;
-    const stairWidth = eastWallInner - stairLeftEdge;
-    const stairX = (stairLeftEdge + eastWallInner) / 2;
-    const northWallInner = g2w(0, b.z).z + CFG.WALL_T / 2;
-    const zMin = northWallInner;
+    const xL = stairP1.x - CFG.CELL / 2;
+    const xR = g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2;
+    const zMin = g2w(0, b.z).z + CFG.WALL_T / 2;
     const zMax = stairP2.z + CFG.CELL / 2;
     const totalDepth = zMax - zMin;
 
@@ -198,14 +220,95 @@ function collectStairSteps(collector, b, scene) {
     const FLOOR_TOP_OFFSET = -0.125;
     const floorTopY = CFG.WALL_H + FLOOR_TOP_OFFSET + FLOOR_THICK / 2;
 
-    const numSteps = 8;
-    const stepH = floorTopY / numSteps;
-    const stepD = totalDepth / numSteps;
+    const N = 8;
+    const stepH = floorTopY / N;
+    const stepD = totalDepth / N;
 
-    for (let i = 0; i < numSteps; i++) {
-        const h = (i + 1) * stepH;
-        const box = createTempBox('stairStep' + i, stairWidth, h, stepD,
-            stairX, h / 2, zMax - (i + 0.5) * stepD, scene);
-        collector.push(box);
+    const positions = [];
+    const normals = [];
+    const uvs = [];
+    const indices = [];
+    let vc = 0;
+
+    function addV(x, y, z, nx, ny, nz) {
+        positions.push(x, y, z);
+        normals.push(nx, ny, nz);
+        const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+        if (ax > ay && ax > az)      uvs.push(z, y);
+        else if (ay > ax && ay > az) uvs.push(x, z);
+        else                         uvs.push(x, y);
+        return vc++;
     }
+
+    function addQuad(i0, i1, i2, i3, nx, ny, nz) {
+        const p0x = positions[i0*3], p0y = positions[i0*3+1], p0z = positions[i0*3+2];
+        const p1x = positions[i1*3], p1y = positions[i1*3+1], p1z = positions[i1*3+2];
+        const p2x = positions[i2*3], p2y = positions[i2*3+1], p2z = positions[i2*3+2];
+        const ex = p1x-p0x, ey = p1y-p0y, ez = p1z-p0z;
+        const fx = p2x-p0x, fy = p2y-p0y, fz = p2z-p0z;
+        const cx = ey*fz - ez*fy, cy = ez*fx - ex*fz, cz = ex*fy - ey*fx;
+        if (cx*nx + cy*ny + cz*nz >= 0) {
+            indices.push(i0, i3, i2, i0, i2, i1);
+        } else {
+            indices.push(i0, i1, i2, i0, i2, i3);
+        }
+    }
+
+    // ── Treads (horizontal, +Y) ──
+    for (let i = 0; i < N; i++) {
+        const y = (i + 1) * stepH;
+        const zF = zMax - i * stepD;
+        const zB = zMax - (i + 1) * stepD;
+        addQuad(
+            addV(xL, y, zF, 0, 1, 0), addV(xR, y, zF, 0, 1, 0),
+            addV(xR, y, zB, 0, 1, 0), addV(xL, y, zB, 0, 1, 0),
+            0, 1, 0);
+    }
+
+    // ── Risers (vertical, +Z — facing front of stairs) ──
+    for (let i = 0; i < N; i++) {
+        const yB = i * stepH;
+        const yT = (i + 1) * stepH;
+        const z = zMax - i * stepD;
+        addQuad(
+            addV(xL, yB, z, 0, 0, 1), addV(xR, yB, z, 0, 0, 1),
+            addV(xR, yT, z, 0, 0, 1), addV(xL, yT, z, 0, 0, 1),
+            0, 0, 1);
+    }
+
+    // ── Back wall (-Z) ──
+    addQuad(
+        addV(xL, 0, zMin, 0, 0, -1), addV(xR, 0, zMin, 0, 0, -1),
+        addV(xR, floorTopY, zMin, 0, 0, -1), addV(xL, floorTopY, zMin, 0, 0, -1),
+        0, 0, -1);
+
+    // ── Bottom face (-Y) ──
+    addQuad(
+        addV(xL, 0, zMin, 0, -1, 0), addV(xR, 0, zMin, 0, -1, 0),
+        addV(xR, 0, zMax, 0, -1, 0), addV(xL, 0, zMax, 0, -1, 0),
+        0, -1, 0);
+
+    // ── Left side profile (-X) — N horizontal strips ──
+    for (let i = 0; i < N; i++) {
+        const yB = i * stepH;
+        const yT = (i + 1) * stepH;
+        const zF = zMax - i * stepD;
+        addQuad(
+            addV(xL, yB, zMin, -1, 0, 0), addV(xL, yB, zF, -1, 0, 0),
+            addV(xL, yT, zF, -1, 0, 0), addV(xL, yT, zMin, -1, 0, 0),
+            -1, 0, 0);
+    }
+
+    // ── Right side profile (+X) — N horizontal strips ──
+    for (let i = 0; i < N; i++) {
+        const yB = i * stepH;
+        const yT = (i + 1) * stepH;
+        const zF = zMax - i * stepD;
+        addQuad(
+            addV(xR, yB, zMin, 1, 0, 0), addV(xR, yB, zF, 1, 0, 0),
+            addV(xR, yT, zF, 1, 0, 0), addV(xR, yT, zMin, 1, 0, 0),
+            1, 0, 0);
+    }
+
+    return { positions, normals, uvs, indices };
 }

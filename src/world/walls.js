@@ -1,7 +1,5 @@
-import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3, Matrix,
-         VertexData } from 'babylonjs';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3, VertexData } from 'babylonjs';
 import { CFG } from '../config.js';
-import { getGrid, isDoorCell, isWindowCell, isStairCell } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
@@ -13,385 +11,352 @@ function loadTex(path, uScale, vScale, scene) {
     return tex;
 }
 
-/**
- * Rewrite a box mesh's UV coordinates based on world position + vertex normal.
- * This is triplanar-style: faces pointing along X use (Z,Y), along Z use (X,Y), along Y use (X,Z).
- * Produces consistent tiling regardless of face order, RHS, or rotation.
- */
-function applyWorldUVs(mesh) {
-    const positions = mesh.getVerticesData('position');
-    const normals = mesh.getVerticesData('normal');
-    const uvs = new Float32Array(positions.length / 3 * 2);
-    const wx = mesh.position.x, wy = mesh.position.y, wz = mesh.position.z;
-    for (let i = 0; i < positions.length / 3; i++) {
-        const px = positions[i * 3] + wx;
-        const py = positions[i * 3 + 1] + wy;
-        const pz = positions[i * 3 + 2] + wz;
-        const nx = Math.abs(normals[i * 3]);
-        const ny = Math.abs(normals[i * 3 + 1]);
-        const nz = Math.abs(normals[i * 3 + 2]);
-        if (nx > ny && nx > nz) {
-            uvs[i * 2] = pz; uvs[i * 2 + 1] = py;
-        } else if (ny > nx && ny > nz) {
-            uvs[i * 2] = px; uvs[i * 2 + 1] = pz;
-        } else {
-            uvs[i * 2] = px; uvs[i * 2 + 1] = py;
-        }
-    }
-    mesh.setVerticesData('uv', uvs);
-}
-
 function getBuildingCenter(b) {
     const p1 = g2w(b.x, b.z);
     const p2 = g2w(b.x + b.w - 1, b.z + b.h - 1);
     return { x: (p1.x + p2.x) / 2, z: (p1.z + p2.z) / 2 };
 }
 
-/**
- * Build wall segments around rectangular window holes within a wall cell.
- * Returns array of un-positioned Babylon box meshes in local space (centered at x=0).
- */
-function buildWallWithHoles(cellWidth, wallH, wallT, windows, scene) {
-    const meshes = [];
-    const left = -cellWidth / 2;
-    const right = cellWidth / 2;
-    const totalW = cellWidth;
-    const bottom = -0.5;
+/* ─────────────────────────────────────────────────────────────────────
+ * Band-decompose a rectangle [runMin,runMax]×[vMin,vMax] with rectangular
+ * openings.  Returns filled quads: {x1, x2, y1, y2}.
+ * ─────────────────────────────────────────────────────────────────── */
+function bandDecompose(runMin, runMax, vMin, vMax, openings) {
+    const EPS = 0.0001;
+    const ySet = new Set();
+    ySet.add(vMin); ySet.add(vMax);
+    for (const op of openings) {
+        if (op.vMin > vMin) ySet.add(op.vMin);
+        if (op.vMax < vMax) ySet.add(op.vMax);
+    }
+    const ys = [...ySet].sort((a, b) => a - b);
+    const quads = [];
 
-    const sorted = windows.map(win => {
-        const baseY = (win.floor - 1) * CFG.WALL_H + CFG.WALL_H * 0.5;
-        const winH = CFG.WALL_H * win.hFrac;
-        const winW = CFG.CELL * win.wFrac;
-        return {
-            winW, winH,
-            winBot: baseY - winH / 2,
-            winTop: baseY + winH / 2,
-            winLeft: -winW / 2,
-            winRight: winW / 2,
-        };
-    }).sort((a, b) => a.winBot - b.winBot);
+    for (let i = 0; i < ys.length - 1; i++) {
+        const y1 = ys[i], y2 = ys[i + 1];
+        if (y2 - y1 < EPS) continue;
+        const yMid = (y1 + y2) / 2;
 
-    const bands = [];
-    let cursor = bottom;
+        // Openings overlapping this band
+        const active = openings.filter(
+            op => op.vMin < y2 - EPS && op.vMax > y1 + EPS);
 
-    for (const win of sorted) {
-        if (win.winBot > cursor + 0.001) {
-            bands.push({ type: 'full', y: cursor, h: win.winBot - cursor });
+        const xSet = new Set();
+        xSet.add(runMin); xSet.add(runMax);
+        for (const op of active) {
+            xSet.add(Math.max(op.runMin, runMin));
+            xSet.add(Math.min(op.runMax, runMax));
         }
-        bands.push({ type: 'window', y: win.winBot, h: win.winH, win });
-        cursor = win.winTop;
-    }
-    if (wallH > cursor + 0.001) {
-        bands.push({ type: 'full', y: cursor, h: wallH - cursor });
-    }
+        const xs = [...xSet].sort((a, b) => a - b);
 
-    for (const band of bands) {
-        if (band.type === 'full') {
-            const box = MeshBuilder.CreateBox('wh', {
-                width: totalW, height: band.h, depth: wallT,
-            }, scene);
-            box.position = new Vector3(0, band.y + band.h / 2, 0);
-            meshes.push(box);
-        } else {
-            const win = band.win;
-            const leftW = win.winLeft - left;
-            if (leftW > 0.001) {
-                const lBox = MeshBuilder.CreateBox('whl', {
-                    width: leftW, height: band.h, depth: wallT,
-                }, scene);
-                lBox.position = new Vector3(left + leftW / 2, band.y + band.h / 2, 0);
-                meshes.push(lBox);
-            }
-            const rightW = right - win.winRight;
-            if (rightW > 0.001) {
-                const rBox = MeshBuilder.CreateBox('whr', {
-                    width: rightW, height: band.h, depth: wallT,
-                }, scene);
-                rBox.position = new Vector3(right - rightW / 2, band.y + band.h / 2, 0);
-                meshes.push(rBox);
-            }
+        for (let j = 0; j < xs.length - 1; j++) {
+            const x1 = xs[j], x2 = xs[j + 1];
+            if (x2 - x1 < EPS) continue;
+            const xMid = (x1 + x2) / 2;
+
+            const isOpen = active.some(op =>
+                xMid > op.runMin + EPS && xMid < op.runMax - EPS &&
+                yMid > op.vMin + EPS && yMid < op.vMax - EPS);
+
+            if (!isOpen) quads.push({ x1, x2, y1, y2 });
         }
     }
-
-    return meshes;
+    return quads;
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+ * Build VertexData for one wall side of a building.
+ *
+ *   axis      – 'x' (NS walls, run along X) or 'z' (EW walls, run along Z)
+ *   perpPos   – fixed world coord on the perpendicular axis (wall center)
+ *   perpDir   – +1 / -1 : outward direction on the perp axis
+ *   runMin/Max – extent along the run axis
+ *   vMin/vMax – vertical extent (Y)
+ *   T         – wall thickness
+ *   openings  – [{runMin, runMax, vMin, vMax}]
+ * ─────────────────────────────────────────────────────────────────── */
+function buildSideGeometry(axis, perpPos, perpDir, runMin, runMax, vMin, vMax, T, openings) {
+    const quads = bandDecompose(runMin, runMax, vMin, vMax, openings);
+
+    const positions = [];
+    const normals   = [];
+    const uvs       = [];
+    const indices   = [];
+    let vc = 0;
+
+    const halfT  = T / 2;
+    const frontD = perpDir * halfT;   // outward offset
+    const backD  = -perpDir * halfT;  // inward offset
+
+    // Normal vectors for main faces
+    const fn = axis === 'x' ? [0, 0, perpDir] : [perpDir, 0, 0];
+    const bn = axis === 'x' ? [0, 0, -perpDir] : [-perpDir, 0, 0];
+
+    // (run, v, depthOffset) → world [x, y, z]
+    function toWorld(run, v, d) {
+        return axis === 'x'
+            ? [run, v, perpPos + d]
+            : [perpPos + d, v, run];
+    }
+
+    // Add a vertex, return its index.  UV uses triplanar projection.
+    function addV(run, v, d, nx, ny, nz) {
+        const [wx, wy, wz] = toWorld(run, v, d);
+        positions.push(wx, wy, wz);
+        normals.push(nx, ny, nz);
+        // Triplanar UV from world pos + normal
+        const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+        if (ax > ay && ax > az)      uvs.push(wz, wy);  // X-facing
+        else if (ay > ax && ay > az) uvs.push(wx, wz);  // Y-facing
+        else                         uvs.push(wx, wy);  // Z-facing
+        return vc++;
+    }
+
+    // ── Shared-vertex maps for front / back faces ──
+    const fMap = new Map();
+    const bMap = new Map();
+
+    function vkey(run, v) {
+        return ((run * 10000) | 0) + ',' + ((v * 10000) | 0);
+    }
+    function fv(run, v) {
+        const k = vkey(run, v);
+        let idx = fMap.get(k);
+        if (idx !== undefined) return idx;
+        idx = addV(run, v, frontD, ...fn);
+        fMap.set(k, idx);
+        return idx;
+    }
+    function bv(run, v) {
+        const k = vkey(run, v);
+        let idx = bMap.get(k);
+        if (idx !== undefined) return idx;
+        idx = addV(run, v, backD, ...bn);
+        bMap.set(k, idx);
+        return idx;
+    }
+
+    // Add a quad with correct winding for the given intended normal.
+    // Babylon.js RHS uses CW as front face, so we need the cross product
+    // of triangle edges to point OPPOSITE to the intended outward normal.
+    function addQuad(i0, i1, i2, i3, nx, ny, nz) {
+        const p0x = positions[i0*3], p0y = positions[i0*3+1], p0z = positions[i0*3+2];
+        const p1x = positions[i1*3], p1y = positions[i1*3+1], p1z = positions[i1*3+2];
+        const p2x = positions[i2*3], p2y = positions[i2*3+1], p2z = positions[i2*3+2];
+        const ex = p1x-p0x, ey = p1y-p0y, ez = p1z-p0z;
+        const fx = p2x-p0x, fy = p2y-p0y, fz = p2z-p0z;
+        const cx = ey*fz - ez*fy, cy = ez*fx - ex*fz, cz = ex*fy - ey*fx;
+        if (cx*nx + cy*ny + cz*nz >= 0) {
+            indices.push(i0, i3, i2, i0, i2, i1);
+        } else {
+            indices.push(i0, i1, i2, i0, i2, i3);
+        }
+    }
+
+    // ── Front face ──
+    for (const q of quads) {
+        addQuad(
+            fv(q.x1, q.y1), fv(q.x2, q.y1),
+            fv(q.x2, q.y2), fv(q.x1, q.y2),
+            ...fn);
+    }
+
+    // ── Back face ──
+    for (const q of quads) {
+        addQuad(
+            bv(q.x1, q.y1), bv(q.x2, q.y1),
+            bv(q.x2, q.y2), bv(q.x1, q.y2),
+            ...bn);
+    }
+
+    // ── Edge faces around openings (jambs + lintels) ──
+    const EPS = 0.001;
+    for (const op of openings) {
+        const oL = Math.max(op.runMin, runMin);
+        const oR = Math.min(op.runMax, runMax);
+        const oB = Math.max(op.vMin, vMin);
+        const oT = Math.min(op.vMax, vMax);
+        if (oR - oL < EPS || oT - oB < EPS) continue;
+
+        // Left jamb – faces +run into opening
+        const lN = axis === 'x' ? [1, 0, 0] : [0, 0, 1];
+        addQuad(
+            addV(oL, oB, frontD, ...lN), addV(oL, oB, backD, ...lN),
+            addV(oL, oT, backD, ...lN),  addV(oL, oT, frontD, ...lN),
+            ...lN);
+
+        // Right jamb – faces -run into opening
+        const rN = axis === 'x' ? [-1, 0, 0] : [0, 0, -1];
+        addQuad(
+            addV(oR, oB, frontD, ...rN), addV(oR, oB, backD, ...rN),
+            addV(oR, oT, backD, ...rN),  addV(oR, oT, frontD, ...rN),
+            ...rN);
+
+        // Bottom threshold – faces up (+Y) into opening
+        if (oB > vMin + EPS) {
+            const bN = [0, 1, 0];
+            addQuad(
+                addV(oL, oB, frontD, ...bN), addV(oR, oB, frontD, ...bN),
+                addV(oR, oB, backD, ...bN),  addV(oL, oB, backD, ...bN),
+                ...bN);
+        }
+
+        // Top lintel – faces down (-Y) into opening
+        if (oT < vMax - EPS) {
+            const tN = [0, -1, 0];
+            addQuad(
+                addV(oL, oT, frontD, ...tN), addV(oR, oT, frontD, ...tN),
+                addV(oR, oT, backD, ...tN),  addV(oL, oT, backD, ...tN),
+                ...tN);
+        }
+    }
+
+    // ── Top cap of the wall (faces up) ──
+    {
+        const tN = [0, 1, 0];
+        addQuad(
+            addV(runMin, vMax, frontD, ...tN), addV(runMax, vMax, frontD, ...tN),
+            addV(runMax, vMax, backD, ...tN),  addV(runMin, vMax, backD, ...tN),
+            ...tN);
+    }
+
+    return { positions, normals, uvs, indices };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * buildWalls  —  all 4 walls per building as unified geometry
+ * ═══════════════════════════════════════════════════════════════════ */
 export function buildWalls(scene) {
-    const grid = getGrid();
     const buildings = getBuildings();
 
-    // Single material for ALL wall geometry (regular + window walls).
-    // Merging into one mesh eliminates seam lines between adjacent cells.
     const wallMat = new StandardMaterial('wallMat', scene);
     wallMat.diffuseTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
     wallMat.specularColor = new Color3(0.02, 0.02, 0.02);
 
-    // Wall heights per cell — multi-story buildings have taller walls
-    const wallH = [];
-    for (let x = 0; x < CFG.GRID; x++) {
-        wallH[x] = new Array(CFG.GRID).fill(CFG.WALL_H);
+    // Accumulate wall geometry into one big buffer
+    const allPos = [];
+    const allNorm = [];
+    const allUv = [];
+    const allIdx = [];
+    let totalVerts = 0;
+
+    function append(geom) {
+        const off = totalVerts;
+        for (let i = 0; i < geom.positions.length; i++) allPos.push(geom.positions[i]);
+        for (let i = 0; i < geom.normals.length; i++)   allNorm.push(geom.normals[i]);
+        for (let i = 0; i < geom.uvs.length; i++)       allUv.push(geom.uvs[i]);
+        for (let i = 0; i < geom.indices.length; i++)    allIdx.push(geom.indices[i] + off);
+        totalVerts += geom.positions.length / 3;
     }
 
-    // Building corner cells — always thin posts regardless of neighbor state
-    const cornerCells = new Set();
-    for (const b of buildings) {
-        const h = b.stories * CFG.WALL_H;
-        for (let gx = b.x; gx < b.x + b.w; gx++) {
-            wallH[gx][b.z] = h;
-            wallH[gx][b.z + b.h - 1] = h;
-        }
-        for (let gz = b.z; gz < b.z + b.h; gz++) {
-            wallH[b.x][gz] = h;
-            wallH[b.x + b.w - 1][gz] = h;
-        }
-        cornerCells.add(`${b.x},${b.z}`);
-        cornerCells.add(`${b.x + b.w - 1},${b.z}`);
-        cornerCells.add(`${b.x},${b.z + b.h - 1}`);
-        cornerCells.add(`${b.x + b.w - 1},${b.z + b.h - 1}`);
-    }
-
-    function isThinPost(gx, gz) {
-        if (gx < 0 || gz < 0 || gx >= CFG.GRID || gz >= CFG.GRID) return false;
-        if (grid[gx][gz] || isDoorCell(gx, gz) || isWindowCell(gx, gz) || isStairCell(gx, gz)) return false;
-        if (cornerCells.has(`${gx},${gz}`)) return true;
-        const oN = gz > 0 && grid[gx][gz - 1];
-        const oS = gz < CFG.GRID - 1 && grid[gx][gz + 1];
-        const oW = gx > 0 && grid[gx - 1][gz];
-        const oE = gx < CFG.GRID - 1 && grid[gx + 1][gz];
-        const facesNS = oN || oS;
-        const facesEW = oW || oE;
-        return (facesNS && facesEW) || (!facesNS && !facesEW);
-    }
-
-    const ext = CFG.CELL / 2 + CFG.WALL_T / 2; // extend past thin-post center to cover corner gaps
-
-    /** Extension toward a thin-post neighbor.
-     *  NS walls get full ext at corners; EW walls shrink by WALL_T
-     *  so the perpendicular NS wall covers the corner without z-fighting overlap. */
-    function extAmount(gx, gz, wallIsNS) {
-        if (!isThinPost(gx, gz)) return 0;
-        if (wallIsNS || !cornerCells.has(`${gx},${gz}`)) return ext;
-        return ext - CFG.WALL_T;
-    }
-
-    // Pre-compute window data per cell for wall-with-holes geometry
-    const cellWindows = new Map();
-    for (const b of buildings) {
-        for (const w of b.windows) {
-            const key = `${w.gx},${w.gz}`;
-            if (!cellWindows.has(key)) {
-                cellWindows.set(key, { wall: w.wall, wins: [] });
-            }
-            cellWindows.get(key).wins.push({
-                floor: w.floor,
-                wFrac: w.wFrac || 0.6,
-                hFrac: w.hFrac || 0.4,
-            });
-        }
-    }
-
-    const tempMeshes = [];
-
-    // --- Wall cells (regular + window) ---
-    for (let x = 0; x < CFG.GRID; x++) {
-        for (let z = 0; z < CFG.GRID; z++) {
-            if (grid[x][z] || isDoorCell(x, z) || isStairCell(x, z)) continue;
-
-            const isWin = isWindowCell(x, z);
-            const p = g2w(x, z);
-            const h = wallH[x][z];
-            const bottom = -0.5;
-            const totalH = h - bottom;
-
-            if (isWin) {
-                // Window cell — wall segments with holes for window openings
-                const cw = cellWindows.get(`${x},${z}`);
-                if (!cw) continue;
-
-                const isNS = cw.wall === 'south' || cw.wall === 'north';
-                let extLeft = 0, extRight = 0;
-                if (isNS) {
-                    extLeft = extAmount(x - 1, z, true);
-                    extRight = extAmount(x + 1, z, true);
-                } else {
-                    extLeft = extAmount(x, z - 1, false);
-                    extRight = extAmount(x, z + 1, false);
-                }
-
-                const halfW = CFG.CELL / 2;
-                const cellWidth = (halfW + extLeft) + (halfW + extRight);
-
-                const floorMap = new Map();
-                for (const win of cw.wins) {
-                    if (!floorMap.has(win.floor)) floorMap.set(win.floor, win);
-                }
-
-                const wallPieces = buildWallWithHoles(cellWidth, h, CFG.WALL_T,
-                    [...floorMap.values()], scene);
-                const offsetCenter = (extRight - extLeft) / 2;
-
-                for (const piece of wallPieces) {
-                    piece.position.x += offsetCenter;
-                    if (isNS) {
-                        piece.position.x += p.x;
-                        piece.position.z += p.z;
-                    } else {
-                        const lx = piece.position.x;
-                        const lz = piece.position.z;
-                        piece.position.x = p.x - lz;
-                        piece.position.z = p.z + lx;
-                        piece.rotation.y = Math.PI / 2;
-                    }
-                    applyWorldUVs(piece);
-                    tempMeshes.push(piece);
-                }
-            } else {
-                // Regular wall cell
-                const openN = z > 0 && grid[x][z - 1];
-                const openS = z < CFG.GRID - 1 && grid[x][z + 1];
-                const openW = x > 0 && grid[x - 1][z];
-                const openE = x < CFG.GRID - 1 && grid[x + 1][z];
-                const facesNS = openN || openS;
-                const facesEW = openW || openE;
-
-                const isCorner = cornerCells.has(`${x},${z}`);
-                if (isCorner) continue; // adjacent wall extensions fully cover corners
-                let sx, sz, px = p.x, pz = p.z;
-                if (facesNS && !facesEW) {
-                    sx = CFG.CELL; sz = CFG.WALL_T;
-                    const extW = extAmount(x - 1, z, true);
-                    const extE = extAmount(x + 1, z, true);
-                    sx += extW + extE;
-                    px += (extE - extW) / 2;
-                } else if (facesEW && !facesNS) {
-                    sx = CFG.WALL_T; sz = CFG.CELL;
-                    const extN = extAmount(x, z - 1, false);
-                    const extS = extAmount(x, z + 1, false);
-                    sz += extN + extS;
-                    pz += (extS - extN) / 2;
-                } else {
-                    sx = CFG.WALL_T; sz = CFG.WALL_T;
-                }
-
-                const box = MeshBuilder.CreateBox('w', { width: sx, height: totalH, depth: sz }, scene);
-                box.position = new Vector3(px, bottom + totalH / 2, pz);
-                applyWorldUVs(box);
-                tempMeshes.push(box);
-            }
-        }
-    }
-
-    // --- Wall blocks above doors ---
+    const T = CFG.WALL_T;
     const doorTopY = CFG.WALL_H * 0.88;
+    const vMin = -0.5;                     // walls extend below ground
+
     for (const b of buildings) {
-        for (const d of b.doors) {
-            const p = g2w(d.gx, d.gz);
-            const isNS = d.wall === 'south' || d.wall === 'north';
-            let sx = isNS ? CFG.CELL : CFG.WALL_T;
-            let sz = isNS ? CFG.WALL_T : CFG.CELL;
-            let px = p.x, pz = p.z;
+        const wallH = b.stories * CFG.WALL_H;
+        const vMax  = wallH;
 
-            if (isNS) {
-                const extW = extAmount(d.gx - 1, d.gz, true);
-                const extE = extAmount(d.gx + 1, d.gz, true);
-                sx += extW + extE;
-                px += (extE - extW) / 2;
-            } else {
-                const extN = extAmount(d.gx, d.gz - 1, false);
-                const extS = extAmount(d.gx, d.gz + 1, false);
-                sz += extN + extS;
-                pz += (extS - extN) / 2;
-            }
+        // World coords of building corner cell centres
+        const nwP = g2w(b.x, b.z);
+        const neP = g2w(b.x + b.w - 1, b.z);
+        const swP = g2w(b.x, b.z + b.h - 1);
 
-            const gapH = CFG.WALL_H - doorTopY;
-            if (gapH > 0.01) {
-                const box = MeshBuilder.CreateBox('wd', { width: sx, height: gapH, depth: sz }, scene);
-                box.position = new Vector3(px, doorTopY + gapH / 2, pz);
-                applyWorldUVs(box);
-                tempMeshes.push(box);
-            }
+        // All walls span full extent including corners — perpendicular
+        // walls share edges at corners (no overlap, no gap)
+        const hT = T / 2;
+        const nsRunMin = nwP.x - hT;
+        const nsRunMax = neP.x + hT;
+        const ewRunMin = nwP.z - hT;
+        const ewRunMax = swP.z + hT;
 
-            if (b.stories === 2) {
-                const box = MeshBuilder.CreateBox('wd2', { width: sx, height: CFG.WALL_H, depth: sz }, scene);
-                box.position = new Vector3(px, CFG.WALL_H + CFG.WALL_H / 2, pz);
-                applyWorldUVs(box);
-                tempMeshes.push(box);
-            }
+        const sides = [
+            { side: 'north', axis: 'x', perpPos: nwP.z, perpDir: -1, runMin: nsRunMin, runMax: nsRunMax },
+            { side: 'south', axis: 'x', perpPos: swP.z, perpDir:  1, runMin: nsRunMin, runMax: nsRunMax },
+        ];
+
+        // EW walls only exist when building has >2 rows (MIN_ROOM=4, so always true)
+        if (b.h > 2) {
+            sides.push(
+                { side: 'west',  axis: 'z', perpPos: nwP.x, perpDir: -1, runMin: ewRunMin, runMax: ewRunMax },
+                { side: 'east',  axis: 'z', perpPos: neP.x, perpDir:  1, runMin: ewRunMin, runMax: ewRunMax },
+            );
         }
+
+        for (const s of sides) {
+            const isNS = s.axis === 'x';
+            const openings = [];
+
+            // Doors → opening from wall bottom to doorTopY
+            for (const d of b.doors) {
+                if (d.wall !== s.side) continue;
+                const dCenter = isNS ? g2w(d.gx, d.gz).x : g2w(d.gx, d.gz).z;
+                openings.push({
+                    runMin: dCenter - CFG.CELL / 2,
+                    runMax: dCenter + CFG.CELL / 2,
+                    vMin,
+                    vMax: doorTopY,
+                });
+            }
+
+            // Windows → rectangular opening per floor
+            for (const w of b.windows) {
+                if (w.wall !== s.side) continue;
+                const wCenter = isNS ? g2w(w.gx, w.gz).x : g2w(w.gx, w.gz).z;
+                const winW = CFG.CELL * (w.wFrac || 0.6);
+                const winH = CFG.WALL_H * (w.hFrac || 0.4);
+                const winVCenter = (w.floor - 1) * CFG.WALL_H + CFG.WALL_H * 0.5;
+                openings.push({
+                    runMin: wCenter - winW / 2,
+                    runMax: wCenter + winW / 2,
+                    vMin: winVCenter - winH / 2,
+                    vMax: winVCenter + winH / 2,
+                });
+            }
+
+            append(buildSideGeometry(
+                s.axis, s.perpPos, s.perpDir,
+                s.runMin, s.runMax, vMin, vMax, T, openings));
+        }
+
     }
 
-    // --- Door-side fill blocks ---
-    const fillW = ext + CFG.WALL_T / 2;
-    for (const b of buildings) {
-        for (const d of b.doors) {
-            const p = g2w(d.gx, d.gz);
-            const isNS = d.wall === 'south' || d.wall === 'north';
+    if (allPos.length > 0) {
+        const mesh = new Mesh('walls', scene);
+        const vd = new VertexData();
+        vd.positions = new Float32Array(allPos);
+        vd.normals   = new Float32Array(allNorm);
+        vd.uvs       = new Float32Array(allUv);
+        vd.indices   = new Uint32Array(allIdx);
+        vd.applyToMesh(mesh);
 
-            const neighbors = isNS
-                ? [{ check: isThinPost(d.gx - 1, d.gz), sign: -1 },
-                   { check: isThinPost(d.gx + 1, d.gz), sign: +1 }]
-                : [{ check: isThinPost(d.gx, d.gz - 1), sign: -1 },
-                   { check: isThinPost(d.gx, d.gz + 1), sign: +1 }];
-
-            for (const n of neighbors) {
-                if (!n.check) continue;
-                const ngx = isNS ? d.gx + n.sign : d.gx;
-                const ngz = isNS ? d.gz : d.gz + n.sign;
-                const fw = cornerCells.has(`${ngx},${ngz}`) ? (isNS ? ext : ext - CFG.WALL_T) : fillW;
-
-                const bottom = -0.5;
-                for (let floor = 0; floor < b.stories; floor++) {
-                    const floorH = floor === 0 ? CFG.WALL_H * 0.88 : CFG.WALL_H;
-                    const floorBase = floor * CFG.WALL_H + bottom;
-                    const totalH = (floor === 0 ? floorH - bottom : floorH);
-
-                    let box;
-                    if (isNS) {
-                        const fx = p.x + n.sign * (CFG.CELL / 2 + fw / 2);
-                        box = MeshBuilder.CreateBox('wf', { width: fw, height: totalH, depth: CFG.WALL_T }, scene);
-                        box.position = new Vector3(fx, floorBase + totalH / 2, p.z);
-                    } else {
-                        const fz = p.z + n.sign * (CFG.CELL / 2 + fw / 2);
-                        box = MeshBuilder.CreateBox('wf', { width: CFG.WALL_T, height: totalH, depth: fw }, scene);
-                        box.position = new Vector3(p.x, floorBase + totalH / 2, fz);
-                    }
-                    applyWorldUVs(box);
-                    tempMeshes.push(box);
-                }
-            }
-        }
+        mesh.material = wallMat;
+        addShadowCaster(mesh);
+        enableShadowReceiving(mesh);
     }
 
-    // Merge ALL wall geometry into a single mesh — eliminates seam lines
-    if (tempMeshes.length > 0) {
-        const walls = Mesh.MergeMeshes(tempMeshes, true, true, undefined, false, true);
-        if (walls) {
-            walls.name = 'walls';
-            walls.material = wallMat;
-            addShadowCaster(walls);
-            enableShadowReceiving(walls);
-        }
-    }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * buildRoofs
+ * ═══════════════════════════════════════════════════════════════════ */
 export function buildRoofs(scene) {
     const buildings = getBuildings();
 
     const flatMat = new StandardMaterial('flatRoofMat', scene);
     flatMat.diffuseTexture = loadTex('./assets/textures/stone_wall.jpg', 1, 1, scene);
-    flatMat.diffuseColor = new Color3(0.4, 0.4, 0.4); // tint stone darker for flat roof
+    flatMat.diffuseColor = new Color3(0.4, 0.4, 0.4);
     flatMat.specularColor = new Color3(0.02, 0.02, 0.02);
-    flatMat.backFaceCulling = false; // visible from inside (looking up at ceiling)
+    flatMat.backFaceCulling = false;
 
     const slantMat = new StandardMaterial('slantRoofMat', scene);
     slantMat.diffuseTexture = loadTex('./assets/textures/bark.jpg', 1, 1, scene);
-    slantMat.diffuseColor = new Color3(0.545, 0.271, 0.075); // #8B4513
+    slantMat.diffuseColor = new Color3(0.545, 0.271, 0.075);
     slantMat.specularColor = new Color3(0.02, 0.02, 0.02);
-    slantMat.backFaceCulling = false; // DoubleSide
+    slantMat.backFaceCulling = false;
 
     const overhang = 0.4;
     const ridgeHeight = 1.8;
-
     const flatMeshes = [];
     const slantMeshes = [];
 
@@ -400,99 +365,68 @@ export function buildRoofs(scene) {
         const bw = (b.w - 1) * CFG.CELL + CFG.WALL_T;
         const bh = (b.h - 1) * CFG.CELL + CFG.WALL_T;
         const c = getBuildingCenter(b);
-
-        // Overlap roof into wall top by 0.15 to eliminate light strip at junction
         const ROOF_OVERLAP = 0.15;
 
         if (b.roofType === 'flat') {
             const rw = bw + overhang, rh = 0.25 + ROOF_OVERLAP, rd = bh + overhang;
-            const box = MeshBuilder.CreateBox('rf', {
-                width: rw, height: rh, depth: rd,
-            }, scene);
+            const box = MeshBuilder.CreateBox('rf', { width: rw, height: rh, depth: rd }, scene);
             box.position = new Vector3(c.x, topY + 0.125 - ROOF_OVERLAP / 2, c.z);
-            applyWorldUVs(box);
+            // World-space UVs for flat roof
+            const pos = box.getVerticesData('position');
+            const nrm = box.getVerticesData('normal');
+            const uv  = new Float32Array(pos.length / 3 * 2);
+            for (let i = 0; i < pos.length / 3; i++) {
+                const wx = pos[i*3] + box.position.x;
+                const wy = pos[i*3+1] + box.position.y;
+                const wz = pos[i*3+2] + box.position.z;
+                const ax = Math.abs(nrm[i*3]), ay = Math.abs(nrm[i*3+1]), az = Math.abs(nrm[i*3+2]);
+                if (ax > ay && ax > az)      { uv[i*2] = wz; uv[i*2+1] = wy; }
+                else if (ay > ax && ay > az) { uv[i*2] = wx; uv[i*2+1] = wz; }
+                else                         { uv[i*2] = wx; uv[i*2+1] = wy; }
+            }
+            box.setVerticesData('uv', uv);
             flatMeshes.push(box);
         } else {
             const longAxis = bw >= bh;
-            const roofLen = (longAxis ? bw : bh) + overhang * 2;
+            const roofLen  = (longAxis ? bw : bh) + overhang * 2;
             const roofSpan = (longAxis ? bh : bw) + overhang * 2;
-
-            // Build triangular prism for gable roof using custom vertex data
             const halfSpan = roofSpan / 2;
-            const halfLen = roofLen / 2;
-
-            // Triangle cross-section vertices (in XY plane, extruded along Z)
+            const halfLen  = roofLen / 2;
             const slopeLen = Math.sqrt(halfSpan * halfSpan + ridgeHeight * ridgeHeight);
+
             const positions = [
-                // Front face
-                -halfSpan, 0, -halfLen,
-                 halfSpan, 0, -halfLen,
-                 0, ridgeHeight, -halfLen,
-                // Back face
-                -halfSpan, 0,  halfLen,
-                 0, ridgeHeight,  halfLen,
-                 halfSpan, 0,  halfLen,
-                // Left slope
-                -halfSpan, 0, -halfLen,
-                 0, ridgeHeight, -halfLen,
-                 0, ridgeHeight,  halfLen,
-                -halfSpan, 0,  halfLen,
-                // Right slope
-                 halfSpan, 0, -halfLen,
-                 halfSpan, 0,  halfLen,
-                 0, ridgeHeight,  halfLen,
-                 0, ridgeHeight, -halfLen,
-                // Bottom
-                -halfSpan, 0, -halfLen,
-                -halfSpan, 0,  halfLen,
-                 halfSpan, 0,  halfLen,
-                 halfSpan, 0, -halfLen,
+                -halfSpan, 0, -halfLen,  halfSpan, 0, -halfLen,  0, ridgeHeight, -halfLen,
+                -halfSpan, 0,  halfLen,  0, ridgeHeight,  halfLen,  halfSpan, 0,  halfLen,
+                -halfSpan, 0, -halfLen,  0, ridgeHeight, -halfLen,
+                 0, ridgeHeight,  halfLen, -halfSpan, 0,  halfLen,
+                 halfSpan, 0, -halfLen,  halfSpan, 0,  halfLen,
+                 0, ridgeHeight,  halfLen,  0, ridgeHeight, -halfLen,
+                -halfSpan, 0, -halfLen, -halfSpan, 0,  halfLen,
+                 halfSpan, 0,  halfLen,  halfSpan, 0, -halfLen,
             ];
-            const uvs = [
-                // Front face (triangle)
-                0, 0,
-                roofSpan, 0,
-                halfSpan, ridgeHeight,
-                // Back face (triangle)
-                0, 0,
-                halfSpan, ridgeHeight,
-                roofSpan, 0,
-                // Left slope (quad)
-                0, 0,
-                slopeLen, 0,
-                slopeLen, roofLen,
-                0, roofLen,
-                // Right slope (quad)
-                0, 0,
-                0, roofLen,
-                slopeLen, roofLen,
-                slopeLen, 0,
-                // Bottom (quad)
-                0, 0,
-                0, roofLen,
-                roofSpan, roofLen,
-                roofSpan, 0,
+            const roofUvs = [
+                0, 0, roofSpan, 0, halfSpan, ridgeHeight,
+                0, 0, halfSpan, ridgeHeight, roofSpan, 0,
+                0, 0, slopeLen, 0, slopeLen, roofLen, 0, roofLen,
+                0, 0, 0, roofLen, slopeLen, roofLen, slopeLen, 0,
+                0, 0, 0, roofLen, roofSpan, roofLen, roofSpan, 0,
             ];
-            const indices = [
-                0, 1, 2,           // front
-                3, 4, 5,           // back
-                6, 7, 8,  6, 8, 9, // left slope
-                10,11,12, 10,12,13, // right slope
-                14,15,16, 14,16,17, // bottom
+            const roofIndices = [
+                0, 1, 2,  3, 4, 5,
+                6, 7, 8,  6, 8, 9,
+                10,11,12, 10,12,13,
+                14,15,16, 14,16,17,
             ];
 
             const mesh = new Mesh('rs', scene);
             const vd = new VertexData();
             vd.positions = positions;
-            vd.indices = indices;
-            vd.uvs = uvs;
-            VertexData.ComputeNormals(positions, indices, vd.normals = []);
+            vd.indices   = roofIndices;
+            vd.uvs       = roofUvs;
+            VertexData.ComputeNormals(positions, roofIndices, vd.normals = []);
             vd.applyToMesh(mesh);
 
-            // Apply rotation for long axis + position at building top
-            if (longAxis) {
-                mesh.rotation.y = Math.PI / 2;
-            }
+            if (longAxis) mesh.rotation.y = Math.PI / 2;
             mesh.position = new Vector3(c.x, topY - ROOF_OVERLAP, c.z);
             slantMeshes.push(mesh);
         }
@@ -509,7 +443,6 @@ export function buildRoofs(scene) {
     }
 
     if (slantMeshes.length > 0) {
-        // Bake world transforms before merging (needed for rotated meshes)
         for (const m of slantMeshes) m.bakeCurrentTransformIntoVertices();
         const merged = Mesh.MergeMeshes(slantMeshes, true, true, undefined, false, true);
         if (merged) {
