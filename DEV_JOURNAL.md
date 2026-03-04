@@ -657,11 +657,25 @@
   - Fixed stick rotation on door re-parenting: world normal is now converted to door-local space via `Vector3.TransformNormal` with the inverse world matrix, so the tilt stays correct as the door rotates
   - Added `doorGroup.computeWorldMatrix(true)` before re-parenting to ensure fresh matrix when door is mid-rotation
 
+## 2026-02-28
+
+- **Fix z-fighting at building corners** (`walls.js`): eliminated wall geometry overlap at corner posts to remove flickering artifacts
+- **Clamp torch particle systems at ceiling** (`torches.js`): ember, spark, and smoke particles now killed at the per-floor ceiling Y to prevent visual leaking from 1st floor torches into the 2nd floor
+
 ## 2026-03-01
 
+- **Make 2-story stairs flush with walls and floor** (`floors.js`, `staticPhysics.js`): stairs now extend to adjacent perimeter walls with no gaps; fixed mid-floor z-fighting between overlapping slab and stair geometry
+- **Fix player character stuck in walk/run animation** (`modelLoader.js`): resolved animation state not resetting when player stops moving
 - **Line-of-sight checks for all interact targets** (`physics.js`, `torches.js`, `flowers.js`, `vegetation.js`, `furniture.js`, `npcAI.js`, `projectiles.js`): Fixed bug where items could be picked up or interacted with through solid walls/floors (e.g. grabbing torches inside a building from outside, sleeping in a bed on the 2nd floor from the 1st floor)
   - Added generic `hasLineOfSight(from, to)` to `physics.js` — casts a Havok physics raycast between two points and returns false if any solid body (wall, floor, roof, door, stairs) blocks the path
   - Applied LOS check to all 6 `getNearest*` functions: `getNearestPickableTorch`, `getNearestFlower`, `getNearestPickableRock`, `getNearestInFlightRock`, `getNearestSoldier`, `getNearestBed`
   - No indoor/outdoor heuristics — purely physics-based obstacle detection
+- **Fix torch light bleeding from 1st floor into 2nd floor** (`torches.js`): torch PointLights on one floor no longer illuminate geometry on adjacent floors
 
-- **Per-building-side wall meshes** (`walls.js`, `windows.js`, `floors.js`): Replaced per-cell box wall geometry with per-building-side continuous meshes using horizontal band decomposition. Each wall side (N/S/E/W) is now a single flat slab with rectangular cutouts for doors/windows, built directly in world space with triplanar UVs. Eliminates all texture stitching seams between adjacent wall sections. EW walls span the full Z range including corners so perpendicular walls mutually seal each other. Walls are 0.01 thicker than nominal to cover sub-pixel cracks at corner edges. Also: 2nd floor texture changed to wood planks, mid-floor slabs shrunk to wall inner face with zOffset layering to prevent bleed-through, window glass/frame positioning simplified to cell centres
+## 2026-03-03
+
+- **Per-building-side wall meshes** (`walls.js`, `windows.js`): Replaced per-cell box wall geometry with per-building-side continuous meshes using horizontal band decomposition. Each wall side (N/S/E/W) is now a single flat slab with rectangular cutouts for doors/windows, built directly in world space with triplanar UVs. Eliminates all texture stitching seams between adjacent wall sections. EW walls span the full Z range including corners so perpendicular walls mutually seal each other. Walls are 0.01 thicker than nominal to cover sub-pixel cracks at corner edges. Window glass/frame positioning simplified to cell centres.
+- **Single-mesh stair geometry** (`floors.js`): Replaced 8 overlapping CreateBox calls per staircase with single-mesh VertexData geometry (treads, risers, side profiles, back wall, bottom face). Eliminates z-fighting between coplanar internal stair faces.
+- **Stair torch shadow casters** (`floors.js`, `main.js`): Registered merged stair mesh with `addTorchShadowCaster` so indoor torch light casts proper stair-shaped silhouettes on nearby walls.
+- **Fix torch pickup in 2-story buildings** (`staticPhysics.js`, `physics.js`): Mid-floor physics slabs now use `CEILING_COLLISION_GROUP` (previously defaulted to `GRP_DEFAULT` because the collision group parameter was omitted). The `hasLineOfSight` raycast excludes `GRP_CEILING`, so torches inside 2-story buildings are now reachable.
+- **Fix torch glow halo not following door rotation** (`torches.js`): Billboard-mode glow meshes don't correctly inherit parent rotation for positioning in Babylon.js. Glow is no longer parented to the door group; instead its world position is synced from the flame's absolute position every frame in `updateDoorTorchPositions`.

@@ -138,14 +138,14 @@ src/
     grid.js            2D collision grid, floor height, stair zones, walkability
     generator.js       Procedural building placement with stairs, doors, windows
     terrainMeshes.js   Ground plane (displaced mesh) and Gerstner wave ocean shader
-    walls.js           Building walls (merged geometry, triplanar UV) and roofs
+    walls.js           Building walls (VertexData, triplanar UV) and roofs
     floors.js          Ground floor slabs, mid-floor pieces, stair steps
     windows.js         Glass panes (breakable) and wooden window frames
     staticPhysics.js   Havok static bodies for walls, floors, roofs, stairs
     vegetation.js      Low-poly trees and rocks with physics bodies
     terrain.js         Perlin noise terrain heightmap
     boundary.js        World-edge hex-grid shield effect
-    torches.js         Wall-mounted torches, clustered lighting, ember particles
+    torches.js         Wall-mounted torches, clustered lighting, ember particles, door tracking
     doors.js           Door meshes with pivot rotation, open/close, kinematic bodies
     flowers.js         Flower pickup, planting, preview system
     furniture.js       Procedural furniture (beds) geometry generation
