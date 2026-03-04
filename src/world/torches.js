@@ -687,8 +687,10 @@ export function placeTorchAtPreview(scene) {
     // Ensure world matrix is fresh (door may be mid-rotation)
     doorGroup.computeWorldMatrix(true);
     const invWorld = doorGroup.getWorldMatrix().clone().invert();
-    // Re-parent flame + stick + glow into door group (convert to door-local coords)
-    for (const child of [t.flame, t.stick, t.glow]) {
+    // Re-parent flame + stick into door group (convert to door-local coords)
+    // Glow billboard is NOT parented — billboard mode breaks parent-rotation positioning;
+    // its position is synced every frame in updateDoorTorchPositions instead.
+    for (const child of [t.flame, t.stick]) {
       if (!child) continue;
       const wp = child.getAbsolutePosition();
       child.parent = doorGroup;
@@ -735,6 +737,9 @@ export function updateDoorTorchPositions() {
     t.wz = wp.z;
     // Update pooled light position to match
     t.light.position = new Vector3(wp.x, wp.y + 0.04, wp.z);
+    // Glow billboard isn't parented to door (billboard mode breaks parent positioning),
+    // so sync its world position from the flame each frame
+    if (t.glow) t.glow.position.set(wp.x, wp.y, wp.z);
   }
 }
 
