@@ -66,7 +66,7 @@ src/
     vegetation.js          # Low-poly trees and rocks (with physics bodies)
     terrain.js             # Perlin noise terrain heightmap
     boundary.js            # World-edge hex-grid shield effect
-    torches.js             # Wall-mounted point lights, torch pickup/placement
+    torches.js             # Wall-mounted point lights, torch pickup/placement, door torch tracking
     doors.js               # Door meshes with pivot rotation, open/close, kinematic bodies
     flowers.js             # Flower pickup, planting, preview system
     furniture.js           # Procedural furniture (beds) geometry generation
@@ -107,7 +107,7 @@ src/
 - Projectiles are dynamic sphere bodies with per-shape friction/restitution
 - Static world bodies: wall boxes, floor slabs, stair steps, ceiling slabs, roof slopes, ridge caps, rock spheres, terrain heightfield, boundary walls — each gets a lightweight `TransformNode` (no mesh)
 - Collision groups use `shape.filterMembershipMask` / `shape.filterCollideMask` bitmasks (not packed u32)
-- Ceiling slabs (CEILING_COLLISION_GROUP) prevent jumping into attic on slanted-roof buildings
+- Ceiling slabs and mid-floor slabs use CEILING_COLLISION_GROUP — prevents jumping into attic on slanted-roof buildings, and excluded from `hasLineOfSight` raycasts so interactions work through the thick floor slab
 - Doors use ANIMATED (kinematic) box bodies with `disablePreStep = false` — moving the TransformNode auto-syncs to physics
 - Dynamic bodies (player, projectiles) use `disablePreStep = false` so position teleports work; static bodies use `disablePreStep = true` for zero overhead
 - Manual physics stepping: `scene.physicsEnabled = false` disables auto-step; accumulator calls `physicsEngine._step(1/60)` to preserve fast-forward mechanics
@@ -232,3 +232,4 @@ Keep entries append-only — never edit or remove previous entries.
 - `scene.useRightHandedSystem = true` to match original Three.js coordinate conventions used throughout the codebase
 - WebGPU workarounds: strip unused UV channels (uv2-uv6) from GLTF models; skip LensFlareSystem on WebGPU; defer menu scene cleanup instead of explicit dispose
 - Menu fire particles fetched from Babylon.js CDN (`ParticleHelper.CreateAsync("fire")`) — requires internet on first load
+- Billboard-mode meshes (`billboardMode = BILLBOARDMODE_ALL`) don't correctly inherit parent node rotation for positioning. Workaround: keep billboard meshes unparented and sync their world position manually each frame (see torch glow on doors)
