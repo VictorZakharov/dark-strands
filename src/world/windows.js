@@ -1,7 +1,7 @@
 import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3,
          SolidParticleSystem } from 'babylonjs';
 import { CFG } from '../config.js';
-import { getGrid, isDoorCell, isWindowCell, isStairCell } from './grid.js';
+// grid imports removed — wall openings now centred at cell coords
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 
@@ -142,29 +142,6 @@ export function buildWindows(scene) {
         }
     }
 
-    // Thin-post detection — needed to compute glass/frame offset matching wall openings
-    const grid = getGrid();
-    const winCornerCells = new Set();
-    for (const b of getBuildings()) {
-        winCornerCells.add(`${b.x},${b.z}`);
-        winCornerCells.add(`${b.x + b.w - 1},${b.z}`);
-        winCornerCells.add(`${b.x},${b.z + b.h - 1}`);
-        winCornerCells.add(`${b.x + b.w - 1},${b.z + b.h - 1}`);
-    }
-    function isWinThinPost(gx, gz) {
-        if (gx < 0 || gz < 0 || gx >= CFG.GRID || gz >= CFG.GRID) return false;
-        if (grid[gx][gz] || isDoorCell(gx, gz) || isWindowCell(gx, gz) || isStairCell(gx, gz)) return false;
-        if (winCornerCells.has(`${gx},${gz}`)) return true;
-        const oN = gz > 0 && grid[gx][gz - 1];
-        const oS = gz < CFG.GRID - 1 && grid[gx][gz + 1];
-        const oW = gx > 0 && grid[gx - 1][gz];
-        const oE = gx < CFG.GRID - 1 && grid[gx + 1][gz];
-        const facesNS = oN || oS;
-        const facesEW = oW || oE;
-        return (facesNS && facesEW) || (!facesNS && !facesEW);
-    }
-    const winExt = CFG.CELL / 2 + CFG.WALL_T / 2;
-
     const frameMeshes = [];
     const glassMeshes = [];
     let glassVertCount = 0; // running vertex offset for pane registry
@@ -172,20 +149,6 @@ export function buildWindows(scene) {
     for (const [, cw] of cellWindows) {
         const p = g2w(cw.gx, cw.gz);
         const isNS = cw.wall === 'south' || cw.wall === 'north';
-
-        // Compute offset so glass/frame align with wall openings
-        let extLeft = 0, extRight = 0;
-        if (isNS) {
-            extLeft = isWinThinPost(cw.gx - 1, cw.gz) ? winExt : 0;
-            extRight = isWinThinPost(cw.gx + 1, cw.gz) ? winExt : 0;
-        } else {
-            extLeft = isWinThinPost(cw.gx, cw.gz - 1) ? winExt : 0;
-            extRight = isWinThinPost(cw.gx, cw.gz + 1) ? winExt : 0;
-        }
-
-        const offsetCenter = (extRight - extLeft) / 2;
-        const ocX = isNS ? offsetCenter : 0;
-        const ocZ = isNS ? 0 : offsetCenter;
 
         // Deduplicate windows per floor
         const floorMap = new Map();
@@ -200,8 +163,8 @@ export function buildWindows(scene) {
             const winH = CFG.WALL_H * win.hFrac;
             const baseY = (win.floor - 1) * CFG.WALL_H + CFG.WALL_H * 0.5;
 
-            const cx = p.x + ocX;
-            const cz = p.z + ocZ;
+            const cx = p.x;
+            const cz = p.z;
 
             // --- Glass pane ---
             const pane = MeshBuilder.CreatePlane('winGlass', {

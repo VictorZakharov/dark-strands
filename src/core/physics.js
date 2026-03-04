@@ -524,7 +524,9 @@ export function hasLineOfSight(from, to) {
   const _to   = new Vector3(to.x,   to.y,   to.z);
 
   _rayResult.reset();
-  physicsEngine.raycastToRef(_from, _to, _rayResult, { collideWith: GRP_ALL & ~GRP_PLAYER });
+  // Exclude player capsule and ceiling slabs (ceiling is for movement physics only,
+  // not interaction blocking — both eye and torch flame sit inside the thick slab)
+  physicsEngine.raycastToRef(_from, _to, _rayResult, { collideWith: GRP_ALL & ~GRP_PLAYER & ~GRP_CEILING });
 
   // If nothing was hit, line of sight is clear.
   // If something was hit, check whether it's closer than the target.
