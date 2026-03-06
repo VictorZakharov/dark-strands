@@ -4,6 +4,9 @@ import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 
+let _wallMesh = null;
+export function getWallMesh() { return _wallMesh; }
+
 function loadTex(path, uScale, vScale, scene) {
     const tex = new Texture(path, scene);
     tex.uScale = uScale;
@@ -333,6 +336,7 @@ export function buildWalls(scene) {
         mesh.material = wallMat;
         addShadowCaster(mesh);
         enableShadowReceiving(mesh);
+        _wallMesh = mesh;
     }
 
 }

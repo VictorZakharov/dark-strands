@@ -6,7 +6,7 @@ import { initGrid } from './world/grid.js';
 import { generateBuildings } from './world/generator.js';
 import { buildGround, buildWater, getWaterMaterial } from './world/terrainMeshes.js';
 import { buildFloors, getMergedFloors, getMergedMidFloors, getMergedStairs } from './world/floors.js';
-import { buildWalls, buildRoofs } from './world/walls.js';
+import { buildWalls, buildRoofs, getWallMesh } from './world/walls.js';
 import { buildWindows } from './world/windows.js';
 import { createWorldPhysicsBodies } from './world/staticPhysics.js';
 import { placeTrees, placeRocks, getNearestPickableRock } from './world/vegetation.js';
@@ -438,6 +438,8 @@ async function buildWorld() {
   placeRocks(scene);
   initTorchLightPool(scene); // must precede placeTorches — creates clustered container
   // Register floor meshes as torch shadow casters (blocks light between floors)
+  const wallMesh = getWallMesh();
+  if (wallMesh) addTorchShadowCaster(wallMesh);
   const floorMesh = getMergedFloors();
   if (floorMesh) addTorchShadowCaster(floorMesh);
   const midFloorMesh = getMergedMidFloors();

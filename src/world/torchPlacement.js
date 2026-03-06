@@ -182,54 +182,42 @@ function findPlacementTarget(camera) {
     const walkable = isWalkable(x, z);
     if (!walkable && prevWalkable) {
       const g = w2g(x, z);
+      const isDoor = isDoorCell(g.x, g.z);
 
-      // Door cell: door panel placement handled by findDoorPanelHit above,
-      // only handle lintel (above door gap) here
-      if (isDoorCell(g.x, g.z)) {
-        const door = getDoorByCell(g.x, g.z);
-        if (door) {
-          const doorTopY = CFG.WALL_H * 0.88;
-          if (y >= doorTopY && y <= CFG.WALL_H) {
-            // Above door gap — mount on lintel wall, normal outward
-            const hitX2 = !isWalkable(x, prevZ);
-            const hitZ2 = !isWalkable(prevX, z);
-            let nx2 = 0, nz2 = 0;
-            if (hitX2 && !hitZ2) nx2 = dir.x > 0 ? -1 : 1;
-            else if (hitZ2 && !hitX2) nz2 = dir.z > 0 ? -1 : 1;
-            else { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
-            const wc = g2w(g.x, g.z);
-            const wallSurf = CFG.WALL_T / 2;
-            const mountX = nx2 !== 0 ? wc.x + nx2 * wallSurf : prevX;
-            const mountZ = nz2 !== 0 ? wc.z + nz2 * wallSurf : prevZ;
-            if (isTooCloseToTorch(mountX, y, mountZ)) { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
-            if (y + TIP_UP > CFG.WALL_H - 0.05) { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
-            return { type: 'wall', x: mountX, z: mountZ, y, nx: nx2, nz: nz2 };
-          }
-        }
-        // Door panel handled by findDoorPanelHit — skip regular wall processing
-        prevX = x; prevZ = z; prevWalkable = walkable;
-        continue;
-      }
-
+      // Door opening: skip but keep prevWalkable=true so lintel triggers on next step
+      if (isDoor && y < CFG.WALL_H * 0.88) { prevX = x; prevZ = z; continue; }
+      // Window opening: block placement
       if (isWindowCell(g.x, g.z) && isInsideWindowOpening(g.x, g.z, y, prevX, prevZ)) return null;
 
       // Reject if Y is above the wall height (torch would be on/above roof)
       const maxWallY = getWallHeightAt(g.x, g.z);
       if (y > maxWallY || y < 0) return null;
       // Per-floor ceiling check — prevent torch tip from clipping through ceiling
-      const floorCeilY = Math.min((Math.floor(y / CFG.WALL_H) + 1) * CFG.WALL_H, maxWallY);
-      if (y + TIP_UP > floorCeilY - 0.05) return null;
+      // Door cells: only check against max wall height (exterior wall, floor slab not visible)
+      const ceilY = isDoor ? maxWallY : Math.min((Math.floor(y / CFG.WALL_H) + 1) * CFG.WALL_H, maxWallY);
+      if (y + TIP_UP > ceilY - 0.05) return null;
 
-      const hitX = !isWalkable(x, prevZ);
-      const hitZ = !isWalkable(prevX, z);
+      // Determine wall normal
       let nx = 0, nz = 0;
-      if (hitX && !hitZ) { nx = dir.x > 0 ? -1 : 1; }
-      else if (hitZ && !hitX) { nz = dir.z > 0 ? -1 : 1; }
-      else if (hitX && hitZ) {
-        // Ambiguous corner — use dominant ray direction for normal
-        if (Math.abs(dir.x) > Math.abs(dir.z)) { nx = dir.x > 0 ? -1 : 1; }
-        else { nz = dir.z > 0 ? -1 : 1; }
-      } else { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
+      if (isDoor) {
+        // Door cell is non-walkable like its neighbours — grid-based normal detection
+        // is ambiguous. Use the door's known wall direction instead.
+        const door = getDoorByCell(g.x, g.z);
+        if (!door) { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
+        const isNS = door.wall === 'north' || door.wall === 'south';
+        if (isNS) nz = dir.z > 0 ? -1 : 1;
+        else nx = dir.x > 0 ? -1 : 1;
+      } else {
+        const hitX = !isWalkable(x, prevZ);
+        const hitZ = !isWalkable(prevX, z);
+        if (hitX && !hitZ) { nx = dir.x > 0 ? -1 : 1; }
+        else if (hitZ && !hitX) { nz = dir.z > 0 ? -1 : 1; }
+        else if (hitX && hitZ) {
+          if (Math.abs(dir.x) > Math.abs(dir.z)) { nx = dir.x > 0 ? -1 : 1; }
+          else { nz = dir.z > 0 ? -1 : 1; }
+        } else { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
+      }
+
       // Snap mount point to wall surface (flush)
       const wc = g2w(g.x, g.z);
       const wallSurf = CFG.WALL_T / 2;
