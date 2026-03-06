@@ -6,7 +6,7 @@ import { isWalkable, isWindowCell } from '../world/grid.js';
 import { w2g } from '../utils/helpers.js';
 import { tryBreakWindow, isWindowBrokenAt } from '../world/windows.js';
 import { getPlayerState, getPlayerBody } from '../entities/player.js';
-import { createProjectileSphere, removeBody, hasLineOfSight } from '../core/physics.js';
+import { createProjectileSphere, removeBody, hasLineOfSight, GRP_PROJECTILE } from '../core/physics.js';
 import { spawnBoundaryHit } from '../world/boundary.js';
 import { getScene, getCamera } from '../core/scene.js';
 // Shadow caster registration removed for stones — too small for visible shadows
@@ -276,22 +276,33 @@ export function updateProjectiles(dt) {
 /** Returns the nearest in-flight projectile within pickup range, or null. */
 export function getNearestInFlightRock() {
   const p = getPlayerState();
+  const cam = getCamera();
+  if (!cam) return null;
+
   let best = null;
-  let bestDist = CFG.ROCK_PICK_DIST;
+  let bestDot = -Infinity;
 
   const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+  const viewDir = cam.getForwardRay(1).direction;
 
   for (const pr of projectiles) {
     if (!pr.alive) continue;
-    if (pr.age < 0.5) continue;
+    if (pr.age < 0.5) continue; 
     const bpos = pr.body.position;
     const dx = p.x - bpos.x;
     const dy = (p.y + CFG.PLAYER_H * 0.5) - bpos.y;
     const dz = p.z - bpos.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (dist < bestDist) {
-      if (!hasLineOfSight(eyePos, { x: bpos.x, y: bpos.y, z: bpos.z })) continue;
-      bestDist = dist;
+    
+    if (dist > CFG.ROCK_PICK_DIST) continue;
+
+    const rockPos = new Vector3(bpos.x, bpos.y, bpos.z);
+    const toTarget = rockPos.subtract(new Vector3(eyePos.x, eyePos.y, eyePos.z)).normalize();
+    const dot = Vector3.Dot(viewDir, toTarget);
+
+    if (dot > 0.4 && dot > bestDot) {
+      if (!hasLineOfSight(eyePos, rockPos, GRP_PROJECTILE)) continue;
+      bestDot = dot;
       best = pr;
     }
   }
@@ -300,31 +311,14 @@ export function getNearestInFlightRock() {
 
 /** Pick up the nearest in-flight projectile within reach. Returns true if picked. */
 export function pickNearestInFlightRock(inventory) {
-  const p = getPlayerState();
-  let bestIdx = -1;
-  let bestDist = CFG.ROCK_PICK_DIST;
+  const pr = getNearestInFlightRock();
+  if (!pr) return false;
 
-  for (let i = 0; i < projectiles.length; i++) {
-    const pr = projectiles[i];
-    if (!pr.alive) continue;
-    if (pr.age < 0.5) continue;
-    const dx = p.x - pr.body.position.x;
-    const dy = (p.y + CFG.PLAYER_H * 0.5) - pr.body.position.y;
-    const dz = p.z - pr.body.position.z;
-    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestIdx = i;
-    }
-  }
-
-  if (bestIdx < 0) return false;
-
-  const pr = projectiles[bestIdx];
   pr.alive = false;
   pr.mesh.dispose();
   removeBody(pr.body);
-  projectiles.splice(bestIdx, 1);
+  const idx = projectiles.indexOf(pr);
+  if (idx > -1) projectiles.splice(idx, 1);
   inventory.stones++;
   return true;
 }
@@ -382,7 +376,8 @@ const ROCK_PLACE_STEP = 0.12;
 
 export function initRockPreview(scene) {
   const mat = new StandardMaterial('rockPreviewMat', scene);
-  mat.diffuseColor = new Color3(0.267, 1.0, 0.267); // #44ff44
+  mat.diffuseColor = new Color3(0, 0, 0); // black diffuse
+  mat.emissiveColor = new Color3(0.267, 1.0, 0.267); // Bright green emissive
   mat.alpha = 0.5;
   mat.disableLighting = true;
 

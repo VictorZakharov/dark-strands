@@ -266,6 +266,18 @@ export function createWorldPhysicsBodies() {
                 createStaticBox(stairWidth / 2, sh / 2, stepD / 2, stairX, sh / 2, zMax - (i + 0.5) * stepD);
             }
 
+            // West side wall of stairwell — prevents player capsule from clipping
+            // into the stair area from the building interior (ground floor only;
+            // on the 2nd floor the mid-floor slab covers the stairwell)
+            const sideWallThick = CFG.WALL_T / 2;
+            const sideWallH = CFG.WALL_H;
+            createStaticBox(
+                sideWallThick / 2,
+                sideWallH / 2,
+                totalDepth / 2,
+                stairLeftEdge - sideWallThick / 2, sideWallH / 2, (zMin + zMax) / 2
+            );
+
             // Solid wall behind stairwell — spans from stair right edge through
             // the east perimeter wall outer face, making a seamless wall from outside
             const eastWallP = g2w(b.x + b.w - 1, s.gzStart);

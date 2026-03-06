@@ -8,7 +8,7 @@ import { getPlayerState } from '../entities/player.js';
 import { getTerrainHeight } from './terrain.js';
 import { getCamera, getScene } from '../core/scene.js';
 import { collidesWithRock } from './vegetation.js';
-import { createKinematicBox } from '../core/physics.js';
+import { createKinematicBox, hasLineOfSight, GRP_DOOR } from '../core/physics.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 import { addTorchShadowCaster } from '../world/torches.js';
 
@@ -132,7 +132,7 @@ function buildFancyDoorLeaf(scene, w, h, thick, leafIndex) {
   const mKnob = Mesh.MergeMeshes(knobParts, true, true, undefined, false, false);
   mKnob.material = knobMat;
 
-  const merged = Mesh.MergeMeshes([mBase, mFrame, mKnob], true, true, undefined, true, false);
+  const merged = Mesh.MergeMeshes([mBase, mFrame, mKnob], true, true, undefined, true, true);
   merged.name = `doorMerged_${leafIndex}`;
   merged.parent = leaf;
   addShadowCaster(merged);
@@ -224,11 +224,14 @@ export function getAllDoors() { return doors; }
 
 export function getNearestDoor() {
   const p = getPlayerState();
-  const scene = getScene();
+  const cam = getCamera();
+  if (!cam) return null;
+  
   let best = null;
-  let bestDist = INTERACT_DIST;
+  let bestDot = -Infinity; // highest dot product wins (closest to crosshair)
 
   const eyePos = new Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
+  const viewDir = cam.getForwardRay(1).direction;
 
   for (const door of doors) {
     // Skip doors if player is above door level (e.g. on 2nd floor)
@@ -256,8 +259,24 @@ export function getNearestDoor() {
     const nearX = hx + t * segDx;
     const nearZ = hz + t * segDz;
     const dist = Math.sqrt((p.x - nearX) ** 2 + (p.z - nearZ) ** 2);
-    if (dist < bestDist) {
-      bestDist = dist;
+    
+    // Must be in interaction range
+    if (dist > INTERACT_DIST) continue;
+
+    const doorY = doorBaseY + CFG.WALL_H * 0.5;
+    const pc = getDoorPanelCenter(door);
+    
+    // Calculate dot product to center of door panel
+    const doorCenterPos = new Vector3(pc.x, doorY, pc.z);
+    const toTarget = doorCenterPos.subtract(eyePos).normalize();
+    const dot = Vector3.Dot(viewDir, toTarget);
+
+    if (dot > 0.4 && dot > bestDot) {
+      // Check line of sight to the door panel center to prevent interacting through walls
+      // Ignore the door collision group so the ray cast doesn't hit the very door we want to interact with
+      if (!hasLineOfSight(eyePos, doorCenterPos, GRP_DOOR)) continue;
+
+      bestDot = dot;
       best = door;
     }
   }

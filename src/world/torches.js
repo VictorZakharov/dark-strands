@@ -7,10 +7,11 @@ import { getBuildings } from './generator.js';
 import { g2w, rngInt } from '../utils/helpers.js';
 import { CFG } from '../config.js';
 import { getPlayerState } from '../entities/player.js';
-import { hasLineOfSight } from '../core/physics.js';
+import { hasLineOfSight, GRP_WINDOW } from '../core/physics.js';
 import { getInventory } from './flowers.js';
 import { getClusteredContainer } from './torchLighting.js';
 import { addTorchEmbers } from './torchParticles.js';
+import { getCamera } from '../core/scene.js';
 
 // Re-export from submodules for external consumers
 export { addTorchShadowCaster, getTorchShadowGenerators, initTorchLightPool } from './torchLighting.js';
@@ -128,11 +129,8 @@ export function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ)
     mountY + TIP_UP / 2,
     mountZ + normalZ * TIP_OUT / 2
   );
-  if (Math.abs(normalX) > 0.5) {
-    stick.rotation.z = normalX > 0 ? -TILT : TILT;
-  } else {
-    stick.rotation.x = normalZ > 0 ? TILT : -TILT;
-  }
+  const yaw = Math.atan2(normalX, normalZ);
+  stick.rotation = new Vector3(TILT, yaw, 0);
   stick.isPickable = false;
 
   return { light, flame, glow, stick, wx: tipX, wz: tipZ };
@@ -266,20 +264,35 @@ export function placeDoorTorches(scene) {
 
 export function getNearestPickableTorch() {
   const p = getPlayerState();
+  const cam = getCamera();
+  if (!cam) return null;
+  
   let best = null;
-  let bestDist = CFG.TORCH_PICK_DIST;
+  let bestDot = -Infinity; // Find highest dot product (closest to crosshair)
 
   const eyePos = new Vector3(p.x, p.y + CFG.PLAYER_H * 0.8, p.z);
+  const viewDir = cam.getForwardRay(1).direction;
 
   for (const t of pickableTorches) {
     if (!t.active) continue;
 
     const targetPos = t.flame.getAbsolutePosition();
-
     const dist = Vector3.Distance(eyePos, targetPos);
-    if (dist < bestDist) {
-      if (!hasLineOfSight(eyePos, targetPos)) continue;
-      bestDist = dist;
+    
+    // Must be within interaction distance and generally in front of player
+    if (dist > CFG.TORCH_PICK_DIST) continue;
+
+    const toTarget = targetPos.subtract(eyePos).normalize();
+    const dot = Vector3.Dot(viewDir, toTarget);
+
+    if (dot > 0.5 && dot > bestDot) {
+      // Pull target slightly towards eye to avoid raycasting into the wall/stair geometry
+      // behind the flame, which would block the line of sight check
+      const dir = eyePos.subtract(targetPos).normalize();
+      const testPos = targetPos.add(dir.scale(0.15));
+      
+      if (!hasLineOfSight(eyePos, testPos, GRP_WINDOW)) continue;
+      bestDot = dot;
       best = t;
     }
   }

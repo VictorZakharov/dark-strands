@@ -115,6 +115,33 @@ export function isStairCell(gx, gz) {
   return stairCells.has(`${gx},${gz}`);
 }
 
+/** Return the stair zone containing a world position, or null. */
+export function getStairZone(wx, wz) {
+  for (const s of stairZones) {
+    if (wx >= s.xMin && wx <= s.xMax && wz >= s.zMin && wz <= s.zMax) return s;
+  }
+  return null;
+}
+
+/** Get stair step tread Y at world position (snapped to discrete steps), or null.
+ *  margin shrinks the zone bounds to keep torches away from walls.
+ *  Uses geometry zMin (floors.js) for step depth to match actual tread positions. */
+export function getStairSurfaceY(wx, wz, margin = 0) {
+  const N = 8;
+  for (const s of stairZones) {
+    if (wx >= s.xMin + margin && wx <= s.xMax - margin
+     && wz >= s.zMin + margin && wz <= s.zMax - margin) {
+      const geomZMin = s.geomZMin !== undefined ? s.geomZMin : s.zMin;
+      const totalDepth = s.zMax - geomZMin;
+      const stepD = totalDepth / N;
+      const stepH = (CFG.WALL_H - 0.125 + 0.25) / N; // matches floorTopY / N in floors.js
+      const stepIdx = Math.min(N - 1, Math.max(0, Math.floor((s.zMax - wz) / stepD)));
+      return getTerrainHeight(wx, wz) + (stepIdx + 1) * stepH;
+    }
+  }
+  return null;
+}
+
 export function markTreeCell(gx, gz) {
   treeCells.add(`${gx},${gz}`);
 }
