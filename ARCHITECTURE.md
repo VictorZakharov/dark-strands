@@ -67,9 +67,17 @@ src/
 │   │                        # player or projectile hits the playable map boundary.
 │   ├── doors.js             # Manages door entities: kinematic Havok bodies, swing animations,
 │   │                        # collision, open/close interaction.
-│   ├── torches.js           # Wall-mounted torches with PointLights (clustered), billboarded
-│   │                        # glow halos, teardrop flames, GPU-driven ember ParticleSystems.
-│   │                        # Torch pickup, placement, shadow slots, door torch position sync.
+│   ├── torches.js           # Torch core: mesh creation, shared materials, world placement
+│   │                        # (interior + door torches), pickup logic, door torch sync.
+│   │                        # Re-exports from submodules for external consumers.
+│   ├── torchLighting.js     # Clustered light container (GPU tiled), shadow slot generators
+│   │                        # (2 nearest torches get shadow-casting PointLights).
+│   ├── torchParticles.js    # Ember/smoke/spark ParticleSystems per torch, procedural
+│   │                        # DynamicTextures, flicker animation, shadow slot management.
+│   ├── torchPlacement.js    # Player torch placement: preview ghost, ray-march targeting,
+│   │                        # door panel ray-plane intersection, wall/ground snapping.
+│   ├── torchHeld.js         # First-person held torch: mesh, light, particles, 1st/3rd
+│   │                        # person positioning, prewarm for WebGPU pipeline.
 │   ├── furniture.js         # Procedurally generates interactive wooden beds inside buildings,
 │   │                        # complete with frames, mattresses, and pillows.
 │   ├── flowers.js           # Handles spawning, picking up (`E`), planting, and inventory
@@ -122,11 +130,10 @@ Backup files:
 
 ## File Statistics
 
-| File | Size (Bytes) | Total Lines | Logical Lines |
+| File | Size (Bytes) ▼ | Total Lines | Logical Lines |
 |---|---|---|---|
-| `src/world/torches.js` | 44923 | 1202 | 915 |
-| `src/world/furniture.js` | 25487 | 623 | 479 |
 | `src/entities/player.js` | 25810 | 699 | 528 |
+| `src/world/furniture.js` | 25487 | 623 | 479 |
 | `src/main.js` | 23980 | 659 | 528 |
 | `src/systems/menu.js` | 22643 | 627 | 492 |
 | `src/core/physics.js` | 19425 | 544 | 407 |
@@ -137,10 +144,13 @@ Backup files:
 | `src/systems/controls.js` | 16629 | 453 | 381 |
 | `src/world/vegetation.js` | 16122 | 502 | 396 |
 | `src/systems/projectiles.js` | 15388 | 477 | 386 |
+| `src/world/torchPlacement.js` | 14592 | 384 | 290 |
 | `src/world/windows.js` | 13876 | 341 | 269 |
 | `src/world/floors.js` | 12987 | 314 | 255 |
+| `src/world/torches.js` | 12691 | 332 | 250 |
 | `src/systems/campfire-custom-particles.bak.js` | 11152 | 273 | 221 |
 | `src/entities/modelLoader.js` | 11131 | 317 | 236 |
+| `src/world/torchParticles.js` | 10802 | 308 | 230 |
 | `src/systems/touch.js` | 9385 | 274 | 226 |
 | `src/world/terrainMeshes.js` | 9008 | 262 | 192 |
 | `src/world/flowers.js` | 8597 | 285 | 226 |
@@ -149,12 +159,14 @@ Backup files:
 | `src/systems/hotbar.js` | 6498 | 201 | 169 |
 | `src/systems/daynight.js` | 6471 | 196 | 150 |
 | `src/world/grid.js` | 5736 | 196 | 150 |
+| `src/world/torchHeld.js` | 5493 | 152 | 115 |
 | `src/systems/hud.js` | 4802 | 143 | 117 |
 | `src/world/boundary.js` | 4713 | 157 | 116 |
 | `src/core/scene.js` | 3555 | 97 | 72 |
 | `src/systems/sleep.js` | 2623 | 83 | 62 |
+| `src/world/torchLighting.js` | 1509 | 47 | 35 |
 | `src/config.js` | 1214 | 66 | 42 |
 | `src/world/terrain.js` | 754 | 24 | 19 |
 | `src/entities/models.js` | 648 | 31 | 30 |
 | `src/utils/helpers.js` | 550 | 27 | 22 |
-| **Total (33 files)** | **410601** | **11385** | **8893** |
+| **Total (37 files)** | **414880** | **11399** | **8948** |

@@ -679,3 +679,9 @@
 - **Stair torch shadow casters** (`floors.js`, `main.js`): Registered merged stair mesh with `addTorchShadowCaster` so indoor torch light casts proper stair-shaped silhouettes on nearby walls.
 - **Fix torch pickup in 2-story buildings** (`staticPhysics.js`, `physics.js`): Mid-floor physics slabs now use `CEILING_COLLISION_GROUP` (previously defaulted to `GRP_DEFAULT` because the collision group parameter was omitted). The `hasLineOfSight` raycast excludes `GRP_CEILING`, so torches inside 2-story buildings are now reachable.
 - **Fix torch glow halo not following door rotation** (`torches.js`): Billboard-mode glow meshes don't correctly inherit parent rotation for positioning in Babylon.js. Glow is no longer parented to the door group; instead its world position is synced from the flame's absolute position every frame in `updateDoorTorchPositions`.
+
+## 2026-03-05
+
+- **Refactor torches.js** into 5 focused modules: `torchLighting.js` (clustered lights, shadow generators), `torchParticles.js` (embers/smoke/sparks, flicker, shadow slot management), `torchPlacement.js` (preview, ray-march, door panel placement), `torchHeld.js` (first-person held torch), and `torches.js` (core: mesh creation, materials, world placement, pickup). All external imports unchanged via re-exports from `torches.js`.
+- **Fix torch placement on nearby walls**: invalid ground hit no longer aborts the entire placement search; ray continues to find wall targets behind it.
+- **Fix torch placement on ambiguous walls**: corner-hit rejection (`return null` when both X and Z axes hit non-walkable) replaced with dominant ray-direction normal selection, allowing torch placement on walls in small buildings.
