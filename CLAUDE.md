@@ -66,7 +66,11 @@ src/
     vegetation.js          # Low-poly trees and rocks (with physics bodies)
     terrain.js             # Perlin noise terrain heightmap
     boundary.js            # World-edge hex-grid shield effect
-    torches.js             # Wall-mounted point lights, torch pickup/placement, door torch tracking
+    torches.js             # Torch core: mesh creation, materials, world placement, pickup
+    torchLighting.js       # Clustered light container, shadow slot generators
+    torchParticles.js      # Ember/smoke/spark particles, flicker, shadow slot management
+    torchPlacement.js      # Player torch placement: preview, ray-march, door panel hits
+    torchHeld.js           # First-person held torch rendering
     doors.js               # Door meshes with pivot rotation, open/close, kinematic bodies
     flowers.js             # Flower pickup, planting, preview system
     furniture.js           # Procedural furniture (beds) geometry generation
