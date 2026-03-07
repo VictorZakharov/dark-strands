@@ -143,8 +143,8 @@ function updateInteractHint(camera) {
 
   const torch = getNearestPickableTorch();
   if (torch) {
-    const torchHintY = torch.flame.position.y + 0.35;
-    tryCandidate(torch.wx, torchHintY, torch.wz, pre + 'Take', '21px', 'torch');
+    const pos = torch.flame.getAbsolutePosition();
+    tryCandidate(pos.x, pos.y + 0.35, pos.z, pre + 'Take', '21px', 'torch');
   }
 
   const bed = getNearestBed(getPlayerState());

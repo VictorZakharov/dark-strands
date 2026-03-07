@@ -115,6 +115,8 @@ export function generateBuildings() {
         xMax: p1.x + CFG.CELL / 2,
         zMin: p1.z - CFG.CELL / 2,
         zMax: p2.z + CFG.CELL / 2,
+        // Geometry zMin (floors.js) differs from zone zMin — geometry extends to building wall
+        geomZMin: g2w(0, bz).z + CFG.WALL_T / 2,
         hStart: CFG.WALL_H,
         hEnd: 0,
       });

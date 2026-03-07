@@ -167,7 +167,7 @@ export function isRightMouseDown() { return rightMouseDown; }
 
 export function doInteract() {
   const hintEl = document.getElementById('interact-hint');
-  const source = hintEl ? hintEl.dataset.source : '';
+  const source = (hintEl && hintEl.style.display !== 'none') ? hintEl.dataset.source : '';
   let handled = false;
 
   if (source === 'door') {
@@ -182,20 +182,6 @@ export function doInteract() {
     if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); handled = true; }
   } else if (source === 'bed') {
     if (isCycleEnabled()) {
-      openSleepMenu((hours) => {
-        console.log(`[SLEEP] doInteract dispatching sleep-requested for ${hours} hours`);
-        const ev = new CustomEvent('sleep-requested', { detail: { hours } });
-        window.dispatchEvent(ev);
-      });
-      handled = true;
-    }
-  } else {
-    if (getNearestDoor()) { toggleNearestDoor(); handled = true; }
-    else if (talkToNearestSoldier()) { handled = true; }
-    else if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); handled = true; }
-    else if (pickNearestRock(getInventory()) || pickNearestInFlightRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); handled = true; }
-    else if (pickNearestTorch(getInventory())) { addItemToSlot('torch'); setPlacementMode(false); handled = true; }
-    else if (getNearestBed(getPlayerState()) && isCycleEnabled()) {
       openSleepMenu((hours) => {
         console.log(`[SLEEP] doInteract dispatching sleep-requested for ${hours} hours`);
         const ev = new CustomEvent('sleep-requested', { detail: { hours } });
@@ -246,6 +232,15 @@ export function doUseItem() {
       if (isTorchPreviewValid()) {
         placeTorchAtPreview(getScene());
         if (inv.torches <= 0) { clearItemSlot('torch'); setPlacementMode(false); }
+      } else {
+        // DEBUG: log failed torch placement attempt
+        const p = getPlayerState();
+        const cam = getCamera();
+        console.log('[TORCH NO-HIT]', {
+          player: { x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) },
+          cam: { x: +cam.globalPosition.x.toFixed(2), y: +cam.globalPosition.y.toFixed(2), z: +cam.globalPosition.z.toFixed(2) },
+          dir: cam.getForwardRay(1).direction.toString(),
+        });
       }
     } else {
       setPlacementMode(true);

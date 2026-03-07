@@ -252,7 +252,6 @@ export function buildWindows(scene) {
         if (merged) {
             merged.name = 'windowGlass';
             merged.material = glassMat;
-            merged.isPickable = false;
             // Mark the merged mesh as updatable so we can zero vertices for breakage
             merged.markVerticesDataAsUpdatable('position', true);
             glassMergedMesh = merged;

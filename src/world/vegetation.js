@@ -7,7 +7,7 @@ import { getTerrainHeight } from './terrain.js';
 import { getPlayerState } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
-import { createStaticSphere, createStaticCylinder, hasLineOfSight } from '../core/physics.js';
+import { createStaticSphere, createStaticCylinder, hasLineOfSight, ROCK_COLLISION_GROUP } from '../core/physics.js';
 
 let barkTex, leafTex, rockTex;
 
@@ -295,7 +295,7 @@ export function placeRocks(scene) {
         mesh: rock, size: s, active: true,
       };
       if (s > 0.5) {
-        rc.physicsBody = createStaticSphere(s * 0.75, p0.x + ox, ty + s * 0.4, p0.z + oz);
+        rc.physicsBody = createStaticSphere(s * 0.75, p0.x + ox, ty + s * 0.4, p0.z + oz, undefined, ROCK_COLLISION_GROUP);
       }
       rockColliders.push(rc);
     } else {
@@ -312,7 +312,7 @@ export function placeRocks(scene) {
         mesh: null, size: s, active: true,
       };
       if (s > 0.5) {
-        rc.physicsBody = createStaticSphere(s * 0.75, p0.x + ox, ty + s * 0.4, p0.z + oz);
+        rc.physicsBody = createStaticSphere(s * 0.75, p0.x + ox, ty + s * 0.4, p0.z + oz, undefined, ROCK_COLLISION_GROUP);
       }
       rockColliders.push(rc);
     }
@@ -396,7 +396,7 @@ export function registerPickableRock(mesh, x, z, size) {
     r: size * 0.85, top, height: size * 0.8,
     mesh, size, active: true,
   };
-  rc.physicsBody = createStaticSphere(size * 0.85, x, mesh.position.y, z);
+  rc.physicsBody = createStaticSphere(size * 0.85, x, mesh.position.y, z, undefined, ROCK_COLLISION_GROUP);
   rockColliders.push(rc);
 }
 
@@ -427,19 +427,30 @@ export function deactivateRock(rc) {
 
 export function getNearestPickableRock() {
   const p = getPlayerState();
+  const cam = getCamera();
+  if (!cam) return null;
+
   let best = null;
-  let bestDist = CFG.ROCK_PICK_DIST;
+  let bestDot = -Infinity;
 
   const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+  const viewDir = cam.getForwardRay(1).direction;
 
   for (const rc of rockColliders) {
     if (!rc.active || rc.size > CFG.ROCK_PICK_MAX_SIZE) continue;
     const dx = p.x - rc.x;
     const dz = p.z - rc.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < bestDist) {
-      if (!hasLineOfSight(eyePos, { x: rc.x, y: rc.top, z: rc.z })) continue;
-      bestDist = dist;
+    
+    if (dist > CFG.ROCK_PICK_DIST) continue;
+
+    const rockPos = new Vector3(rc.x, rc.top, rc.z);
+    const toTarget = rockPos.subtract(new Vector3(eyePos.x, eyePos.y, eyePos.z)).normalize();
+    const dot = Vector3.Dot(viewDir, toTarget);
+
+    if (dot > 0.4 && dot > bestDot) {
+      if (!hasLineOfSight(eyePos, rockPos, ROCK_COLLISION_GROUP.membership)) continue;
+      bestDot = dot;
       best = rc;
     }
   }

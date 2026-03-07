@@ -5,21 +5,37 @@ import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 import { createStaticBox, hasLineOfSight } from '../core/physics.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
+import { getCamera } from '../core/scene.js';
 
 let barkTex, woodTex, blanketTex;
 
 const beds = [];
 
 export function getNearestBed(playerState, maxDist = 2.5) {
+    const cam = getCamera();
+    if (!cam) return null;
+
     let nearest = null;
-    let mindSq = maxDist * maxDist;
+    let bestDot = -Infinity;
+
     const px = playerState.x, pz = playerState.z;
     const eyePos = { x: px, y: playerState.y + CFG.PLAYER_H * 0.8, z: pz };
+    const viewDir = cam.getForwardRay(1).direction;
+
     for (const b of beds) {
-        const dSq = (b.x - px) ** 2 + (b.z - pz) ** 2;
-        if (dSq < mindSq) {
-            if (!hasLineOfSight(eyePos, { x: b.x, y: b.y + 0.3, z: b.z })) continue;
-            mindSq = dSq;
+        const dx = b.x - px;
+        const dz = b.z - pz;
+        const dSq = dx * dx + dz * dz;
+
+        if (dSq > maxDist * maxDist) continue;
+
+        const bedPos = new Vector3(b.x, b.y + 0.3, b.z);
+        const toTarget = bedPos.subtract(new Vector3(eyePos.x, eyePos.y, eyePos.z)).normalize();
+        const dot = Vector3.Dot(viewDir, toTarget);
+
+        if (dot > 0.4 && dot > bestDot) {
+            if (!hasLineOfSight(eyePos, bedPos)) continue;
+            bestDot = dot;
             nearest = b;
         }
     }

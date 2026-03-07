@@ -12,19 +12,23 @@ let physicsEngine;
 let scene;
 
 /* ── Collision group bits ─────────────────────────────────── */
-const GRP_DEFAULT    = 0x0001;
-const GRP_PLAYER     = 0x0002;
-const GRP_WINDOW     = 0x0004;
-const GRP_PROJECTILE = 0x0008;
-const GRP_DOOR       = 0x0010;
-const GRP_CEILING    = 0x0020;
-const GRP_ALL        = 0xFFFF;
+export const GRP_DEFAULT    = 0x0001;
+export const GRP_PLAYER     = 0x0002;
+export const GRP_WINDOW     = 0x0004;
+export const GRP_PROJECTILE = 0x0008;
+export const GRP_DOOR       = 0x0010;
+export const GRP_CEILING    = 0x0020;
+export const GRP_ROCK       = 0x0040;
+export const GRP_ALL        = 0xFFFF;
 
 /** Window collision group: blocks player/doors but projectiles pass through */
 export const WINDOW_COLLISION_GROUP = { membership: GRP_WINDOW, filter: GRP_ALL & ~GRP_PROJECTILE };
 
 /** Ceiling collision group: blocks player but excluded from camera raycasts */
 export const CEILING_COLLISION_GROUP = { membership: GRP_CEILING, filter: GRP_ALL };
+
+/** Rock collision group: blocks player but ignored during interaction checks */
+export const ROCK_COLLISION_GROUP = { membership: GRP_ROCK, filter: GRP_ALL };
 
 /* ── PhysicsBodyWrapper ───────────────────────────────────── */
 // Thin proxy so consumer code can keep using body.position.x, body.velocity.y, etc.
@@ -291,14 +295,14 @@ export function createStaticCylinder(radius, halfHeight, px, py, pz, material) {
   return new PhysicsBodyWrapper(body, node, shape);
 }
 
-export function createStaticSphere(radius, px, py, pz, material) {
+export function createStaticSphere(radius, px, py, pz, material, collisionGroup) {
   const node = makeNode('ssph');
   node.position.set(px, py, pz);
 
   const body = new PhysicsBody(node, PhysicsMotionType.STATIC, false, scene);
   const shape = new PhysicsShapeSphere(Vector3.Zero(), radius, scene);
   applyMat(shape, matKeyFromArg(material));
-  applyCollisionGroups(shape, undefined);
+  applyCollisionGroups(shape, collisionGroup);
   body.shape = shape;
   body.disablePreStep = true;
   return new PhysicsBodyWrapper(body, node, shape);
@@ -516,7 +520,7 @@ export function raycastClosest(from, to, excludePlayer = true, filterGroups) {
  * Uses Havok physics raycast — any static body (wall, floor, roof, door, etc.)
  * blocking the path returns false. Excludes player capsule automatically.
  */
-export function hasLineOfSight(from, to) {
+export function hasLineOfSight(from, to, ignoreGroup) {
   if (!physicsEngine) return true; // no physics = can't check, allow
   if (!_rayResult) _rayResult = new PhysicsRaycastResult();
 
@@ -526,7 +530,9 @@ export function hasLineOfSight(from, to) {
   _rayResult.reset();
   // Exclude player capsule and ceiling slabs (ceiling is for movement physics only,
   // not interaction blocking — both eye and torch flame sit inside the thick slab)
-  physicsEngine.raycastToRef(_from, _to, _rayResult, { collideWith: GRP_ALL & ~GRP_PLAYER & ~GRP_CEILING });
+  let mask = GRP_ALL & ~GRP_PLAYER & ~GRP_CEILING;
+  if (ignoreGroup !== undefined) mask &= ~ignoreGroup;
+  physicsEngine.raycastToRef(_from, _to, _rayResult, { collideWith: mask });
 
   // If nothing was hit, line of sight is clear.
   // If something was hit, check whether it's closer than the target.

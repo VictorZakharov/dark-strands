@@ -1,15 +1,9 @@
 import {
-  MeshBuilder, StandardMaterial, Color3, Vector3, TransformNode
+  MeshBuilder, StandardMaterial, Color3, Vector3, TransformNode, Ray
 } from 'babylonjs';
-import { isWalkable, isDoorCell, isWindowCell } from './grid.js';
-import { getWallHeightAt, isInsideBuilding } from './generator.js';
-import { isInsideWindowOpening } from './windows.js';
-import { collidesWithRock } from './vegetation.js';
-import { getDoorByCell, getAllDoors } from './doors.js';
-import { g2w, w2g } from '../utils/helpers.js';
+import { getAllDoors } from './doors.js';
+import { getPlayerState } from '../entities/player.js';
 import { CFG } from '../config.js';
-import { getPlayerState, getCamBlend } from '../entities/player.js';
-import { getTerrainHeight } from './terrain.js';
 import { getInventory } from './flowers.js';
 import { getClusteredContainer } from './torchLighting.js';
 import { addTorchEmbers } from './torchParticles.js';
@@ -27,6 +21,9 @@ const PLACE_MAX_DIST_WALL = 6;
 const PLACE_MAX_DIST_GROUND = 3;
 const PLACE_STEP = 0.12;
 
+// Floor slab bottom Y (visible ceiling from below) in 2-story buildings
+const FLOOR_SLAB_BOTTOM = CFG.WALL_H - 0.125 - 0.25; // 3.125
+
 const MIN_TORCH_SPACING = 0.6;
 
 function isTooCloseToTorch(x, y, z) {
@@ -40,202 +37,87 @@ function isTooCloseToTorch(x, y, z) {
   return false;
 }
 
-/** Ray-plane intersection test against all door panels (works regardless of open/closed state) */
-function findDoorPanelHit(origin, dir, playerX, playerZ) {
-  const allDoors = getAllDoors();
-  if (!allDoors.length) return null;
-
-  const doorW = CFG.CELL;
-  const doorH = CFG.WALL_H * 0.88;
-
-  let bestHit = null;
-  let bestT = Infinity;
-
-  for (const door of allDoors) {
-    const rot = door.currentRotY;
-
-    // Door panel hinge and direction in world space
-    let hx, hz, panelDirX, panelDirZ;
-    if (door.isNS) {
-      hx = door.wx - doorW / 2;
-      hz = door.wz;
-      panelDirX = Math.cos(rot);
-      panelDirZ = -Math.sin(rot);
-    } else {
-      hx = door.wx;
-      hz = door.wz - doorW / 2;
-      panelDirX = Math.sin(rot);
-      panelDirZ = Math.cos(rot);
-    }
-
-    // Panel normal (perpendicular to panel direction in XZ)
-    const baseNx = -panelDirZ;
-    const baseNz = panelDirX;
-
-    // Test both faces of the door panel
-    for (const side of [1, -1]) {
-      const pnx = baseNx * side;
-      const pnz = baseNz * side;
-
-      // Ray-plane intersection: plane through hinge with normal (pnx, 0, pnz)
-      const denom = dir.x * pnx + dir.z * pnz;
-      if (denom >= -0.01) continue; // Ray must face toward surface
-
-      const toPx = hx - origin.x;
-      const toPz = hz - origin.z;
-      const t = (toPx * pnx + toPz * pnz) / denom;
-
-      if (t < 0.3 || t > 12 || t >= bestT) continue;
-
-      const hitX = origin.x + dir.x * t;
-      const hitY = origin.y + dir.y * t;
-      const hitZ = origin.z + dir.z * t;
-
-      // Distance from player
-      const dpx = hitX - playerX;
-      const dpz = hitZ - playerZ;
-      if (dpx * dpx + dpz * dpz > PLACE_MAX_DIST_WALL * PLACE_MAX_DIST_WALL) continue;
-
-      // Check hit is on the door panel (along panel from hinge)
-      const along = (hitX - hx) * panelDirX + (hitZ - hz) * panelDirZ;
-      if (along < 0.15 || along > doorW - 0.15) continue; // Margin from edges
-
-      // Vertical bounds
-      if (hitY < 0.3 || hitY > doorH - 0.1) continue;
-
-      // Torch tip ceiling clip
-      if (hitY + TIP_UP > CFG.WALL_H - 0.05) continue;
-
-      // Existing torch proximity
-      if (isTooCloseToTorch(hitX, hitY, hitZ)) continue;
-
-      bestT = t;
-      bestHit = {
-        type: 'door',
-        x: hitX,
-        z: hitZ,
-        y: hitY,
-        nx: pnx,
-        nz: pnz,
-        door: door,
-        _t: t, // ray parameter for distance comparison
-      };
-    }
-  }
-
-  return bestHit;
-}
-
-/** Ray-march from camera through crosshair; distances measured from player */
+/** Find placement target using scene raycasting against visual meshes */
 function findPlacementTarget(camera) {
-  const origin = camera.globalPosition.clone();
-  const dir = camera.getForwardRay(1).direction.clone();
-
-  // Player position for distance checks (consistent between 1st/3rd person)
+  const scene = camera.getScene();
+  const ray = camera.getForwardRay(12);
   const p = getPlayerState();
   const px = p.x, pz = p.z;
 
-  // Indoor floor placement: use building floor level instead of terrain height
-  const isPlayerInside = isInsideBuilding(px, pz);
-  const playerFloorY = Math.floor(Math.max(0, p.y) / CFG.WALL_H) * CFG.WALL_H;
+  const hit = scene.pickWithRay(ray, (mesh) => {
+    if (!mesh.isPickable || !mesh.isVisible) return false;
+    const n = mesh.name;
+    return n === 'ground' || 
+           n === 'walls' || 
+           n === 'mergedFloors' || 
+           n === 'mergedMidFloors' || 
+           n === 'mergedStairs' || 
+           n === 'flatRoofs' || 
+           n === 'slantRoofs' || 
+           n === 'windowGlass' ||
+           n.startsWith('doorMerged_');
+  });
 
-  // Door panel ray test (works regardless of door open/closed state)
-  const doorHit = findDoorPanelHit(origin, dir, px, pz);
+  if (!hit || !hit.hit) return null;
 
-  let prevX = origin.x, prevZ = origin.z;
-  let prevWalkable = true;
-  let groundDone = false;
+  const hitX = hit.pickedPoint.x;
+  const hitY = hit.pickedPoint.y;
+  const hitZ = hit.pickedPoint.z;
 
-  for (let t = 0.3; t < 12; t += PLACE_STEP) {
-    // If we've passed the door panel hit, return it (no closer wall/ground found)
-    if (doorHit && t > doorHit._t) return doorHit;
+  const dpx = hitX - px;
+  const dpz = hitZ - pz;
+  const distPlayerSq = dpx * dpx + dpz * dpz;
 
-    const x = origin.x + dir.x * t;
-    const y = origin.y + dir.y * t;
-    const z = origin.z + dir.z * t;
-    const groundY = getTerrainHeight(x, z);
-    // Inside buildings, use the building floor level (handles 2nd floor)
-    const effectiveGroundY = isPlayerInside ? Math.max(groundY, playerFloorY) : groundY;
+  const normal = hit.getNormal(true, true);
+  if (!normal) return null;
 
-    // Distance from player to this point (horizontal)
-    const dxp = x - px, dzp = z - pz;
-    const distPlayer = Math.sqrt(dxp * dxp + dzp * dzp);
+  const pickedName = hit.pickedMesh ? hit.pickedMesh.name : '';
+  if (pickedName === 'windowGlass') return null; // Prevent placing through glass
 
-    // Ground hit (only within shorter range from player)
-    if (!groundDone && y <= effectiveGroundY + 0.05) {
-      if (distPlayer <= PLACE_MAX_DIST_GROUND) {
-        const valid = isWalkable(x, z) && (CFG.SNOW_MODE || effectiveGroundY >= CFG.WATER_Y)
-          && !collidesWithRock(x, z, 0.15)
-          && !isTooCloseToTorch(x, effectiveGroundY + STICK_LEN, z);
-        if (valid) return { type: 'ground', x, z, y: effectiveGroundY };
-        // Invalid ground hit (e.g. near wall boundary) — don't abort,
-        // keep marching so the ray can still find a wall placement behind it
-        groundDone = true;
-      }
-      groundDone = true; // past ground range, keep scanning for walls
+  // Floor check: normal is mostly pointing up (y > 0.5)
+  if (normal.y > 0.5) {
+    if (distPlayerSq > PLACE_MAX_DIST_GROUND * PLACE_MAX_DIST_GROUND) return null;
+    if (isTooCloseToTorch(hitX, hitY + STICK_LEN, hitZ)) return null;
+
+    return { type: 'ground', x: hitX, z: hitZ, y: hitY };
+  } else {
+    // Wall / door check: normal is mostly sideways
+    if (distPlayerSq > PLACE_MAX_DIST_WALL * PLACE_MAX_DIST_WALL) return null;
+
+    let nx = normal.x;
+    let nz = normal.z;
+    const len = Math.sqrt(nx * nx + nz * nz);
+    if (len > 0.001) {
+      nx /= len;
+      nz /= len;
+    } else {
+      return null;
     }
 
-    // Past wall range from player — stop
-    if (distPlayer > PLACE_MAX_DIST_WALL) break;
+    if (isTooCloseToTorch(hitX, hitY, hitZ)) return null;
 
-    // Wall hit (walkable -> non-walkable transition)
-    const walkable = isWalkable(x, z);
-    if (!walkable && prevWalkable) {
-      const g = w2g(x, z);
-      const isDoor = isDoorCell(g.x, g.z);
+    // Check for ceiling clip: cast a short ray straight up from the torch tip position
+    const tipOrigin = new Vector3(hitX + nx * TIP_OUT, hitY + TIP_UP - 0.1, hitZ + nz * TIP_OUT);
+    const upHit = scene.pickWithRay(new Ray(tipOrigin, new Vector3(0, 1, 0), 0.2), (m) => m.isPickable && m !== hit.pickedMesh);
+    if (upHit && upHit.hit) return null;
 
-      // Door opening: skip but keep prevWalkable=true so lintel triggers on next step
-      if (isDoor && y < CFG.WALL_H * 0.88) { prevX = x; prevZ = z; continue; }
-      // Window opening: block placement
-      if (isWindowCell(g.x, g.z) && isInsideWindowOpening(g.x, g.z, y, prevX, prevZ)) return null;
-
-      // Reject if Y is above the wall height (torch would be on/above roof)
-      const maxWallY = getWallHeightAt(g.x, g.z);
-      if (y > maxWallY || y < 0) return null;
-      // Per-floor ceiling check — prevent torch tip from clipping through ceiling
-      // Door cells: only check against max wall height (exterior wall, floor slab not visible)
-      const ceilY = isDoor ? maxWallY : Math.min((Math.floor(y / CFG.WALL_H) + 1) * CFG.WALL_H, maxWallY);
-      if (y + TIP_UP > ceilY - 0.05) return null;
-
-      // Determine wall normal
-      let nx = 0, nz = 0;
-      if (isDoor) {
-        // Door cell is non-walkable like its neighbours — grid-based normal detection
-        // is ambiguous. Use the door's known wall direction instead.
-        const door = getDoorByCell(g.x, g.z);
-        if (!door) { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
-        const isNS = door.wall === 'north' || door.wall === 'south';
-        if (isNS) nz = dir.z > 0 ? -1 : 1;
-        else nx = dir.x > 0 ? -1 : 1;
-      } else {
-        const hitX = !isWalkable(x, prevZ);
-        const hitZ = !isWalkable(prevX, z);
-        if (hitX && !hitZ) { nx = dir.x > 0 ? -1 : 1; }
-        else if (hitZ && !hitX) { nz = dir.z > 0 ? -1 : 1; }
-        else if (hitX && hitZ) {
-          if (Math.abs(dir.x) > Math.abs(dir.z)) { nx = dir.x > 0 ? -1 : 1; }
-          else { nz = dir.z > 0 ? -1 : 1; }
-        } else { prevX = x; prevZ = z; prevWalkable = walkable; continue; }
+    if (pickedName.startsWith('doorMerged_')) {
+      const allDoors = getAllDoors();
+      let doorHit = null;
+      for (const door of allDoors) {
+        // hit.pickedMesh is doorMerged_X, whose parent is the leaf, whose parent is the hinge group
+        if (hit.pickedMesh.parent && door.group === hit.pickedMesh.parent.parent) {
+          doorHit = door;
+          break;
+        }
       }
-
-      // Snap mount point to wall surface (flush)
-      const wc = g2w(g.x, g.z);
-      const wallSurf = CFG.WALL_T / 2;
-      const mountX = nx !== 0 ? wc.x + nx * wallSurf : prevX;
-      const mountZ = nz !== 0 ? wc.z + nz * wallSurf : prevZ;
-
-      // Reject if too close to an existing torch (prevent stacking)
-      if (isTooCloseToTorch(mountX, y, mountZ)) return null;
-
-      return { type: 'wall', x: mountX, z: mountZ, y, nx, nz };
+      if (doorHit) {
+        return { type: 'door', x: hitX, z: hitZ, y: hitY, nx, nz, door: doorHit };
+      }
     }
 
-    prevX = x;
-    prevZ = z;
-    prevWalkable = walkable;
+    return { type: 'wall', x: hitX, z: hitZ, y: hitY, nx, nz };
   }
-  // No wall/ground hit — return door panel hit if any
-  return doorHit || null;
 }
 
 export function initTorchPreview(scene) {
@@ -299,11 +181,8 @@ export function updateTorchPreview(camera, active) {
       my + TIP_UP / 2,
       mz + hit.nz * TIP_OUT / 2
     );
-    if (Math.abs(hit.nx) > 0.5) {
-      previewStick.rotation.z = hit.nx > 0 ? -TILT : TILT;
-    } else {
-      previewStick.rotation.x = hit.nz > 0 ? TILT : -TILT;
-    }
+    const yaw = Math.atan2(hit.nx, hit.nz);
+    previewStick.rotation = new Vector3(TILT, yaw, 0);
     previewFlame.position = new Vector3(hit.nx * TIP_OUT / 2, TIP_UP / 2, hit.nz * TIP_OUT / 2);
   } else {
     // Ground — vertical
@@ -317,9 +196,31 @@ export function isTorchPreviewValid() {
 }
 
 export function placeTorchAtPreview(scene) {
-  if (!placementHit) return false;
+  if (!placementHit) {
+    // DEBUG: log failed placement attempt
+    const p = getPlayerState();
+    const cam = scene.activeCamera;
+    console.log('[TORCH NO-HIT]', {
+      player: { x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) },
+      cam: { x: +cam.globalPosition.x.toFixed(2), y: +cam.globalPosition.y.toFixed(2), z: +cam.globalPosition.z.toFixed(2) },
+      dir: cam.getForwardRay(1).direction.toString(),
+    });
+    return false;
+  }
   const inv = getInventory();
   if (inv.torches <= 0) return false;
+
+  // DEBUG: log placement details
+  const p = getPlayerState();
+  const cam = scene.activeCamera;
+  console.log('[TORCH PLACE]', {
+    type: placementHit.type,
+    pos: { x: +placementHit.x.toFixed(2), y: +placementHit.y.toFixed(2), z: +placementHit.z.toFixed(2) },
+    normal: placementHit.nx != null ? { nx: placementHit.nx, nz: placementHit.nz } : null,
+    player: { x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2) },
+    cam: { x: +cam.globalPosition.x.toFixed(2), y: +cam.globalPosition.y.toFixed(2), z: +cam.globalPosition.z.toFixed(2) },
+    dir: cam.getForwardRay(1).direction.toString(),
+  });
 
   let t;
   if (placementHit.type === 'door') {
@@ -345,11 +246,10 @@ export function placeTorchAtPreview(scene) {
     // so the tilt stays relative to the panel regardless of door rotation
     const worldNormal = new Vector3(placementHit.nx, 0, placementHit.nz);
     const localNormal = Vector3.TransformNormal(worldNormal, invWorld);
-    if (Math.abs(localNormal.x) > Math.abs(localNormal.z)) {
-      t.stick.rotation = new Vector3(0, 0, localNormal.x > 0 ? -TILT : TILT);
-    } else {
-      t.stick.rotation = new Vector3(localNormal.z > 0 ? TILT : -TILT, 0, 0);
-    }
+    
+    // Calculate yaw relative to the door, then apply tilt
+    const localYaw = Math.atan2(localNormal.x, localNormal.z);
+    t.stick.rotation = new Vector3(TILT, localYaw, 0);
     const entry = { ...t, active: true, doorGroup };
     getPickableTorches().push(entry);
     getPlayerDoorTorches().push(entry);

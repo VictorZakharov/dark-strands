@@ -167,20 +167,32 @@ export function hideFlowerPreview() {
 
 export function getNearestFlower() {
   const p = getPlayerState();
+  const cam = getCamera();
+  if (!cam) return null;
+
   let best = null;
-  let bestDist = PICK_DIST;
+  let bestDot = -Infinity;
 
   const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+  const viewDir = cam.getForwardRay(1).direction;
 
   for (const f of flowers) {
     if (!f.active) continue;
     const dx = p.x - f.wx;
     const dz = p.z - f.wz;
     const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < bestDist) {
-      const ty = getTerrainHeight(f.wx, f.wz);
-      if (!hasLineOfSight(eyePos, { x: f.wx, y: ty + 0.3, z: f.wz })) continue;
-      bestDist = dist;
+    
+    if (dist > PICK_DIST) continue;
+
+    const ty = getTerrainHeight(f.wx, f.wz);
+    const flowerPos = new Vector3(f.wx, ty + 0.3, f.wz);
+    
+    const toTarget = flowerPos.subtract(new Vector3(eyePos.x, eyePos.y, eyePos.z)).normalize();
+    const dot = Vector3.Dot(viewDir, toTarget);
+
+    if (dot > 0.4 && dot > bestDot) {
+      if (!hasLineOfSight(eyePos, flowerPos)) continue;
+      bestDot = dot;
       best = f;
     }
   }

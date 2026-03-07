@@ -442,20 +442,32 @@ export function updateNpcs(dt) {
  */
 export function getNearestSoldier() {
   const p = getPlayerState();
+  const cam = getCamera();
+  if (!cam) return null;
+
   let best = null;
-  let bestDist = TALK_DIST;
+  let bestDot = -Infinity;
 
   const eyePos = { x: p.x, y: p.y + CFG.PLAYER_H * 0.8, z: p.z };
+  const viewDir = cam.getForwardRay(1).direction;
 
   for (const npc of npcs) {
     if (npc.type !== 'soldier') continue;
+    
     const pos = npc.model.position;
     const dx = p.x - pos.x;
     const dz = p.z - pos.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < bestDist) {
-      if (!hasLineOfSight(eyePos, { x: pos.x, y: pos.y + 1.0, z: pos.z })) continue;
-      bestDist = dist;
+    
+    if (dist > TALK_DIST) continue;
+
+    const npcTargetPos = new Vector3(pos.x, pos.y + 1.0, pos.z);
+    const toTarget = npcTargetPos.subtract(new Vector3(eyePos.x, eyePos.y, eyePos.z)).normalize();
+    const dot = Vector3.Dot(viewDir, toTarget);
+
+    if (dot > 0.4 && dot > bestDot) {
+      if (!hasLineOfSight(eyePos, npcTargetPos)) continue;
+      bestDot = dot;
       best = npc;
     }
   }
