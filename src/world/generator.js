@@ -3,7 +3,7 @@ import { getGrid, setCell, addStairZone, markUpperFloor, markUpperWall, markStai
 import { rngInt } from '../utils/helpers.js';
 import { g2w } from '../utils/helpers.js';
 import { addFlatZone } from './terrain.js';
-import { getRoadPaths } from './roadNetwork.js';
+import { getRoadPaths, roadDistanceToRect } from './roadNetwork.js';
 
 const buildings = [];
 
@@ -95,16 +95,17 @@ export function generateBuildings() {
       ok = false;
     }
 
-    // Footprint must never cover NOR touch a road cell (winding roads can cut
-    // back) — the 1-cell ring keeps a grass verge between road and walls;
-    // door spurs are carved separately after building placement.
+    // Footprint must never cover a road cell, and walls keep a real grass
+    // verge measured from the road CURVE itself (cells are only a coarse
+    // rasterization of it) — door spurs are carved separately afterwards.
     if (ok) {
-      for (let gx = bx - 1; gx <= bx + w && ok; gx++) {
-        for (let gz = bz - 1; gz <= bz + h && ok; gz++) {
+      for (let gx = bx; gx < bx + w && ok; gx++) {
+        for (let gz = bz; gz < bz + h && ok; gz++) {
           if (isRoadCell(gx, gz)) ok = false;
         }
       }
     }
+    if (ok && roadDistanceToRect(bx, bz, w, h) < 4) ok = false;
 
     if (!ok) continue;
 

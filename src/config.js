@@ -77,17 +77,20 @@ export const CFG = {
   MAX_ROOM: 9,
   PLAYER_CLEAR: 3,
 
-  // Roads (village layout)
-  ROAD_EDGE_MARGIN: 6,     // min distance (cells) from world edge
-  ROAD_WIDTH: 1.7,         // ribbon width in world units (cell = 2.0)
-  ROAD_Y_OFFSET: 0.05,     // lift above terrain to avoid z-fighting
-  ROAD_WIDTH_JITTER: 0.15, // deterministic per-side width wobble (±u)
-  ROAD_MIN_BRANCHES: 2,    // branch roads off the main road
+  // Roads (village layout) — curve-first: splines are the source of truth,
+  // grid cells are a rasterization of them (see roadNetwork.js)
+  ROAD_EDGE_MARGIN: 6,       // min distance (cells) from world edge
+  ROAD_WIDTH: 1.7,           // ribbon width in world units (cell = 2.0)
+  ROAD_Y_OFFSET: 0.05,       // interior lift above terrain (edges are pinned)
+  ROAD_WIDTH_JITTER: 0.15,   // per-control-point width wobble (±u), interpolated
+  ROAD_CONTROL_OFFSET: 10,   // max perpendicular offset of spline control points (u)
+  ROAD_MIN_RADIUS: 6,        // roads never bend tighter than this (u); spurs 3
+  ROAD_MIN_BRANCHES: 2,      // branch roads off the main road
   ROAD_MAX_BRANCHES: 3,
-  ROAD_SPUR_MAX: 5,        // max cells a door spur walks to reach the road
-  ROAD_TORCH_SPACING: 9,   // road cells between standing torches
-  ROAD_TORCH_MAX: 14,      // hard cap on road torches (PointLight budget)
-  ROAD_TORCH_POST_H: 1.7,  // standing torch post height (world units)
+  ROAD_SPUR_MAX: 5,          // door spur reach toward the road (cells)
+  ROAD_TORCH_SPACING: 9,     // arc length between torch posts (cells ≈ ×CELL u)
+  ROAD_TORCH_MAX: 14,        // hard cap on road torches (PointLight budget)
+  ROAD_TORCH_POST_H: 1.7,    // standing torch post height (world units)
 
   // Graphics / AAA visual effects (all individually toggleable)
   GFX: {

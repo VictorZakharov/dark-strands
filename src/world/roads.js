@@ -2,14 +2,11 @@ import {
   Mesh, MeshBuilder, VertexData, StandardMaterial, Color3, DynamicTexture, Texture,
 } from 'babylonjs';
 import { CFG } from '../config.js';
-import { getGrid, isRoadCell, isIndoor } from './grid.js';
-import { g2w } from '../utils/helpers.js';
-import { getTerrainHeight } from './terrain.js';
 import { enableShadowReceiving, addShadowCaster } from '../core/lighting.js';
 import { addFogDepthMesh } from '../core/postfx.js';
 import { createWallTorch, getDoorTorchLights, getDoorTorchFlames, getPickableTorches } from './torches.js';
 import { addTorchEmbers } from './torchParticles.js';
-import { getRoadPaths, carveDoorSpurs, buildRoadRibbonData, makeCobblePixels } from './roadNetwork.js';
+import { carveDoorSpurs, buildRoadRibbonData, makeCobblePixels, computeTorchSites } from './roadNetwork.js';
 import { collidesWithRock } from './vegetation.js';
 
 // Network generation + geometry math live in roadNetwork.js (pure module,
@@ -34,10 +31,11 @@ function makeCobbleTexture(scene) {
 }
 
 /**
- * Merged cobblestone ribbon along the smoothed road network. Geometry comes
- * from roadNetwork.js buildRoadRibbonData: Chaikin-smoothed centerlines
- * (curves instead of square grid corners) extruded to terrain-hugging strips,
- * plus door spurs curving off the roads to each road-facing entrance.
+ * Merged cobblestone ribbon along the road network. Geometry comes from
+ * roadNetwork.js buildRoadRibbonData: Catmull-Rom spline centerlines (long
+ * sweeping bends) extruded to terrain-hugging crowned strips with pinned
+ * edges and side skirts, plus door spurs curving off the roads to each
+ * road-facing entrance.
  * Must run AFTER generateBuildings — flat zones alter terrain height, and
  * door spurs need the placed buildings.
  */
@@ -84,81 +82,58 @@ function getPostMaterial(scene) {
 }
 
 /**
- * Standing torch posts along the roads: every ROAD_TORCH_SPACING cells,
- * alternating sides, 1 cell off the road pulled slightly toward the verge.
- * Each site is a permanent tapered wooden post (merged into one 'roadPosts'
- * mesh, sun-shadow caster, not pickable) with a wall-style angled torch
- * mounted near the top, leaning over the road. The TORCH is pickable exactly
- * like house torches (E to take — flame/embers/glow/light all standard) and
- * follows the door-torch day/night cycle: off during the day, lit at dusk
- * (registered in the doorTorch lists that daynight.js drives).
+ * Standing torch posts along the roads: candidate sites come from
+ * roadNetwork.js computeTorchSites (arc-length walk along the spline, every
+ * ROAD_TORCH_SPACING cells worth of units, alternating sides just off the
+ * ribbon edge). Each site is a permanent tapered wooden post (merged into one
+ * 'roadPosts' mesh, sun-shadow caster, not pickable) with a wall-style angled
+ * torch mounted near the top, leaning over the road. The TORCH is pickable
+ * exactly like house torches (E to take — flame/embers/glow/light all
+ * standard) and follows the door-torch day/night cycle: off during the day,
+ * lit at dusk (registered in the doorTorch lists that daynight.js drives).
  * Must run after initTorchLightPool; initTorchEmbers picks up the ember
  * systems retroactively (same as placeTorches).
  */
 export function placeRoadTorches(scene) {
-  const grid = getGrid();
   const postH = CFG.ROAD_TORCH_POST_H;
   const postMeshes = [];
   const entries = [];
   let count = 0;
-  let side = 1;
 
-  for (const path of getRoadPaths()) {
+  for (const site of computeTorchSites()) {
     if (count >= CFG.ROAD_TORCH_MAX) break;
-    for (let i = CFG.ROAD_TORCH_SPACING; i < path.length; i += CFG.ROAD_TORCH_SPACING) {
-      if (count >= CFG.ROAD_TORCH_MAX) break;
-      const cell = path[i];
-      const prev = path[i - 1];
-      // Perpendicular to the local road direction, alternating sides
-      const dx = Math.sign(cell.gx - prev.gx);
-      const dz = Math.sign(cell.gz - prev.gz);
-      let ox = -dz * side, oz = dx * side;
-      if (ox === 0 && oz === 0) { ox = side; }
-      side = -side;
+    const { x: wx, z: wz, y, nx, nz } = site;
+    // Never plant a post inside a boulder (rocks don't block grid cells,
+    // so the site's grid walkability check can't catch them)
+    if (collidesWithRock(wx, wz, 0.7)) continue;
 
-      const tgx = cell.gx + ox, tgz = cell.gz + oz;
-      if (tgx < 0 || tgx >= CFG.GRID || tgz < 0 || tgz >= CFG.GRID) continue;
-      if (!grid[tgx][tgz] || isRoadCell(tgx, tgz) || isIndoor(tgx, tgz)) continue;
+    // Tapered wooden post — permanent scenery, merged below. Sunk slightly:
+    // the rendered ground (coarse 2.8u lattice) can dip below the analytic
+    // height, and a floating post base is far more visible than a buried one.
+    const sink = 0.12;
+    const post = MeshBuilder.CreateCylinder('roadPost', {
+      diameterTop: 0.15, diameterBottom: 0.22, height: postH, tessellation: 7,
+    }, scene);
+    post.position.set(wx, y - sink + postH / 2, wz);
+    post.isPickable = false;
+    postMeshes.push(post);
 
-      const p = g2w(tgx, tgz);
-      // Stand at the verge — pull a quarter cell back toward the road edge
-      const wx = p.x - ox * CFG.CELL * 0.25;
-      const wz = p.z - oz * CFG.CELL * 0.25;
-      const y = getTerrainHeight(wx, wz);
-      if (y < CFG.WATER_Y + 0.3) continue;
-      // Never plant a post inside a boulder (rocks don't block grid cells,
-      // so the grid walkability check above can't catch them)
-      if (collidesWithRock(wx, wz, 0.7)) continue;
-
-      // Tapered wooden post — permanent scenery, merged below. Sunk slightly:
-      // the rendered ground (coarse 2.8u lattice) can dip below the analytic
-      // height, and a floating post base is far more visible than a buried one.
-      const sink = 0.12;
-      const post = MeshBuilder.CreateCylinder('roadPost', {
-        diameterTop: 0.15, diameterBottom: 0.22, height: postH, tessellation: 7,
-      }, scene);
-      post.position.set(wx, y - sink + postH / 2, wz);
-      post.isPickable = false;
-      postMeshes.push(post);
-
-      // Wall-style angled torch mounted near the top, tilted toward the road
-      const nx = -ox, nz = -oz;
-      const t = createWallTorch(scene, wx + nx * 0.09, wz + nz * 0.09, y - sink + postH - 0.25, nx, nz);
-      // Day/night: same registration as exterior door torches — daynight.js
-      // drives baseIntensity (light) and setEnabled (flame) from these lists
-      t.light.intensity = 0;
-      t.light.metadata.baseIntensity = 0;
-      t.flame.isVisible = false;
-      t.flame.setEnabled(false);
-      if (t.glow) t.glow.isVisible = false;
-      getDoorTorchLights().push(t.light);
-      getDoorTorchFlames().push(t.flame);
-      const entry = { ...t, active: true };
-      getPickableTorches().push(entry);
-      addTorchEmbers(entry);
-      entries.push(entry);
-      count++;
-    }
+    // Wall-style angled torch mounted near the top, tilted toward the road
+    const t = createWallTorch(scene, wx + nx * 0.09, wz + nz * 0.09, y - sink + postH - 0.25, nx, nz);
+    // Day/night: same registration as exterior door torches — daynight.js
+    // drives baseIntensity (light) and setEnabled (flame) from these lists
+    t.light.intensity = 0;
+    t.light.metadata.baseIntensity = 0;
+    t.flame.isVisible = false;
+    t.flame.setEnabled(false);
+    if (t.glow) t.glow.isVisible = false;
+    getDoorTorchLights().push(t.light);
+    getDoorTorchFlames().push(t.flame);
+    const entry = { ...t, active: true };
+    getPickableTorches().push(entry);
+    addTorchEmbers(entry);
+    entries.push(entry);
+    count++;
   }
 
   if (postMeshes.length > 0) {

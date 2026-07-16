@@ -1,8 +1,9 @@
-import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3, VertexData } from 'babylonjs';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, DynamicTexture, Color3, Vector3, VertexData } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getBuildings } from './generator.js';
 import { g2w } from '../utils/helpers.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
+import { addFogDepthMesh } from '../core/postfx.js';
 
 let _wallMesh = null;
 export function getWallMesh() { return _wallMesh; }
@@ -18,6 +19,155 @@ function getBuildingCenter(b) {
     const p1 = g2w(b.x, b.z);
     const p2 = g2w(b.x + b.w - 1, b.z + b.h - 1);
     return { x: (p1.x + p2.x) / 2, z: (p1.z + p2.z) / 2 };
+}
+
+// ── PURE-TRIM-MATH-START (plain math, no Babylon — this block is extracted
+//    and executed by a Node harness to verify trim placement never overlaps
+//    door/window cutouts. Keep it dependency-free.)
+
+/* Per-building visual style, deterministic from the building's index */
+function styleFor(bi) {
+    return ['stone', 'plaster', 'timber'][bi % 3];
+}
+
+/* Open-interval rect overlap in wall-plane coords (used by the harness) */
+function rectsOverlap(a, b, eps) {
+    const e = eps === undefined ? 0.001 : eps;
+    return a.run0 < b.run1 - e && a.run1 > b.run0 + e &&
+           a.v0 < b.v1 - e && a.v1 > b.v0 + e;
+}
+
+/* Split [r0,r1] into free segments around blockers [{run0,run1}] */
+function segmentRun(r0, r1, blockers, minLen) {
+    const iv = blockers
+        .map(op => [Math.max(op.run0, r0), Math.min(op.run1, r1)])
+        .filter(([a, b]) => b > a)
+        .sort((a, b) => a[0] - b[0]);
+    const segs = [];
+    let cur = r0;
+    for (const [a, b] of iv) {
+        if (a - cur >= minLen) segs.push([cur, a]);
+        cur = Math.max(cur, b);
+    }
+    if (r1 - cur >= minLen) segs.push([cur, r1]);
+    return segs;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Compute timber-trim pieces for one wall side, in wall-plane coords
+ * (run along the wall × v vertical).  side = {style, stories, runMin,
+ * runMax, vMax, openings:[{run0,run1,v0,v1,kind:'door'|'window'}]},
+ * S = trim constants.  Returns rects {kind, run0, run1, v0, v1, mount:
+ * 'through'|'face', proud}; braces additionally carry dir (±1) and are
+ * rendered as the rect's diagonal.
+ * Invariant (checked by the Node harness): no piece intersects any
+ * opening rect, and beams/braces never intersect surround pieces.
+ * ─────────────────────────────────────────────────────────────────── */
+function computeSideTrims(side, S) {
+    const pieces = [];
+    const T = S.TRIM_T;
+
+    // ── Door surrounds + window sills/lintels (ALL styles) ──
+    for (const op of side.openings) {
+        if (op.kind === 'door') {
+            const jTop = op.v1 + 0.015; // lintel bottom — clears the door swing
+            pieces.push(
+                { kind: 'doorJamb',   run0: op.run0 - 0.15, run1: op.run0 - 0.01, v0: -0.05, v1: jTop, mount: 'through', proud: S.SURROUND_PROUD },
+                { kind: 'doorJamb',   run0: op.run1 + 0.01, run1: op.run1 + 0.15, v0: -0.05, v1: jTop, mount: 'through', proud: S.SURROUND_PROUD },
+                { kind: 'doorLintel', run0: op.run0 - 0.15, run1: op.run1 + 0.15, v0: jTop,  v1: jTop + 0.16, mount: 'through', proud: S.SURROUND_PROUD });
+        } else {
+            // Window frame bars (windows.js) occupy 0.07 past the opening and
+            // stick 0.05 out of the wall — sill/lintel sit beyond them both ways
+            pieces.push(
+                { kind: 'winSill',   run0: op.run0 - 0.16, run1: op.run1 + 0.16, v0: op.v0 - 0.18, v1: op.v0 - 0.08, mount: 'through', proud: S.SURROUND_PROUD },
+                { kind: 'winLintel', run0: op.run0 - 0.16, run1: op.run1 + 0.16, v0: op.v1 + 0.08, v1: op.v1 + 0.20, mount: 'through', proud: S.SURROUND_PROUD });
+        }
+    }
+
+    // A surround can poke into a NEIGHBOURING opening (widest window sill
+    // beside a door cell) — clip every surround back out of any opening
+    const surrounds = [];
+    for (const p of pieces) {
+        let ok = true;
+        for (const op of side.openings) {
+            if (p.v0 >= op.v1 - 0.001 || p.v1 <= op.v0 + 0.001) continue;
+            if (p.run1 > op.run0 - 0.01 && p.run0 < op.run0) p.run1 = op.run0 - 0.01;
+            if (p.run0 < op.run1 + 0.01 && p.run1 > op.run1) p.run0 = Math.max(p.run0, op.run1 + 0.01);
+            if (p.run1 - p.run0 < 0.05) { ok = false; break; }
+        }
+        if (ok) surrounds.push(p);
+    }
+
+    if (side.style === 'stone') return surrounds;
+    const out = surrounds.slice();
+
+    // ── Horizontal beams (plaster + timber): base-course cap, story lines, eaves ──
+    // Eave beam sits 0.02 below the wall top: the flat-roof underside is at
+    // exactly vMax-0.15 and a beam band of [vMax-0.15, vMax] would z-fight it.
+    const eaveY = side.vMax - T / 2 - 0.02;
+    const beamYs = [S.BASE_H];
+    for (let s = 1; s < side.stories; s++) beamYs.push(s * S.WALL_H);
+    beamYs.push(eaveY);
+    const CLR = 0.2; // clearance past openings — must exceed the 0.16/0.15 surround reach
+    for (const yC of beamYs) {
+        const v0 = yC - T / 2, v1 = yC + T / 2;
+        const blockers = side.openings
+            .filter(op => op.v0 - CLR < v1 && op.v1 + CLR > v0)
+            .map(op => ({ run0: op.run0 - CLR, run1: op.run1 + CLR }));
+        for (const [a, b] of segmentRun(side.runMin, side.runMax, blockers, 0.3)) {
+            out.push({ kind: 'beam', run0: a, run1: b, v0, v1, mount: 'face', proud: S.TRIM_PROUD });
+        }
+    }
+
+    // ── Diagonal braces (timber only), between the beam lines of each story ──
+    if (side.style === 'timber') {
+        for (let s = 0; s < side.stories; s++) {
+            const loBeam = s === 0 ? S.BASE_H : s * S.WALL_H;
+            const hiBeam = (s + 1 === side.stories) ? eaveY : (s + 1) * S.WALL_H;
+            const v0 = loBeam + T / 2 + 0.1;
+            const v1 = hiBeam - T / 2 - 0.1;
+            if (v1 - v0 < 1.2) continue;
+            const CLB = 0.25; // extra clearance: braces stay clear of surrounds too
+            const blockers = side.openings
+                .filter(op => op.v0 - CLB < v1 && op.v1 + CLB > v0)
+                .map(op => ({ run0: op.run0 - CLB, run1: op.run1 + CLB }));
+            const segs = segmentRun(side.runMin + 0.15, side.runMax - 0.15, blockers, S.BRACE_MIN_SEG);
+            for (let k = 0; k < segs.length; k++) {
+                if ((S.bi * 31 + s * 13 + k * 7) % 5 >= 3) continue; // ~60% of segments
+                const [a, b] = segs[k];
+                const reach = Math.min(b - a - 0.2, (v1 - v0) * 0.85, 2.4);
+                if (reach < 0.6) continue;
+                const c = (a + b) / 2;
+                out.push({
+                    kind: 'brace', run0: c - reach / 2, run1: c + reach / 2, v0, v1,
+                    dir: ((S.bi + s + k) % 2) ? 1 : -1, mount: 'face', proud: S.TRIM_PROUD,
+                });
+            }
+        }
+    }
+    return out;
+}
+
+/* Corner posts wrapping each building corner (plaster + timber styles).
+ * bounds = outer wall-face planes {x0,x1,z0,z1} and vMax. Openings sit at
+ * interior cells (≥ 1 cell = 2u from a corner) so posts can never hit them. */
+function computeCornerPosts(bounds, S) {
+    const W = S.CORNER_W, P = S.SURROUND_PROUD;
+    const posts = [];
+    for (const [cx, sx] of [[bounds.x0, -1], [bounds.x1, 1]]) {
+        for (const [cz, sz] of [[bounds.z0, -1], [bounds.z1, 1]]) {
+            const xOut = cx + sx * P, xIn = cx - sx * (W - P);
+            const zOut = cz + sz * P, zIn = cz - sz * (W - P);
+            posts.push({
+                kind: 'post',
+                x0: Math.min(xOut, xIn), x1: Math.max(xOut, xIn),
+                z0: Math.min(zOut, zIn), z1: Math.max(zOut, zIn),
+                // top 0.01 below the wall top — avoids coplanar top faces
+                v0: -0.1, v1: bounds.vMax - 0.01,
+            });
+        }
+    }
+    return posts;
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -65,6 +215,142 @@ function bandDecompose(runMin, runMax, vMin, vMax, openings) {
         }
     }
     return quads;
+}
+
+// ── PURE-TRIM-MATH-END
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Plaster material — procedural lime-wash DynamicTexture with tileable
+ * mottling (blotches drawn at 3×3 wrapped offsets so the 4u tiling has
+ * no seams).
+ * ─────────────────────────────────────────────────────────────────── */
+function makePlasterMaterial(scene) {
+    const size = 256;
+    const dt = new DynamicTexture('plasterTex', size, scene, true);
+    dt.wrapU = Texture.WRAP_ADDRESSMODE;
+    dt.wrapV = Texture.WRAP_ADDRESSMODE;
+    const ctx = dt.getContext();
+    ctx.fillStyle = '#d9cfb8';
+    ctx.fillRect(0, 0, size, size);
+    for (let i = 0; i < 130; i++) {
+        const x = Math.random() * size, y = Math.random() * size;
+        const r = 6 + Math.random() * 24;
+        ctx.fillStyle = Math.random() < 0.5
+            ? 'rgba(240, 233, 214, 0.10)' : 'rgba(150, 138, 114, 0.08)';
+        for (const ox of [-size, 0, size]) {
+            for (const oy of [-size, 0, size]) {
+                ctx.beginPath();
+                ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+    }
+    // Fine sand-grain speckle
+    for (let i = 0; i < 900; i++) {
+        ctx.fillStyle = Math.random() < 0.5
+            ? 'rgba(120, 110, 88, 0.06)' : 'rgba(255, 250, 236, 0.06)';
+        ctx.fillRect(Math.random() * size, Math.random() * size, 1.5, 1.5);
+    }
+    dt.update();
+    const mat = new StandardMaterial('wallPlasterMat', scene);
+    mat.diffuseTexture = dt;
+    mat.diffuseColor = new Color3(1.0, 0.96, 0.88); // warm lime-wash tint
+    mat.specularColor = new Color3(0.03, 0.03, 0.03);
+    return mat;
+}
+
+/* Append one quad (4 pts, shared normal) to a geometry accumulator.
+ * Winding rule matches buildSideGeometry.addQuad (RHS front face = CW). */
+function pushQuad(out, pts, n, uvs) {
+    const base = out.pos.length / 3;
+    for (let k = 0; k < 4; k++) {
+        out.pos.push(pts[k][0], pts[k][1], pts[k][2]);
+        out.norm.push(n[0], n[1], n[2]);
+        out.uv.push(uvs[k][0], uvs[k][1]);
+    }
+    const [p0, p1, p2] = pts;
+    const ex = p1[0] - p0[0], ey = p1[1] - p0[1], ez = p1[2] - p0[2];
+    const fx = p2[0] - p0[0], fy = p2[1] - p0[1], fz = p2[2] - p0[2];
+    const cx = ey * fz - ez * fy, cy = ez * fx - ex * fz, cz = ex * fy - ey * fx;
+    if (cx * n[0] + cy * n[1] + cz * n[2] >= 0) {
+        out.idx.push(base, base + 3, base + 2, base, base + 2, base + 1);
+    } else {
+        out.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Plaster skin for one wall side — flat quads floating PLASTER_PROUD off
+ * both stone faces (exterior + interior), from the base-course line up to
+ * the wall top, with the same door/window cutouts as the wall itself.
+ * The stone wall 0.015u behind keeps handling picking, physics, fog
+ * depth, torch shadows and water reflections — the skin is visual only.
+ * ─────────────────────────────────────────────────────────────────── */
+function emitPlasterSkin(rec, SW, out) {
+    const halfT = CFG.WALL_T / 2;
+    const quads = bandDecompose(rec.runMin, rec.runMax, SW.BASE_COURSE_H, rec.vMax, rec.openings);
+    const isNS = rec.axis === 'x';
+    for (const face of [1, -1]) { // 1 = exterior, -1 = interior
+        const dirSign = rec.perpDir * face;
+        const d = rec.perpPos + dirSign * (halfT + SW.PLASTER_PROUD);
+        const n = isNS ? [0, 0, dirSign] : [dirSign, 0, 0];
+        for (const q of quads) {
+            const corners = [[q.x1, q.y1], [q.x2, q.y1], [q.x2, q.y2], [q.x1, q.y2]];
+            const pts = corners.map(([r, v]) => (isNS ? [r, v, d] : [d, v, r]));
+            const uvs = corners.map(([r, v]) => [r * SW.PLASTER_UV, v * SW.PLASTER_UV]);
+            pushQuad(out, pts, n, uvs);
+        }
+    }
+}
+
+/* Convert a trim piece (wall-plane rect) into a box mesh on the side's face */
+function makeTrimBoxMesh(rec, piece, scene) {
+    const isNS = rec.axis === 'x';
+    const halfT = CFG.WALL_T / 2;
+    const runLen = piece.run1 - piece.run0;
+    const runC = (piece.run0 + piece.run1) / 2;
+    const vLen = piece.v1 - piece.v0;
+    const vC = (piece.v0 + piece.v1) / 2;
+    let depth, perpC;
+    if (piece.mount === 'through') {
+        // Spans the whole wall thickness, proud on BOTH faces
+        depth = CFG.WALL_T + piece.proud * 2;
+        perpC = rec.perpPos;
+    } else {
+        // Face-mounted: embedded 0.07 into the wall, proud by piece.proud
+        depth = 0.1;
+        perpC = rec.perpPos + rec.perpDir * (halfT + piece.proud - depth / 2);
+    }
+    let box;
+    if (piece.kind === 'brace') {
+        const len = Math.hypot(runLen, vLen); // rect diagonal
+        const angle = piece.dir * Math.atan2(runLen, vLen);
+        box = isNS
+            ? MeshBuilder.CreateBox('trim', { width: 0.14, height: len, depth }, scene)
+            : MeshBuilder.CreateBox('trim', { width: depth, height: len, depth: 0.14 }, scene);
+        if (isNS) box.rotation.z = angle;
+        else box.rotation.x = angle;
+    } else {
+        box = isNS
+            ? MeshBuilder.CreateBox('trim', { width: runLen, height: vLen, depth }, scene)
+            : MeshBuilder.CreateBox('trim', { width: depth, height: vLen, depth: runLen }, scene);
+    }
+    box.position = new Vector3(isNS ? runC : perpC, vC, isNS ? perpC : runC);
+    box.bakeCurrentTransformIntoVertices();
+    return box;
+}
+
+/* Corner post rect (plan-space) → box mesh */
+function makePostBoxMesh(post, scene) {
+    const box = MeshBuilder.CreateBox('trim', {
+        width: post.x1 - post.x0,
+        height: post.v1 - post.v0,
+        depth: post.z1 - post.z0,
+    }, scene);
+    box.position = new Vector3(
+        (post.x0 + post.x1) / 2, (post.v0 + post.v1) / 2, (post.z0 + post.z1) / 2);
+    box.bakeCurrentTransformIntoVertices();
+    return box;
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -256,7 +542,14 @@ export function buildWalls(scene) {
     const doorTopY = CFG.WALL_H * 0.88;
     const vMin = -0.5;                     // walls extend below ground
 
-    for (const b of buildings) {
+    // Per-building visual style data (plaster skins + timber trim, visual only)
+    const SW = CFG.WALL_STYLE;
+    const sideRecs = [];
+    const buildingRecs = [];
+
+    for (let bi = 0; bi < buildings.length; bi++) {
+        const b = buildings[bi];
+        const style = styleFor(bi);
         const wallH = b.stories * CFG.WALL_H;
         const vMax  = wallH;
 
@@ -272,6 +565,11 @@ export function buildWalls(scene) {
         const nsRunMax = neP.x + hT;
         const ewRunMin = nwP.z - hT;
         const ewRunMax = swP.z + hT;
+
+        buildingRecs.push({
+            style, has4: b.h > 2,
+            bounds: { x0: nsRunMin, x1: nsRunMax, z0: ewRunMin, z1: ewRunMax, vMax },
+        });
 
         const sides = [
             { side: 'north', axis: 'x', perpPos: nwP.z, perpDir: -1, runMin: nsRunMin, runMax: nsRunMax },
@@ -289,6 +587,7 @@ export function buildWalls(scene) {
         for (const s of sides) {
             const isNS = s.axis === 'x';
             const openings = [];
+            const trimOps = []; // same rects in {run0,run1,v0,v1,kind} form
 
             // Doors → opening from wall bottom to doorTopY
             for (const d of b.doors) {
@@ -299,6 +598,10 @@ export function buildWalls(scene) {
                     runMax: dCenter + CFG.CELL / 2,
                     vMin,
                     vMax: doorTopY,
+                });
+                trimOps.push({
+                    run0: dCenter - CFG.CELL / 2, run1: dCenter + CFG.CELL / 2,
+                    v0: vMin, v1: doorTopY, kind: 'door',
                 });
             }
 
@@ -315,11 +618,22 @@ export function buildWalls(scene) {
                     vMin: winVCenter - winH / 2,
                     vMax: winVCenter + winH / 2,
                 });
+                trimOps.push({
+                    run0: wCenter - winW / 2, run1: wCenter + winW / 2,
+                    v0: winVCenter - winH / 2, v1: winVCenter + winH / 2, kind: 'window',
+                });
             }
 
             append(buildSideGeometry(
                 s.axis, s.perpPos, s.perpDir,
                 s.runMin, s.runMax, vMin, vMax, T, openings));
+
+            sideRecs.push({
+                bi, style, stories: b.stories,
+                axis: s.axis, perpPos: s.perpPos, perpDir: s.perpDir,
+                runMin: s.runMin, runMax: s.runMax, vMax,
+                openings, trimOps,
+            });
         }
 
     }
@@ -339,6 +653,67 @@ export function buildWalls(scene) {
         _wallMesh = mesh;
     }
 
+    /* ── Per-building visual styles (visual only, no physics/grid impact):
+     *    plaster skins + one merged timber-trim mesh.
+     *    Wall materials stay at 3 total: stone / plaster / wood trim. ── */
+    const skin = { pos: [], norm: [], uv: [], idx: [] };
+    const trimBoxes = [];
+    const S = {
+        WALL_H: CFG.WALL_H, BASE_H: SW.BASE_COURSE_H,
+        TRIM_T: SW.TRIM_T, TRIM_PROUD: SW.TRIM_PROUD,
+        SURROUND_PROUD: SW.SURROUND_PROUD, BRACE_MIN_SEG: SW.BRACE_MIN_SEG,
+        bi: 0,
+    };
+
+    for (const rec of sideRecs) {
+        if (rec.style === 'plaster') emitPlasterSkin(rec, SW, skin);
+        S.bi = rec.bi;
+        const pieces = computeSideTrims({
+            style: rec.style, stories: rec.stories,
+            runMin: rec.runMin, runMax: rec.runMax, vMax: rec.vMax,
+            openings: rec.trimOps,
+        }, S);
+        for (const piece of pieces) trimBoxes.push(makeTrimBoxMesh(rec, piece, scene));
+    }
+    for (const br of buildingRecs) {
+        if (br.style === 'stone' || !br.has4) continue;
+        for (const post of computeCornerPosts(br.bounds, SW)) {
+            trimBoxes.push(makePostBoxMesh(post, scene));
+        }
+    }
+
+    if (skin.idx.length > 0) {
+        const mesh = new Mesh('wallsPlaster', scene);
+        const vd = new VertexData();
+        vd.positions = new Float32Array(skin.pos);
+        vd.normals   = new Float32Array(skin.norm);
+        vd.uvs       = new Float32Array(skin.uv);
+        vd.indices   = new Uint32Array(skin.idx);
+        vd.applyToMesh(mesh);
+        mesh.material = makePlasterMaterial(scene);
+        mesh.isPickable = false; // rays must reach the stone 'walls' 0.015u behind
+        enableShadowReceiving(mesh);
+        // NOT a sun/torch shadow caster and NOT in the fog depth pass — the
+        // stone wall face right behind the skin already writes both.
+        mesh.freezeWorldMatrix();
+    }
+
+    if (trimBoxes.length > 0) {
+        const trimMat = new StandardMaterial('wallTrimMat', scene);
+        trimMat.diffuseTexture = loadTex('./assets/textures/bark.jpg', 1, 1, scene);
+        trimMat.diffuseColor = new Color3(0.45, 0.33, 0.21); // aged oak
+        trimMat.specularColor = new Color3(0.02, 0.02, 0.02);
+        const merged = Mesh.MergeMeshes(trimBoxes, true, true, undefined, false, false);
+        if (merged) {
+            merged.name = 'wallTrims';
+            merged.material = trimMat;
+            merged.isPickable = false; // visual only — camera raycasts pay per triangle
+            addShadowCaster(merged);
+            enableShadowReceiving(merged);
+            addFogDepthMesh(merged); // corner posts/eave beams silhouette against sky
+            merged.freezeWorldMatrix();
+        }
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
