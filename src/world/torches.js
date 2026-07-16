@@ -12,6 +12,7 @@ import { getInventory } from './flowers.js';
 import { getClusteredContainer } from './torchLighting.js';
 import { addTorchEmbers } from './torchParticles.js';
 import { getCamera } from '../core/scene.js';
+import { glowInclude, addFogDepthMesh } from '../core/postfx.js';
 
 // Re-export from submodules for external consumers
 export { addTorchShadowCaster, getTorchShadowGenerators, initTorchLightPool } from './torchLighting.js';
@@ -112,6 +113,7 @@ export function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ)
   flame.position = new Vector3(tipX, tipY, tipZ);
   flame.scaling.set(0.8, 1.4, 0.8); // Teardrop shape
   flame.isPickable = false;
+  glowInclude(flame);
 
   // Billboard glow halo — soft texture that always faces camera
   const glow = MeshBuilder.CreatePlane('torchGlow', { size: 1.0 }, scene);
@@ -132,6 +134,8 @@ export function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ)
   const yaw = Math.atan2(normalX, normalZ);
   stick.rotation = new Vector3(TILT, yaw, 0);
   stick.isPickable = false;
+  addFogDepthMesh(stick);
+  addFogDepthMesh(flame);
 
   return { light, flame, glow, stick, wx: tipX, wz: tipZ };
 }
@@ -158,6 +162,7 @@ export function createGroundTorch(scene, x, groundY, z) {
   flame.position = new Vector3(x, groundY + STICK_LEN + 0.08, z);
   flame.scaling.set(0.8, 1.4, 0.8);
   flame.isPickable = false;
+  glowInclude(flame);
 
   const glow = MeshBuilder.CreatePlane('groundTorchGlow', { size: 1.0 }, scene);
   glow.material = _glowMat;
@@ -171,6 +176,8 @@ export function createGroundTorch(scene, x, groundY, z) {
   stick.material = _stickMat;
   stick.position = new Vector3(x, groundY + STICK_LEN / 2, z);
   stick.isPickable = false;
+  addFogDepthMesh(stick);
+  addFogDepthMesh(flame);
 
   return { light, flame, glow, stick, wx: x, wz: z };
 }

@@ -1,4 +1,4 @@
-import { MeshBuilder, Mesh, PBRMaterial, Texture, Color3,
+import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3,
          Vector3, TransformNode, Ray } from 'babylonjs';
 import { CFG } from '../config.js';
 import { setCell } from './grid.js';
@@ -28,22 +28,23 @@ function ensureMaterials(scene) {
   barkTex.uScale = 1;
   barkTex.vScale = 1.5;
 
-  doorMat = new PBRMaterial('doorMat', scene);
-  doorMat.albedoTexture = barkTex;
-  doorMat.albedoColor = Color3.FromHexString('#8b5a2b');
-  doorMat.roughness = 0.85;
-  doorMat.metallic = 0;
+  // StandardMaterial, not PBR: PBR renders desaturated blue-grey in this
+  // right-handed scene (same family of issues as the CLAUDE.md note about PBR
+  // shadows) — doors looked "transparent" fog-blue at distance.
+  doorMat = new StandardMaterial('doorMat', scene);
+  doorMat.diffuseTexture = barkTex;
+  doorMat.diffuseColor = Color3.FromHexString('#8b5a2b');
+  doorMat.specularColor = new Color3(0.04, 0.04, 0.04);
 
-  baseMat = new PBRMaterial('doorBaseMat', scene);
-  baseMat.albedoTexture = barkTex.clone();
-  baseMat.albedoColor = Color3.FromHexString('#663311');
-  baseMat.roughness = 0.95;
-  baseMat.metallic = 0;
+  baseMat = new StandardMaterial('doorBaseMat', scene);
+  baseMat.diffuseTexture = barkTex.clone();
+  baseMat.diffuseColor = Color3.FromHexString('#663311');
+  baseMat.specularColor = new Color3(0.02, 0.02, 0.02);
 
-  knobMat = new PBRMaterial('doorKnobMat', scene);
-  knobMat.albedoColor = Color3.FromHexString('#886633');
-  knobMat.metallic = 0.8;
-  knobMat.roughness = 0.3;
+  knobMat = new StandardMaterial('doorKnobMat', scene);
+  knobMat.diffuseColor = Color3.FromHexString('#886633');
+  knobMat.specularColor = new Color3(0.5, 0.45, 0.3); // polished metal knob
+  knobMat.specularPower = 64;
 }
 
 /* ── Fancy door leaf builder ─────────────────────────────────────── */

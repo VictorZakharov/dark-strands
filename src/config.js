@@ -63,4 +63,25 @@ export const CFG = {
   MIN_ROOM: 4,
   MAX_ROOM: 9,
   PLAYER_CLEAR: 3,
+
+  // Graphics / AAA visual effects (all individually toggleable)
+  GFX: {
+    // 'pcf' = single stabilized 2048 PCF map (default). 'csm' = 3-cascade CSM —
+    // sharper mid-range shadows but re-renders every caster per cascade
+    // (+~2600 draws here); the fog caps visibility at ~90u so pcf wins.
+    SHADOWS: 'pcf',
+    SHADOW_MAP: 2048,
+    CASCADES: 3,
+    // SSAO2 (half-res, prepass): barely visible on this flat-shaded low-poly
+    // world but costs a partial extra geometry pass — off by default.
+    SSAO: false,
+    MSAA: 2,               // pipeline texture samples (1 = off); FXAA covers the rest
+    PIPELINE: true,        // DefaultRenderingPipeline: bloom/FXAA/grain/vignette/sharpen
+    GLOW: true,            // GlowLayer on torch flames
+    VOL_FOG: true,         // volumetric height fog post-process (replaces linear fog)
+    GOD_RAYS: true,        // screen-space sun shafts inside the fog pass
+    SKY_DOME: true,        // procedural atmosphere/cloud/star dome
+    WEATHER: true,         // weather state machine + rain/snow/lightning
+    WATER_REFLECTION: true,// planar mirror reflections on the ocean
+  },
 };

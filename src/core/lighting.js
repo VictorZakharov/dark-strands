@@ -1,11 +1,13 @@
 import { HemisphericLight, DirectionalLight, Vector3,
          Color3, MeshBuilder, ShaderMaterial, Effect,
          TransformNode, LensFlareSystem, LensFlare,
-         ShadowGenerator } from 'babylonjs';
+         ShadowGenerator, CascadedShadowGenerator } from 'babylonjs';
 import { isWebGPU } from './scene.js';
+import { CFG } from '../config.js';
 
 let sunLight, hemiLight, sunCSM;
 let stars = null, sunGroup = null, sunLensflare = null;
+let sunGlowMat = null;
 
 export function getSunLight() { return sunLight; }
 export function getHemiLight() { return hemiLight; }
@@ -30,6 +32,7 @@ void main() {
 Effect.ShadersStore['sunGlowFragmentShader'] = `
 precision highp float;
 varying vec2 vUv;
+uniform float uFade;
 void main() {
   vec2 p = (vUv - 0.5) * 2.0;
   float dist = length(p);
@@ -50,9 +53,9 @@ void main() {
   vec3 color = mix(outer, warm, smoothstep(0.7, 0.0, dist));
   color = mix(color, white, core);
 
-  float alpha = glow;
+  float alpha = glow * uFade;
   if (alpha < 0.005) discard;
-  gl_FragColor = vec4(color * glow, alpha);
+  gl_FragColor = vec4(color * glow * uFade, alpha);
 }
 `;
 
@@ -69,13 +72,39 @@ export function initLighting(scene) {
   sunLight.intensity = 1.5;
   sunLight.position = new Vector3(30, 60, 30);
 
-  // Shadow generator — PCF (Percentage Closer Filtering) for sharp, reliable shadows.
-  sunCSM = new ShadowGenerator(2048, sunLight);
-  sunCSM.usePercentageCloserFiltering = true;
-  sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
-  sunCSM.setDarkness(0.1);
-  sunCSM.bias        = 0.003;
-  sunCSM.normalBias  = 0.01;
+  if (CFG.GFX.SHADOWS === 'csm') {
+    // Cascaded shadow maps — frusta derived from the active camera every frame,
+    // dense texel budget where the player is looking. Note: CSM was tried and
+    // reverted once (commit 00273ef -> 1d2cb64) when the world was ~100 unmerged
+    // casters; geometry is now merged into a handful of meshes, so the
+    // cascades * casters draw cost is acceptable.
+    sunCSM = new CascadedShadowGenerator(CFG.GFX.SHADOW_MAP, sunLight);
+    sunCSM.numCascades = CFG.GFX.CASCADES;
+    sunCSM.lambda = 0.8;              // log-heavy split — near-field density
+    sunCSM.shadowMaxZ = 100;          // fog hides everything past ~90 anyway
+    sunCSM.stabilizeCascades = true;  // kills translation shimmer
+    sunCSM.cascadeBlendPercentage = 0;
+    sunCSM.depthClamp = true;
+    sunCSM.autoCalcDepthBounds = false; // avoids a full-scene depth reduction pass
+    sunCSM.usePercentageCloserFiltering = true;
+    sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+    sunCSM.setDarkness(0.1);
+    sunCSM.bias = 0.01;
+    sunCSM.normalBias = 0.02;
+  } else {
+    // Default — single-map PCF following the player (identical to pre-VFX look)
+    sunCSM = new ShadowGenerator(CFG.GFX.SHADOW_MAP, sunLight);
+    sunCSM.usePercentageCloserFiltering = true;
+    sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
+    sunCSM.setDarkness(0.1);
+    sunCSM.bias        = 0.003;
+    sunCSM.normalBias  = 0.01;
+    // Event-driven refresh: the map re-renders only when updateSunShadow
+    // decides something changed (player cell, sun direction, heartbeat) —
+    // saves the full ~100-caster shadow pass on most frames.
+    const sm = sunCSM.getShadowMap();
+    if (sm) sm.refreshRate = 0; // REFRESHRATE_RENDER_ONCE; resetRefreshCounter() re-arms
+  }
 
   // --- Sun visual (glowing radial gradient in the sky) ---
   sunGroup = new TransformNode('sunGroup', scene);
@@ -88,8 +117,10 @@ export function initLighting(scene) {
     fragment: 'sunGlow',
   }, {
     attributes: ['position', 'uv'],
-    uniforms: ['worldViewProjection'],
+    uniforms: ['worldViewProjection', 'uFade'],
   });
+  sunMat.setFloat('uFade', 1);
+  sunGlowMat = sunMat;
   sunMat.alpha = 0.99; // enable alpha blending
   sunMat.alphaMode = 1; // ALPHA_ADD (additive blending)
   sunMat.backFaceCulling = false;
@@ -97,6 +128,7 @@ export function initLighting(scene) {
   sunMesh.material = sunMat;
   sunMesh.isPickable = false;
   sunMesh.applyFog = false;
+  sunMesh.metadata = { noDepthPass: true }; // sky element — keep out of the fog depth map
 
   // --- Lens flare system (skip on WebGPU — null texture binding crash) ---
   if (!isWebGPU()) {
@@ -113,15 +145,49 @@ export function initLighting(scene) {
  * Move the shadow camera to follow the player each frame.
  * Call from the game loop with the player's world position.
  */
+let _shSnapX = Infinity, _shSnapY = Infinity, _shSnapZ = Infinity;
+const _shLastDir = new Vector3(0, 0, 0);
+let _shFrame = 0;
+
 export function updateSunShadow(px, py, pz) {
   if (!sunLight) return;
-  // Position light opposite to direction, centered on player (matches working prototype)
+  // CSM fits cascade frusta from the active camera automatically — light
+  // position is ignored, only sunLight.direction matters (set in main loop).
+  if (CFG.GFX.SHADOWS === 'csm') return;
+
+  // The shadow map is expensive (~all casters). Re-render it only when:
+  //  - the player crossed a 2-unit snap cell (light frustum must follow),
+  //  - the sun direction animated (day/night cycle on),
+  //  - a slow heartbeat fires (NPCs/doors/stones move without the player).
+  const SNAP = 2;
+  const qx = Math.round(px / SNAP) * SNAP;
+  const qy = Math.round(py / SNAP) * SNAP;
+  const qz = Math.round(pz / SNAP) * SNAP;
+  _shFrame++;
+
   const d = sunLight.direction;
+  const moved = qx !== _shSnapX || qy !== _shSnapY || qz !== _shSnapZ;
+  const dirChanged = Math.abs(d.x - _shLastDir.x) + Math.abs(d.y - _shLastDir.y)
+                   + Math.abs(d.z - _shLastDir.z) > 0.0005;
+  const heartbeat = _shFrame % 8 === 0;
+  if (!moved && !dirChanged && !heartbeat) return;
+
+  _shSnapX = qx; _shSnapY = qy; _shSnapZ = qz;
+  _shLastDir.copyFrom(d);
+
+  // Position light opposite to direction, centered on the snapped player cell
   sunLight.position.set(
-    px - d.x * 70,
-    py - d.y * 70,
-    pz - d.z * 70
+    qx - d.x * 70,
+    qy - d.y * 70,
+    qz - d.z * 70
   );
+  const sm = sunCSM ? sunCSM.getShadowMap() : null;
+  if (sm) sm.resetRefreshCounter();
+}
+
+/** Fade the sun glow billboard (0..1) — cloud cover hides the sun disc */
+export function setSunGlowFade(f) {
+  if (sunGlowMat) sunGlowMat.setFloat('uFade', f);
 }
 
 /** Register a mesh as a shadow caster with the CSM generator */

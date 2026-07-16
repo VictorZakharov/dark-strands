@@ -4,6 +4,7 @@ import { getSunLight, getHemiLight, getStars } from '../core/lighting.js';
 import { getTorchLights, getDoorTorchLights, getDoorTorchFlames } from '../world/torches.js';
 import { padTime } from '../utils/helpers.js';
 import { getScene } from '../core/scene.js';
+import { getWeatherModifiers } from './weather.js';
 
 let dayTime = 8 / 24; // Start at 08:00 (overridden to 10:00 for snow biome)
 let cycleEnabled = false;
@@ -85,8 +86,13 @@ export function updateDayNight(dt, scene) {
     _sunOff = { x: 0, y: -50, z: 0 };
   }
 
+  // Weather modifiers — clouds dim the sun, storms darken and desaturate the
+  // sky, lightning rides the hemi light. Applied HERE (the single writer of
+  // these scene properties) so weather never fights the day/night cycle.
+  const wm = getWeatherModifiers();
+
   // Sun intensity & color
-  sunLight.intensity = Math.min(2.2, Math.max(0, sunH) * 2.2);
+  sunLight.intensity = Math.min(2.2, Math.max(0, sunH) * 2.2) * wm.sunMul;
   // Babylon.js uses Color3 for diffuse — approximate HSL(0.08, 0.6, variable)
   const sunLum = 0.5 + Math.max(0, sunH) * 0.5;
   sunLight.diffuse = new Color3(
@@ -95,8 +101,9 @@ export function updateDayNight(dt, scene) {
     sunLum * 0.75
   );
 
-  // Hemisphere
-  hemiLight.intensity = Math.min(0.53, 0.08 + Math.max(0, sunH) * 0.45);
+  // Hemisphere (lightning flash spikes it — biggest visible strike effect)
+  hemiLight.intensity = Math.min(0.53, 0.08 + Math.max(0, sunH) * 0.45) * wm.hemiMul
+                      + wm.flash * 2.2;
 
   // Sky color — wide gradual transition (sunH 0.4 → -0.2)
   const day = new Color3(0.424, 0.706, 0.933);     // #6cb4ee
@@ -118,6 +125,19 @@ export function updateDayNight(dt, scene) {
     sky = night.clone();
   }
 
+  // Weather: desaturate + darken the sky under cloud cover, brighten on flash.
+  // Done BEFORE _currentSky is written so water reflections and the sky dome
+  // pick up the weathered color automatically.
+  if (wm.skyDesat > 0 || wm.flash > 0) {
+    const lum = (sky.r + sky.g + sky.b) / 3 * 0.75;
+    const fk = 1 + wm.flash * 0.5;
+    sky = new Color3(
+      (sky.r + (lum - sky.r) * wm.skyDesat) * fk,
+      (sky.g + (lum - sky.g) * wm.skyDesat) * fk,
+      (sky.b + (lum - sky.b) * wm.skyDesat) * fk
+    );
+  }
+
   _currentSky.r = sky.r;
   _currentSky.g = sky.g;
   _currentSky.b = sky.b;
@@ -128,12 +148,13 @@ export function updateDayNight(dt, scene) {
 
   // IBL environment intensity — very subtle so building interiors stay dark
   // and torch lights remain visible. PBR materials still respond to direct lights.
-  scene.environmentIntensity = Math.max(0.01, Math.min(0.15, sunH * 0.2));
+  scene.environmentIntensity = Math.max(0.01, Math.min(0.15, sunH * 0.2)) * wm.envMul;
 
-  // Gradual fog transition
+  // Gradual fog transition; weather multiplies the distances (denser when overcast).
+  // With volumetric fog enabled these distances feed the post-process density.
   const fogBlend = Math.max(0, Math.min(1, (sunH + 0.1) / 0.3));
-  scene.fogStart = 15 + fogBlend * 15;  // 15 (night) → 30 (day)
-  scene.fogEnd = 50 + fogBlend * 40;   // 50 (night) → 90 (day)
+  scene.fogStart = (15 + fogBlend * 15) * wm.fogMul;  // 15 (night) → 30 (day)
+  scene.fogEnd = (50 + fogBlend * 40) * wm.fogMul;   // 50 (night) → 90 (day)
 
   // Stars — fade in gradually (Phase 8: actual star mesh, for now just null check)
   if (stars) {

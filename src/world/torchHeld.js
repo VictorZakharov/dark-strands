@@ -5,6 +5,7 @@ import {
 import { getCamBlend } from '../entities/player.js';
 import { ensureMaterials, getMaterials } from './torches.js';
 import { createEmberSystem, getTorchTimer } from './torchParticles.js';
+import { glowInclude, addFogDepthMesh } from '../core/postfx.js';
 
 let heldGroup = null;
 let heldLight = null;
@@ -33,6 +34,9 @@ export function initHeldTorch(scene) {
   heldFlame.scaling.set(0.8, 1.4, 0.8);
   heldFlame.parent = heldGroup;
   heldFlame.isPickable = false;
+  glowInclude(heldFlame);
+  addFogDepthMesh(stick);
+  addFogDepthMesh(heldFlame); // held torch vs sky must not fog at sky distance
 
   heldGlow = MeshBuilder.CreatePlane('heldTorchGlow', { size: 0.8 }, scene);
   heldGlow.material = glowMat;

@@ -28,6 +28,11 @@ import { getSunLight, getSunGroup, getSunLensflare, updateSunShadow, addShadowCa
 import { updateNpcs, updateSoldierHint, getNearestSoldier } from './systems/npcAI.js';
 import { initMenuScene, renderMenu, disposeMenu } from './systems/menu.js';
 import { initBoundaryShield, updateBoundaryShield } from './world/boundary.js';
+import { initPostFX, updatePostFX, setDepthRenderList } from './core/postfx.js';
+import { initSkyDome, updateSkyDome } from './core/skyDome.js';
+import { initWeather, updateWeather, getWeatherModifiers } from './systems/weather.js';
+import { initRainFX, updateRainFX, prewarmRainFX, resetRainFX, pauseRainFX } from './systems/rainFX.js';
+import { setSunGlowFade } from './core/lighting.js';
 
 // Delta time via performance.now() (replaces THREE.Clock)
 let _lastTime = 0;
@@ -282,7 +287,10 @@ function gameLoop(time) {
     syncPlayerFromPhysics();
     kickNearbyRock(scene);
     updatePlayer(gdt, camera, getSunLight(), activeKeys);
+    updateWeather(gdt); // before daynight — it consumes the weather modifiers
     updateDayNight(gdt, scene);
+    updatePostFX();
+    updateRainFX(gdt, player, speed);
 
     // Update sun light direction from day/night offset and shadow camera position
     const _sl = getSunLight();
@@ -294,6 +302,9 @@ function gameLoop(time) {
       // Center shadow frustum on the player
       updateSunShadow(player.x, player.y, player.z);
     }
+
+    // Sky dome after the sun direction update so its sun position is current
+    updateSkyDome(gdt);
 
     // Update ocean water shader uniforms
     const _wm = getWaterMaterial();
@@ -355,6 +366,10 @@ function gameLoop(time) {
           off.y / len * R,
           p.z + off.z / len * R
         );
+        // Cloud cover hides the sun disc and kills the lens flare
+        const cover = getWeatherModifiers().cloudCover;
+        setSunGlowFade(Math.max(0, 1 - cover * 1.2));
+        if (lf) lf.isEnabled = cover < 0.4;
         // LensFlareSystem follows its emitter (sunGroup) automatically
       } else {
         sg.setEnabled(false);
@@ -401,6 +416,9 @@ function gameLoop(time) {
   } else if (menuMode) {
     renderMenu(engine, dt);
   } else {
+    // Paused: particles still animate during render — freeze rain emission
+    // and drop queued splash impacts so resume doesn't burst
+    pauseRainFX();
     getScene().render();
   }
   engine.endFrame();
@@ -420,6 +438,11 @@ async function buildWorld() {
   await yieldFrame();
   await initPhysics();
   initLighting(scene);
+  // Post-FX before world build: materials created after this compile once with
+  // applyByPostProcess/prepass defines; GlowLayer exists before torches spawn.
+  initPostFX(scene, getCamera());
+  initSkyDome(scene);
+  initWeather();
 
   // Skip Babylon's per-frame pointer-move picking — we use our own raycasting
   scene.skipPointerMovePicking = true;
@@ -452,6 +475,8 @@ async function buildWorld() {
   placeFurniture(scene);
   buildWindows(scene);
   buildWater(scene);
+  initRainFX(scene); // needs the building grid marks + terrain
+  setDepthRenderList(scene); // fog depth pass: big merged meshes only
   step(4);
 
   await yieldFrame();
@@ -555,6 +580,28 @@ async function buildWorld() {
     console.log(`[PERF] frame:${ft}ms render:${rt}ms activeMesh:${am}ms shadows:${shadow}ms draws:${draws}`);
   }, 5000);
 
+  // Dev/debug console API (also used by automated visual verification)
+  window._dbg = {
+    setTime: (h) => setStartTime((h % 24) / 24),
+    look: (yaw, pitch) => {
+      const p = getPlayerState();
+      p.yaw = yaw;
+      if (pitch !== undefined) p.pitch = pitch;
+    },
+    tp: (x, z, y) => {
+      const body = getPlayerBody();
+      if (body && body.transformNode) {
+        const ty = y !== undefined ? y : getTerrainHeight(x, z) + 2;
+        body.transformNode.position.set(x, ty, z);
+      }
+    },
+    pos: () => {
+      const p = getPlayerState();
+      return { x: p.x, y: p.y, z: p.z, yaw: p.yaw, pitch: p.pitch };
+    },
+    scene: () => getScene(),
+  };
+
   const fill = document.getElementById('menu-load-fill');
   if (fill) {
     fill.style.transition = 'transform 0.35s ease-out';
@@ -562,13 +609,15 @@ async function buildWorld() {
   }
   step(100);
 
-  // WARM-UP RENDERING: Render multiple frames while covered to ensure 
+  // WARM-UP RENDERING: Render multiple frames while covered to ensure
   // WebGPU pipelines are fully compiled and the viewport is stable.
   // This prevents the "cyan screen" or "NPCs in air" flash.
+  prewarmRainFX(); // compile rain/splash pipelines behind the loading screen
   for (let i = 0; i < 5; i++) {
     scene.render();
     await yieldFrame();
   }
+  resetRainFX(); // clear warm-up particles, restore emitRate-driven emission
 
   await new Promise(r => setTimeout(r, 200));
 }
@@ -605,11 +654,12 @@ function setupPlayButton() {
       await buildWorld();
     } catch (err) {
       console.error('[BUILD] World build failed:', err);
-      // Restore menu so user isn't stuck
-      if (panel) panel.style.display = 'flex';
-      if (keys) keys.style.display = 'flex';
-      if (loading) loading.style.display = 'none';
-      building = false;
+      // buildWorld is not re-entrant (post-FX chain, shadow slots, particle
+      // systems and physics bodies would all stack on retry) — reload for a
+      // clean engine state instead of restoring the menu. `building` stays
+      // true so a second click during the delay is ignored.
+      if (loadText) loadText.textContent = 'World build failed — reloading...';
+      setTimeout(() => location.reload(), 1500);
       return;
     }
 
@@ -643,6 +693,8 @@ function setupPlayButton() {
 async function init() {
   await initScene();
   await initRenderer();
+  window._cfg = CFG; // console access for debugging/A-B testing GFX flags
+  window._engine = getEngine();
 
   initMenuScene();
 

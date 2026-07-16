@@ -11,6 +11,7 @@ let _emberTex = null;
 let _smokeTex = null;
 let _emberScene = null;
 let _torchTimer = 0;
+let _slotFrame = 0; // staggered shadow-slot refresh heartbeat
 
 export function getTorchTimer() { return _torchTimer; }
 
@@ -284,15 +285,25 @@ export function updateTorchEmbers(dt) {
   }
 
   torchDistances.sort((a, b) => a.dist2 - b.dist2);
+  _slotFrame++;
   for (let i = 0; i < shadowSlots.length; i++) {
     try {
       const slot = shadowSlots[i];
       if (i < torchDistances.length) {
         const { t } = torchDistances[i];
+        // Re-render this slot's shadow cube only when it jumps to a different
+        // torch, or on a staggered heartbeat (player/NPCs moving in its range).
+        const moved = Math.abs(slot.position.x - t.light.position.x) > 0.01
+                   || Math.abs(slot.position.y - t.light.position.y) > 0.01
+                   || Math.abs(slot.position.z - t.light.position.z) > 0.01;
         slot.position.copyFrom(t.light.position);
         slot.intensity = t.light.intensity;
         slot.shadowEnabled = true;
         t.light.intensity = 0;
+        if (moved || _slotFrame % 8 === i * 4) {
+          const sm = slot.metadata.shadowGen && slot.metadata.shadowGen.getShadowMap();
+          if (sm) sm.resetRefreshCounter();
+        }
       } else {
         slot.position.y = -100;
         slot.intensity = 0.001;

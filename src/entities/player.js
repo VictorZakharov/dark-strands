@@ -10,6 +10,7 @@ import { spawnBoundaryHit, setBoundaryContact } from '../world/boundary.js';
 import { getContainer, createAnimMixer } from './modelLoader.js';
 import { addShadowCaster, enableShadowReceiving, getSunCSM } from '../core/lighting.js';
 import { addTorchShadowCaster } from '../world/torches.js';
+import { addFogDepthMesh } from '../core/postfx.js';
 
 let playerModel; // TransformNode root
 let mixer, idleAction, walkAction, runAction;
@@ -148,6 +149,7 @@ export function initPlayer(scene) {
       addShadowCaster(mesh);
       addTorchShadowCaster(mesh);
       enableShadowReceiving(mesh);
+      addFogDepthMesh(mesh); // 3rd-person model against the horizon must fog by its own depth
     }
 
     // Layer mask: player model on layer 2 (bit 1), default world on layer 1 (bit 0)

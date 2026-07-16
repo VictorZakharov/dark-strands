@@ -27,8 +27,9 @@ export async function initScene() {
   canvas.id = 'game';
   document.body.prepend(canvas);
 
-  // Try WebGPU first, fall back to WebGL2
-  if (navigator.gpu) {
+  // Try WebGPU first, fall back to WebGL2 (?webgl forces the fallback for testing)
+  const forceWebGL = new URLSearchParams(location.search).has('webgl');
+  if (navigator.gpu && !forceWebGL) {
     try {
       engine = new WebGPUEngine(canvas, {
         antialias: true,
