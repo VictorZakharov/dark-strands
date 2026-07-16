@@ -58,6 +58,18 @@ export const CFG = {
   // Torch
   TORCH_PICK_DIST: 3,
 
+  // Wall style variety & timber trim (visual only — no physics/grid impact)
+  WALL_STYLE: {
+    BASE_COURSE_H: 0.8,    // stone base band height on plaster buildings (world u)
+    PLASTER_PROUD: 0.015,  // plaster skin offset off the stone wall face
+    PLASTER_UV: 0.25,      // plaster texture tiling (uv per world unit → tiles every 4u)
+    TRIM_T: 0.15,          // horizontal beam cross-section height
+    TRIM_PROUD: 0.03,      // beams/braces proud of the wall face
+    SURROUND_PROUD: 0.07,  // door/window surrounds + corner posts proud of the face
+    CORNER_W: 0.24,        // corner post plan width
+    BRACE_MIN_SEG: 1.3,    // min clear wall run (u) to host a diagonal brace
+  },
+
   // Buildings
   MIN_BUILDINGS: 9,
   MAX_BUILDINGS: 14,
@@ -67,12 +79,15 @@ export const CFG = {
 
   // Roads (village layout)
   ROAD_EDGE_MARGIN: 6,     // min distance (cells) from world edge
-  ROAD_WIDTH: 1.7,         // dirt ribbon width in world units (cell = 2.0)
+  ROAD_WIDTH: 1.7,         // ribbon width in world units (cell = 2.0)
   ROAD_Y_OFFSET: 0.05,     // lift above terrain to avoid z-fighting
+  ROAD_WIDTH_JITTER: 0.15, // deterministic per-side width wobble (±u)
   ROAD_MIN_BRANCHES: 2,    // branch roads off the main road
   ROAD_MAX_BRANCHES: 3,
+  ROAD_SPUR_MAX: 5,        // max cells a door spur walks to reach the road
   ROAD_TORCH_SPACING: 9,   // road cells between standing torches
   ROAD_TORCH_MAX: 14,      // hard cap on road torches (PointLight budget)
+  ROAD_TORCH_POST_H: 1.7,  // standing torch post height (world units)
 
   // Graphics / AAA visual effects (all individually toggleable)
   GFX: {

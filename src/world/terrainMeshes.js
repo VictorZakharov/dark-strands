@@ -358,12 +358,13 @@ function setupWaterReflection(scene, mat) {
     const mirror = new MirrorTexture('waterRefl', { ratio: 0.5 }, scene, true);
     mirror.mirrorPlane = mirrorPlane;
     // Small list of big outdoor meshes — interiors/props aren't visible from open water
-    // NOTE: no hidden-layer proxies here (mergedCanopy/mergedBushes) — RTT
-    // renderLists IGNORE camera layer masks, so proxies would show in the
-    // mirror as solid blobs that don't exist in the world
+    // NOTE: no hidden-layer proxies here (mergedCanopyCore/mergedBushes) —
+    // RTT renderLists IGNORE camera layer masks, so proxies would show in
+    // the mirror as solid blobs that don't exist in the world.
+    // mergedCanopy (pine crowns) is visible geometry and belongs here.
     const names = ['ground', 'walls', 'flatRoofs', 'slantRoofs',
-                   'mergedTrunks', 'mergedLeafCards', 'mergedNeedleCards',
-                   'mergedBushCards', 'mergedRocks'];
+                   'mergedTrunks', 'mergedCanopy', 'mergedLeafCards',
+                   'mergedNeedleCards', 'mergedBushCards', 'mergedRocks'];
     mirror.renderList = names.map(n => scene.getMeshByName(n)).filter(Boolean);
     // Skip frustum culling for these — culling against the REFLECTED camera
     // is marginal while the player moves, and meshes popping in/out of the

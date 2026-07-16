@@ -398,6 +398,7 @@ export function buildRoofs(scene) {
             const halfLen  = roofLen / 2;
             const slopeLen = Math.sqrt(halfSpan * halfSpan + ridgeHeight * ridgeHeight);
 
+            const FASCIA = 0.45; // vertical eave boards — seal the wall-top gap
             const positions = [
                 -halfSpan, 0, -halfLen,  halfSpan, 0, -halfLen,  0, ridgeHeight, -halfLen,
                 -halfSpan, 0,  halfLen,  0, ridgeHeight,  halfLen,  halfSpan, 0,  halfLen,
@@ -407,6 +408,16 @@ export function buildRoofs(scene) {
                  0, ridgeHeight,  halfLen,  0, ridgeHeight, -halfLen,
                 -halfSpan, 0, -halfLen, -halfSpan, 0,  halfLen,
                  halfSpan, 0,  halfLen,  halfSpan, 0, -halfLen,
+                // fascia boards: eave sides
+                 halfSpan, 0, -halfLen,  halfSpan, 0,  halfLen,
+                 halfSpan, -FASCIA,  halfLen,  halfSpan, -FASCIA, -halfLen,
+                -halfSpan, 0, -halfLen, -halfSpan, 0,  halfLen,
+                -halfSpan, -FASCIA,  halfLen, -halfSpan, -FASCIA, -halfLen,
+                // fascia boards: gable ends
+                -halfSpan, 0, -halfLen,  halfSpan, 0, -halfLen,
+                 halfSpan, -FASCIA, -halfLen, -halfSpan, -FASCIA, -halfLen,
+                -halfSpan, 0,  halfLen,  halfSpan, 0,  halfLen,
+                 halfSpan, -FASCIA,  halfLen, -halfSpan, -FASCIA,  halfLen,
             ];
             const roofUvs = [
                 0, 0, roofSpan, 0, halfSpan, ridgeHeight,
@@ -414,12 +425,20 @@ export function buildRoofs(scene) {
                 0, 0, slopeLen, 0, slopeLen, roofLen, 0, roofLen,
                 0, 0, 0, roofLen, slopeLen, roofLen, slopeLen, 0,
                 0, 0, 0, roofLen, roofSpan, roofLen, roofSpan, 0,
+                0, 0, roofLen, 0, roofLen, FASCIA, 0, FASCIA,
+                0, 0, roofLen, 0, roofLen, FASCIA, 0, FASCIA,
+                0, 0, roofSpan, 0, roofSpan, FASCIA, 0, FASCIA,
+                0, 0, roofSpan, 0, roofSpan, FASCIA, 0, FASCIA,
             ];
             const roofIndices = [
                 0, 1, 2,  3, 4, 5,
                 6, 7, 8,  6, 8, 9,
                 10,11,12, 10,12,13,
                 14,15,16, 14,16,17,
+                18,19,20, 18,20,21,
+                22,23,24, 22,24,25,
+                26,27,28, 26,28,29,
+                30,31,32, 30,32,33,
             ];
 
             const mesh = new Mesh('rs', scene);
@@ -431,7 +450,11 @@ export function buildRoofs(scene) {
             vd.applyToMesh(mesh);
 
             if (longAxis) mesh.rotation.y = Math.PI / 2;
-            mesh.position = new Vector3(c.x, topY - ROOF_OVERLAP, c.z);
+            // Slightly ABOVE the wall top: the old topY - ROOF_OVERLAP put the
+            // slope plane exactly grazing the wall's top corner, so a lit
+            // stone strip (the wall top face) poked through along the eave.
+            // The fascia boards close the resulting eave gap from outside.
+            mesh.position = new Vector3(c.x, topY + 0.06, c.z);
             slantMeshes.push(mesh);
         }
     }

@@ -136,16 +136,16 @@ void main() {
 // fog integral starts past interior distances by design, so they contribute
 // nothing. Water is included (forceDepthWriteTransparentMeshes) so the fog
 // pass sees the water surface, not the seabed behind it.
-// NOTE: no 'mergedCanopy' here — the hidden pine-cone proxy writes depth
-// beyond the needle cards' coverage and the fog shades a GHOST CONE against
-// the sky. The card meshes themselves are in the pass (addFogDepthMesh) and
-// match the visible foliage exactly.
 const DEPTH_PASS_MESHES = [
   'ground', 'water', 'walls', 'flatRoofs', 'slantRoofs',
   // mergedMidFloors is REQUIRED: 1st-floor ceiling pixels whose ray exits
   // through a 2nd-floor window otherwise read sky depth, and the fog paints
   // ghost windows + fog lines onto the ceiling
   'mergedMidFloors',
+  // mergedCanopy (pine crown cones) is VISIBLE geometry again — it must
+  // write fog depth like any other silhouette-against-sky mesh. (While it
+  // was an invisible proxy it had to stay OUT or it fog-ghosted.)
+  'mergedCanopy',
   'mergedTrunks', 'mergedRocks',
 ];
 

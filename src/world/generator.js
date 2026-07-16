@@ -3,7 +3,7 @@ import { getGrid, setCell, addStairZone, markUpperFloor, markUpperWall, markStai
 import { rngInt } from '../utils/helpers.js';
 import { g2w } from '../utils/helpers.js';
 import { addFlatZone } from './terrain.js';
-import { getRoadPaths } from './roads.js';
+import { getRoadPaths } from './roadNetwork.js';
 
 const buildings = [];
 
@@ -60,15 +60,15 @@ export function generateBuildings() {
     let bx, bz, roadWall = null, seed = null;
     if (roadSeeds.length > 0) {
       seed = roadSeeds[Math.floor(Math.random() * roadSeeds.length)];
-      const gap = rngInt(1, 2);                 // cells between road and near wall
+      const gap = rngInt(2, 3);                 // GRASS cells between road and near wall
       const s = Math.random() < 0.5 ? 1 : -1;   // which side of the road
       const px = -seed.dz * s, pz = seed.dx * s; // perpendicular to road direction
       if (px !== 0) {
-        bx = px > 0 ? seed.gx + gap : seed.gx - gap - (w - 1);
+        bx = px > 0 ? seed.gx + gap + 1 : seed.gx - gap - w;
         bz = seed.gz - rngInt(1, h - 2);        // seed row lands in door-eligible range
         roadWall = px > 0 ? 'west' : 'east';
       } else {
-        bz = pz > 0 ? seed.gz + gap : seed.gz - gap - (h - 1);
+        bz = pz > 0 ? seed.gz + gap + 1 : seed.gz - gap - h;
         bx = seed.gx - rngInt(1, w - 2);
         roadWall = pz > 0 ? 'north' : 'south';
       }
@@ -95,10 +95,12 @@ export function generateBuildings() {
       ok = false;
     }
 
-    // Footprint must never cover a road cell (winding roads can cut back)
+    // Footprint must never cover NOR touch a road cell (winding roads can cut
+    // back) — the 1-cell ring keeps a grass verge between road and walls;
+    // door spurs are carved separately after building placement.
     if (ok) {
-      for (let gx = bx; gx < bx + w && ok; gx++) {
-        for (let gz = bz; gz < bz + h && ok; gz++) {
+      for (let gx = bx - 1; gx <= bx + w && ok; gx++) {
+        for (let gz = bz - 1; gz <= bz + h && ok; gz++) {
           if (isRoadCell(gx, gz)) ok = false;
         }
       }
@@ -242,7 +244,13 @@ export function generateBuildings() {
     const wallCands = { north: [], south: [], east: [], west: [] };
 
     for (let gx = bx + 1; gx < bx + w - 1; gx++) {
-      if (!doorSet.has(`${gx},${bz}`)) wallCands.north.push({ gx, gz: bz, wall: 'north' });
+      // The staircase climbs along the east column (stairGx) with its top
+      // landing against the NORTH wall — a window there is embedded in the
+      // stair volume and reads as a hole through the steps.
+      const behindStairTop = stairGx >= 0 && gx === stairGx;
+      if (!doorSet.has(`${gx},${bz}`) && !behindStairTop) {
+        wallCands.north.push({ gx, gz: bz, wall: 'north' });
+      }
       if (!doorSet.has(`${gx},${bz + h - 1}`)) wallCands.south.push({ gx, gz: bz + h - 1, wall: 'south' });
     }
     for (let gz = bz + 1; gz < bz + h - 1; gz++) {
