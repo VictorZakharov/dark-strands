@@ -41,6 +41,9 @@ uniform vec3 uFogColor;
 uniform vec2 uSunScreenUV;
 uniform vec4 uFogParams;            // x: sigma0, y: height falloff k, z: fog base Y, w: fog start distance
 uniform vec4 uRayParams;            // x: ray intensity, y: per-sample decay, z: sun visibility, w: anisotropy g
+uniform vec3 uBoxMin[16];           // building interior AABBs — fog-free volumes
+uniform vec3 uBoxMax[16];
+uniform float uBoxCount;
 
 #define RAY_SAMPLES 24
 #define SKY_DIST 340.0
@@ -49,6 +52,11 @@ float phaseSchlick(float mu, float g) {
   float k = 1.55 * g - 0.55 * g * g * g;
   float d = 1.0 - k * mu;
   return (1.0 - k * k) / (12.566371 * d * d);
+}
+
+// Height-fog integral over ray segment [a, b] (same closed form as main)
+float segInteg(float a, float b, float dy) {
+  return (abs(dy) > 1e-4) ? (exp(-a * dy) - exp(-b * dy)) / dy : (b - a);
 }
 
 void main() {
@@ -69,7 +77,27 @@ void main() {
   float sigma = uFogParams.x * exp(-(uCamPos.y - uFogParams.z) * k);
   float dy = rayDir.y * k;
   float s0 = min(uFogParams.w, t);
-  float integ = (abs(dy) > 1e-4) ? (exp(-s0 * dy) - exp(-t * dy)) / dy : (t - s0);
+  float integ = segInteg(s0, t, dy);
+
+  // Subtract the ray segments that pass INSIDE buildings — there is no fog
+  // indoors, whether the camera is in the room or looking in from outside
+  // through a doorway or window. Ray-AABB slab tests against the (few)
+  // building interior boxes.
+  vec3 safeDir = mix(rayDir, vec3(1e-5), vec3(lessThan(abs(rayDir), vec3(1e-5))));
+  vec3 invDir = 1.0 / safeDir;
+  for (int i = 0; i < 16; i++) {
+    if (float(i) >= uBoxCount) break;
+    vec3 t0 = (uBoxMin[i] - uCamPos) * invDir;
+    vec3 t1 = (uBoxMax[i] - uCamPos) * invDir;
+    vec3 tmin3 = min(t0, t1);
+    vec3 tmax3 = max(t0, t1);
+    float tn = max(max(tmin3.x, tmin3.y), tmin3.z);
+    float tf = min(min(tmax3.x, tmax3.y), tmax3.z);
+    float a = max(max(tn, s0), 0.0);
+    float b = min(tf, t);
+    if (b > a) integ -= segInteg(a, b, dy);
+  }
+  integ = max(integ, 0.0);
   float trans = exp(-max(sigma * integ, 0.0));   // transmittance along the ray
 
   // Sun in-scatter tint on the fog. Multiplier deliberately well below the
@@ -108,9 +136,17 @@ void main() {
 // fog integral starts past interior distances by design, so they contribute
 // nothing. Water is included (forceDepthWriteTransparentMeshes) so the fog
 // pass sees the water surface, not the seabed behind it.
+// NOTE: no 'mergedCanopy' here — the hidden pine-cone proxy writes depth
+// beyond the needle cards' coverage and the fog shades a GHOST CONE against
+// the sky. The card meshes themselves are in the pass (addFogDepthMesh) and
+// match the visible foliage exactly.
 const DEPTH_PASS_MESHES = [
   'ground', 'water', 'walls', 'flatRoofs', 'slantRoofs',
-  'mergedTrunks', 'mergedCanopy', 'mergedRocks',
+  // mergedMidFloors is REQUIRED: 1st-floor ceiling pixels whose ray exits
+  // through a 2nd-floor window otherwise read sky depth, and the fog paints
+  // ghost windows + fog lines onto the ceiling
+  'mergedMidFloors',
+  'mergedTrunks', 'mergedRocks',
 ];
 
 // Dynamic meshes (NPCs, doors, torches, stones) opt into the fog depth pass —
@@ -192,6 +228,24 @@ export function getFogPostProcess() { return _fogPP; }
 
 const _glowVisible = new Set(); // flames currently in the includedOnly list
 
+// Building interior AABBs for the fog shader (max 16, packed xyz triplets)
+let _fogBoxMin = new Array(48).fill(0);
+let _fogBoxMax = new Array(48).fill(0);
+let _fogBoxCount = 0;
+
+/** Register building interiors as fog-free volumes (call after world gen). */
+export function setFogInteriorBoxes(boxes) {
+  _fogBoxCount = Math.min(boxes.length, 16);
+  for (let i = 0; i < _fogBoxCount; i++) {
+    _fogBoxMin[i * 3] = boxes[i].min.x;
+    _fogBoxMin[i * 3 + 1] = boxes[i].min.y;
+    _fogBoxMin[i * 3 + 2] = boxes[i].min.z;
+    _fogBoxMax[i * 3] = boxes[i].max.x;
+    _fogBoxMax[i * 3 + 1] = boxes[i].max.y;
+    _fogBoxMax[i * 3 + 2] = boxes[i].max.z;
+  }
+}
+
 /** Register a mesh with the glow layer (torch flames). Safe to call before init. */
 export function glowInclude(mesh) {
   if (_glow) {
@@ -258,7 +312,8 @@ export function initPostFX(scene, camera) {
     // not pixel-bound.
     _fogPP = new PostProcess('volumetricFog', 'volumetricFog',
       ['uCamPos', 'uCamForward', 'uCamRight', 'uCamUp', 'uTanFov', 'uSunDir', 'uSunColor',
-       'uFogColor', 'uSunScreenUV', 'uFogParams', 'uRayParams'],
+       'uFogColor', 'uSunScreenUV', 'uFogParams', 'uRayParams',
+       'uBoxMin', 'uBoxMax', 'uBoxCount'],
       ['depthSampler'],
       1.0, camera, Texture.BILINEAR_SAMPLINGMODE, engine, false, null,
       Constants.TEXTURETYPE_HALF_FLOAT);
@@ -285,6 +340,12 @@ export function initPostFX(scene, camera) {
       // old linear fogEnd ~= 2% transmittance distance -> sigma0 = 3.9 / fogEnd
       const sigma0 = _fogDisabled ? 0 : 2.8 / Math.max(20, scene.fogEnd);
       effect.setFloat4('uFogParams', sigma0, 0.09, CFG.WATER_Y - 0.5, scene.fogStart);
+      // Building interior boxes — the shader subtracts in-building ray
+      // segments so interiors are fog-free from ANY viewpoint (inside the
+      // room, or looking in through a doorway/window during a storm)
+      effect.setFloat('uBoxCount', _fogBoxCount);
+      effect.setArray3('uBoxMin', _fogBoxMin);
+      effect.setArray3('uBoxMax', _fogBoxMax);
 
       if (sun) {
         _sunTo.set(-sun.direction.x, -sun.direction.y, -sun.direction.z).normalize();

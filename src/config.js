@@ -65,6 +65,15 @@ export const CFG = {
   MAX_ROOM: 9,
   PLAYER_CLEAR: 3,
 
+  // Roads (village layout)
+  ROAD_EDGE_MARGIN: 6,     // min distance (cells) from world edge
+  ROAD_WIDTH: 1.7,         // dirt ribbon width in world units (cell = 2.0)
+  ROAD_Y_OFFSET: 0.05,     // lift above terrain to avoid z-fighting
+  ROAD_MIN_BRANCHES: 2,    // branch roads off the main road
+  ROAD_MAX_BRANCHES: 3,
+  ROAD_TORCH_SPACING: 9,   // road cells between standing torches
+  ROAD_TORCH_MAX: 14,      // hard cap on road torches (PointLight budget)
+
   // Graphics / AAA visual effects (all individually toggleable)
   GFX: {
     // 'pcf' = single stabilized 2048 PCF map (default). 'csm' = 3-cascade CSM —

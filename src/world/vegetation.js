@@ -1,7 +1,7 @@
 import { MeshBuilder, Mesh, StandardMaterial, Texture, DynamicTexture, Color3,
          Vector3, Matrix, Quaternion, VertexData } from 'babylonjs';
 import { CFG } from '../config.js';
-import { getGrid, setCell, markTreeCell } from './grid.js';
+import { getGrid, setCell, markTreeCell, isRoadCell, isNearRoad } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w, rng, rngInt } from '../utils/helpers.js';
 import { getTerrainHeight } from './terrain.js';
@@ -87,20 +87,35 @@ function getNeedleCardTexture(scene) {
   needleCardTex = new DynamicTexture('needleCards', SZ, scene, true);
   const ctx = needleCardTex.getContext();
   ctx.clearRect(0, 0, SZ, SZ);
-  for (let c = 0; c < 26; c++) {
-    const cx = SZ / 2 + (Math.random() - 0.5) * SZ * 0.7;
-    const cy = SZ / 2 + (Math.random() - 0.5) * SZ * 0.7;
-    if (Math.hypot(cx - SZ / 2, cy - SZ / 2) > SZ * 0.42) continue;
-    const baseAng = Math.random() * Math.PI * 2;
-    const shade = 0.6 + Math.random() * 0.5;
-    ctx.strokeStyle = `rgba(${Math.floor(40 * shade)}, ${Math.floor(105 * shade)}, ${Math.floor(52 * shade)}, 1)`;
-    ctx.lineWidth = 2.2;
-    for (let n = 0; n < 9; n++) {
-      const a = baseAng + (n / 9) * Math.PI * 1.5 + Math.random() * 0.25;
-      const len = 14 + Math.random() * 14;
+  // DIRECTIONAL spray: all sprigs fan from the left edge toward +X, so a
+  // card rolled to point away from the trunk reads as a fir branch spray.
+  // (Randomly-oriented clusters looked like foliage suspended in air.)
+  for (let c = 0; c < 8; c++) {
+    const cx = 14 + Math.random() * 40;
+    const cy = 30 + Math.random() * (SZ - 60);
+    const twigAng = (Math.random() - 0.5) * 0.9; // fan around +X
+    const twigLen = 150 + Math.random() * 90;
+    const shade = 0.65 + Math.random() * 0.5;
+    const tx = Math.cos(twigAng), tyv = Math.sin(twigAng);
+    ctx.strokeStyle = `rgba(${Math.floor(52 * shade)}, ${Math.floor(42 * shade)}, ${Math.floor(30 * shade)}, 1)`;
+    ctx.lineWidth = 2.0;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + tx * twigLen, cy + tyv * twigLen);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(${Math.floor(30 * shade)}, ${Math.floor(88 * shade)}, ${Math.floor(46 * shade)}, 1)`;
+    ctx.lineWidth = 1.4;
+    for (let i = 0; i < 34; i++) {
+      const f = 0.05 + (i / 34) * 0.95;
+      const bx = cx + tx * twigLen * f;
+      const by = cy + tyv * twigLen * f;
+      const side = i % 2 === 0 ? 1 : -1;
+      // needles sweep toward the twig tip and shorten near it
+      const na = twigAng + side * (1.05 - f * 0.3);
+      const nl = (13 + Math.random() * 5) * (1 - f * 0.45);
       ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(cx + Math.cos(a) * len, cy + Math.sin(a) * len);
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx + Math.cos(na) * nl, by + Math.sin(na) * nl);
       ctx.stroke();
     }
   }
@@ -217,11 +232,37 @@ export function placeTrees(scene) {
   const needleMeshes = []; // needle-cluster fringe cards on pine tiers
   let placed = 0;
 
-  for (let i = 0; i < CFG.TREES * 3 && placed < CFG.TREES; i++) {
-    const gx = rngInt(1, CFG.GRID - 2);
-    const gz = rngInt(1, CFG.GRID - 2);
+  // Fir GROVES: conifers grow in single-species stands, so pines cluster
+  // around a few grove centers instead of scattering randomly (random
+  // placement reads fine for leafy trees, incoherent for firs).
+  const pineTarget = CFG.SNOW_MODE ? CFG.TREES : Math.floor(CFG.TREES * 0.45);
+  const groves = [];
+  for (let tries = 0; groves.length < 3 && tries < 80; tries++) {
+    const ggx = rngInt(8, CFG.GRID - 9);
+    const ggz = rngInt(8, CFG.GRID - 9);
+    if (!grid[ggx][ggz]) continue;
+    if (Math.abs(ggx - CFG.GRID / 2) < 8 && Math.abs(ggz - CFG.GRID / 2) < 8) continue;
+    const gp = g2w(ggx, ggz);
+    if (getTerrainHeight(gp.x, gp.z) < CFG.WATER_Y + 0.3) continue;
+    groves.push({ gx: ggx, gz: ggz });
+  }
+  let pinesPlaced = 0;
+
+  for (let i = 0; i < CFG.TREES * 4 && placed < CFG.TREES; i++) {
+    const wantPine = groves.length > 0 && pinesPlaced < pineTarget;
+    let gx, gz;
+    if (wantPine) {
+      const gv = groves[rngInt(0, groves.length - 1)];
+      gx = gv.gx + Math.round(rng(-4.5, 4.5));
+      gz = gv.gz + Math.round(rng(-4.5, 4.5));
+      if (gx < 1 || gx > CFG.GRID - 2 || gz < 1 || gz > CFG.GRID - 2) continue;
+    } else {
+      gx = rngInt(1, CFG.GRID - 2);
+      gz = rngInt(1, CFG.GRID - 2);
+    }
 
     if (!grid[gx][gz]) continue;
+    if (isNearRoad(gx, gz, 1)) continue; // keep trees off roads and verges
     if (Math.abs(gx - CFG.GRID / 2) < 5 && Math.abs(gz - CFG.GRID / 2) < 5) continue;
 
     let tooClose = false;
@@ -242,21 +283,25 @@ export function placeTrees(scene) {
     const ty = getTerrainHeight(p.x, p.z);
     // Mixed forest: pines + leafy deciduous. Snow biome stays pine-only
     // (bare/snowy deciduous would need their own look).
-    const leafy = !CFG.SNOW_MODE && rng(0, 1) > 0.45;
-    const trunkH = leafy ? rng(1.9, 2.9) : rng(2.0, 2.8);
+    const leafy = !CFG.SNOW_MODE && !wantPine;
+    const trunkH = leafy ? rng(1.9, 2.9) : rng(1.5, 2.1);
     const trunkRadBot = rng(0.16, 0.26);
     const trunkRadTop = trunkRadBot * rng(0.5, 0.75);
     const numCones = rngInt(4, 6);
-    const s = leafy ? rng(1.3, 2.3) : rng(1.6, 3.2);
-    const leanX = rng(-0.05, 0.05); // slight organic trunk lean
-    const leanZ = rng(-0.05, 0.05);
+    // Pines stay modest: tall scales blew the crown stack up to 3x house
+    // height with metre-thick branch poles
+    const s = leafy ? rng(1.3, 2.3) : rng(1.3, 2.2);
+    // Firs grow STRAIGHT — lean also broke the base/upper trunk joint (the
+    // two segments pivot differently, leaving a visible kink mid-trunk)
+    const leanX = leafy ? rng(-0.05, 0.05) : 0;
+    const leanZ = leafy ? rng(-0.05, 0.05) : 0;
 
     // Per-tree canopy tint — merged into one mesh via vertex colors
     const treeCol = CFG.SNOW_MODE
       ? { r: rng(0.76, 0.86), g: rng(0.80, 0.88), b: rng(0.84, 0.92) }
       : leafy
         ? { r: rng(0.20, 0.34), g: rng(0.45, 0.62), b: rng(0.12, 0.20) }
-        : { r: rng(0.15, 0.29), g: rng(0.42, 0.60), b: rng(0.13, 0.26) };
+        : { r: rng(0.10, 0.18), g: rng(0.32, 0.46), b: rng(0.14, 0.22) }; // firs darker blue-green
 
     // Trunk — create temp mesh, position/scale, bake transform for merging
     const tMesh = MeshBuilder.CreateCylinder('_trunk', {
@@ -353,11 +398,13 @@ export function placeTrees(scene) {
         // Card normals are radial (plane +Z rotated onto the surface dir),
         // so the canopy shades like one soft sphere instead of hard quads.
         // The cards ARE the canopy now (the lobe underneath is an invisible
-        // shadow proxy) — dense volumetric fill, not a surface shell
-        const cardN = 70;
+        // shadow proxy) — dense volumetric fill, not a surface shell.
+        // 50, not 70: alpha-test overdraw of a screen-filling crown is a
+        // real GPU cost when standing under a tree.
+        const cardN = 50;
         for (let c = 0; c < cardN; c++) {
           const card = MeshBuilder.CreatePlane('_leafCard', {
-            size: spec.d * s * rng(0.48, 0.66),
+            size: spec.d * s * rng(0.46, 0.62),
           }, scene);
           const az2 = rng(0, Math.PI * 2);
           const el2 = Math.acos(rng(-0.85, 1)); // full sphere, light top bias
@@ -404,7 +451,7 @@ export function placeTrees(scene) {
       const coneR = rng(0.85, 1.2) * (0.3 + 0.7 * frac);
       const coneH = rng(0.9, 1.3);
       const coneY = tierY;
-      tierY += coneH * rng(0.42, 0.55);
+      tierY += coneH * rng(0.36, 0.46); // tight stack — denser crown
       const cMesh = MeshBuilder.CreateCylinder('_cone', {
         diameterTop: 0,
         diameterBottom: Math.max(coneR, 0.25) * 2,
@@ -454,43 +501,85 @@ export function placeTrees(scene) {
       cMesh.bakeCurrentTransformIntoVertices();
       coneMeshes.push(cMesh);
 
-      // Needle cards over the whole tier surface — the cone mesh is a hidden
-      // proxy now, so the cards must BE the visible pine foliage
-      for (let c2 = 0; c2 < 15; c2++) {
-        const a2 = rng(0, Math.PI * 2);
-        const hFrac = rng(0, 0.85); // 0 = tier base, 1 = tip
-        const rimR = Math.max(coneR, 0.25);
-        const rr = rimR * (1 - hFrac * 0.8) * rng(0.75, 1.1);
-        const card = MeshBuilder.CreatePlane('_needleCard', {
-          size: coneH * s * rng(0.55, 0.85),
+      // Branch whorl with needle sprays ON the branches: fir foliage grows
+      // from branches in horizontal sprays pointing away from the trunk —
+      // free-floating randomly-oriented cards read as debris in the air.
+      for (let b2 = 0; b2 < 5; b2++) {
+        const ab = rng(0, Math.PI * 2);
+        const blen = Math.min(Math.max(coneR, 0.3) * rng(0.6, 0.85), 0.85);
+        const branch = MeshBuilder.CreateCylinder('_pineBranch', {
+          diameterTop: 0.025, diameterBottom: 0.055, height: blen, tessellation: 4,
         }, scene);
-        const dirN = new Vector3(Math.cos(a2) * 0.85, 0.45, Math.sin(a2) * 0.85).normalize();
-        card.rotationQuaternion = new Quaternion();
-        Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), dirN, card.rotationQuaternion);
-        Quaternion.RotationAxis(dirN, rng(0, Math.PI * 2))
-          .multiplyToRef(card.rotationQuaternion, card.rotationQuaternion);
-        card.position.set(
-          p.x + leanX * coneY * s + Math.cos(a2) * rr * s,
-          ty + (coneY - coneH * 0.5 + hFrac * coneH) * s,
-          p.z + leanZ * coneY * s + Math.sin(a2) * rr * s
+        const dirB = new Vector3(Math.cos(ab) * 0.96, -0.22, Math.sin(ab) * 0.96).normalize();
+        branch.rotationQuaternion = new Quaternion();
+        Quaternion.FromUnitVectorsToRef(Vector3.Up(), dirB, branch.rotationQuaternion);
+        branch.scaling.set(s, s, s);
+        const bBaseY = ty + (coneY - coneH * 0.3) * s;
+        branch.position.set(
+          p.x + leanX * coneY * s + dirB.x * blen * 0.5 * s,
+          bBaseY,
+          p.z + leanZ * coneY * s + dirB.z * blen * 0.5 * s
         );
-        const tcn = rng(0.8, 1.2);
-        const ccn = new Float32Array(4 * 4);
-        for (let vi = 0; vi < 4; vi++) {
-          ccn[vi * 4] = Math.min(1, treeCol.r * tcn + 0.05);
-          ccn[vi * 4 + 1] = Math.min(1, treeCol.g * tcn + 0.05);
-          ccn[vi * 4 + 2] = Math.min(1, treeCol.b * tcn + 0.05);
-          ccn[vi * 4 + 3] = 1;
+        branch.bakeCurrentTransformIntoVertices();
+        trunkMeshes.push(branch);
+
+        // 2 sprays per branch, lying nearly flat, texture +X rolled to point
+        // outward along the branch (the spray texture is directional)
+        const outX = Math.cos(ab), outZ = Math.sin(ab);
+        for (let c2 = 0; c2 < 2; c2++) {
+          const f2 = c2 === 0 ? rng(0.45, 0.7) : rng(0.8, 1.05);
+          const card = MeshBuilder.CreatePlane('_needleCard', {
+            size: blen * s * rng(0.9, 1.2),
+          }, scene);
+          // card basis: normal mostly up with outward droop tilt
+          const n2 = new Vector3(outX * rng(0.1, 0.35), 1, outZ * rng(0.1, 0.35)).normalize();
+          let bx = new Vector3(outX, 0, outZ);
+          bx = bx.subtract(n2.scale(Vector3.Dot(bx, n2))).normalize();
+          const by = Vector3.Cross(n2, bx);
+          card.rotationQuaternion = Quaternion.RotationQuaternionFromAxis(bx, by, n2);
+          card.position.set(
+            p.x + leanX * coneY * s + dirB.x * blen * f2 * s + outX * blen * 0.35 * s,
+            bBaseY + dirB.y * blen * f2 * s - rng(0, 0.06) * s,
+            p.z + leanZ * coneY * s + dirB.z * blen * f2 * s + outZ * blen * 0.35 * s
+          );
+          const tcn = rng(0.85, 1.2);
+          const ccn = new Float32Array(4 * 4);
+          for (let vi = 0; vi < 4; vi++) {
+            ccn[vi * 4] = Math.min(1, treeCol.r * tcn + 0.05);
+            ccn[vi * 4 + 1] = Math.min(1, treeCol.g * tcn + 0.05);
+            ccn[vi * 4 + 2] = Math.min(1, treeCol.b * tcn + 0.05);
+            ccn[vi * 4 + 3] = 1;
+          }
+          card.setVerticesData('color', ccn);
+          card.bakeCurrentTransformIntoVertices();
+          needleMeshes.push(card);
         }
-        card.setVerticesData('color', ccn);
-        card.bakeCurrentTransformIntoVertices();
-        needleMeshes.push(card);
       }
+    }
+
+    // Upper trunk: the base trunk ends at trunkH but the needle crown stacks
+    // well past it — without this the top of the pine floats on nothing
+    const pineTopY = tierY;
+    if (pineTopY > trunkH + 0.3) {
+      const upperH = pineTopY - trunkH;
+      const upper = MeshBuilder.CreateCylinder('_trunkUpper', {
+        diameterTop: 0.05, diameterBottom: trunkRadTop * 2, height: upperH, tessellation: 6,
+      }, scene);
+      upper.scaling.set(s, s, s);
+      upper.rotation.set(leanX, 0, leanZ);
+      upper.position.set(
+        p.x + leanX * (trunkH + upperH / 2) * s,
+        ty + (trunkH + upperH / 2) * s,
+        p.z + leanZ * (trunkH + upperH / 2) * s
+      );
+      upper.bakeCurrentTransformIntoVertices();
+      trunkMeshes.push(upper);
     }
 
     treePosData.push({ x: p.x, z: p.z, ty, scale: s });
     createStaticCylinder(trunkRadBot * s, trunkH * s / 2, p.x, ty + trunkH * s / 2, p.z);
     placed++;
+    if (!leafy) pinesPlaced++;
   }
 
   // Merge all trunks into 1 draw call
@@ -508,11 +597,10 @@ export function placeTrees(scene) {
     merged.isPickable = false; // interactions are physics-based; camera raycasts pay per triangle
     merged.material = leafMat;
     merged.convertToFlatShadedMesh();
-    // Hidden shadow/fog-depth proxy — the needle cards ARE the visible pine
-    // foliage now. __fogDepthAlways bypasses the depth pass's layerMask
-    // check (without depth the fog would ghost entire pines into the sky).
+    // Hidden shadow proxy — the needle cards ARE the visible pine foliage
+    // AND its fog depth (a cone-shaped depth footprint here fog-ghosted a
+    // translucent cone against the sky wherever cards didn't cover it)
     merged.layerMask = 0x40000000; // proxy-only bit: NEVER in any camera mask (0x20000000 is the 3rd-person player-model bit)
-    merged.__fogDepthAlways = true;
     addShadowCaster(merged);
   }
 
@@ -568,12 +656,14 @@ export function placeBushes(scene) {
   const buildings = getBuildings();
   const blobMeshes = [];
   const bushCardMeshes = []; // leaf cards over the dark cores
+  const twigMeshes = []; // bark twigs fanning out of the ground
   let placed = 0;
 
   for (let i = 0; i < CFG.BUSHES * 3 && placed < CFG.BUSHES; i++) {
     const gx = rngInt(1, CFG.GRID - 2);
     const gz = rngInt(1, CFG.GRID - 2);
     if (!grid[gx][gz]) continue;
+    if (isNearRoad(gx, gz, 0)) continue; // no bushes on the road itself
     if (Math.abs(gx - CFG.GRID / 2) < 4 && Math.abs(gz - CFG.GRID / 2) < 4) continue;
 
     let inside = false;
@@ -638,9 +728,26 @@ export function placeBushes(scene) {
       blobMeshes.push(blob);
     }
 
-    // Leaf cards over the bush volume — the blobs are hidden shadow proxies,
-    // so the cards are the whole visible bush
+    // Twigs: thin bark branches fanning up-and-out of the ground — a bush is
+    // a cluster of woody stems, not a floating ball of leaves
     const bushY = getTerrainHeight(p.x, p.z);
+    for (let t2 = 0, nT = rngInt(3, 5); t2 < nT; t2++) {
+      const at = rng(0, Math.PI * 2);
+      const tl = rng(0.5, 0.85);
+      const twig = MeshBuilder.CreateCylinder('_bushTwig', {
+        diameterTop: 0.02, diameterBottom: 0.05, height: tl, tessellation: 4,
+      }, scene);
+      const dirT = new Vector3(Math.cos(at) * rng(0.3, 0.6), 1, Math.sin(at) * rng(0.3, 0.6)).normalize();
+      twig.rotationQuaternion = new Quaternion();
+      Quaternion.FromUnitVectorsToRef(Vector3.Up(), dirT, twig.rotationQuaternion);
+      twig.position.set(
+        p.x + rng(-0.15, 0.15) + dirT.x * tl * 0.5,
+        bushY + dirT.y * tl * 0.5,
+        p.z + rng(-0.15, 0.15) + dirT.z * tl * 0.5
+      );
+      twig.bakeCurrentTransformIntoVertices();
+      twigMeshes.push(twig);
+    }
     for (let c = 0; c < 16; c++) {
       const card = MeshBuilder.CreatePlane('_bushCard', { size: rng(0.6, 0.95) }, scene);
       const az2 = rng(0, Math.PI * 2);
@@ -676,6 +783,17 @@ export function placeBushes(scene) {
     merged.material = makeCardMaterial(scene, 'bushCardMat', getLeafCardTexture(scene));
     merged.freezeWorldMatrix();
     addFogDepthMesh(merged);
+  }
+
+  if (twigMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(twigMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedBushTwigs';
+    merged.isPickable = false;
+    const twigMat = new StandardMaterial('bushTwigMat', scene);
+    twigMat.diffuseTexture = getBarkTexture(scene);
+    twigMat.specularColor = new Color3(0.02, 0.02, 0.02);
+    merged.material = twigMat;
+    merged.freezeWorldMatrix();
   }
 
   if (blobMeshes.length > 0) {
@@ -762,6 +880,7 @@ export function placeGrass(scene) {
     for (let gz = 1; gz < CFG.GRID - 1; gz++) {
       if (!grid[gx][gz]) continue;
       if (inBuilding(gx, gz)) continue;
+      if (isRoadCell(gx, gz)) continue; // packed dirt — no grass tufts
       // Meadow clumps: smooth patch field + per-cell thinning
       const clump = 0.5 + 0.5 * Math.sin(gx * 0.31 + 1.7) * Math.sin(gz * 0.27 + 4.2);
       if (clump < 0.4) continue;
@@ -817,6 +936,7 @@ export function placeRocks(scene) {
     const gz = rngInt(1, CFG.GRID - 2);
 
     if (!grid[gx][gz]) continue;
+    if (isNearRoad(gx, gz, 0)) continue; // keep boulders off the roads
     if (Math.abs(gx - CFG.GRID / 2) < 5 && Math.abs(gz - CFG.GRID / 2) < 5) continue;
 
     let inside = false;

@@ -4,7 +4,10 @@ import {
 } from 'babylonjs';
 import { isWebGPU } from '../core/scene.js';
 
-const MAX_SHADOW_TORCHES = 2;
+// 3 slots: with near-torch caster subsets a cube costs ~70 draws/frame, and
+// two slots left the 3rd-nearest torch (e.g. mounted under a ceiling in a
+// multi-torch building) lighting the floor above through the slab
+const MAX_SHADOW_TORCHES = 3;
 const shadowSlots = [];
 const _shadowGenerators = [];
 const _allCasters = []; // master caster list — slots get a near-torch subset

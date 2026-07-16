@@ -3,7 +3,9 @@ import { CFG } from './config.js';
 import { initScene, initRenderer, getRenderer, getScene, getCamera, getEngine } from './core/scene.js';
 import { initLighting } from './core/lighting.js';
 import { initGrid } from './world/grid.js';
-import { generateBuildings } from './world/generator.js';
+import { generateBuildings, getBuildings } from './world/generator.js';
+import { generateRoads, buildRoadMesh, placeRoadTorches } from './world/roads.js';
+import { g2w } from './utils/helpers.js';
 import { buildGround, buildWater, getWaterMaterial } from './world/terrainMeshes.js';
 import { buildFloors, getMergedFloors, getMergedMidFloors, getMergedStairs } from './world/floors.js';
 import { buildWalls, buildRoofs, getWallMesh } from './world/walls.js';
@@ -28,7 +30,7 @@ import { getSunLight, getSunGroup, getSunLensflare, updateSunShadow, addShadowCa
 import { updateNpcs, updateSoldierHint, getNearestSoldier } from './systems/npcAI.js';
 import { initMenuScene, renderMenu, disposeMenu } from './systems/menu.js';
 import { initBoundaryShield, updateBoundaryShield } from './world/boundary.js';
-import { initPostFX, updatePostFX, setDepthRenderList, getGlowLayer } from './core/postfx.js';
+import { initPostFX, updatePostFX, setDepthRenderList, setFogInteriorBoxes, getGlowLayer } from './core/postfx.js';
 import { initSkyDome, updateSkyDome } from './core/skyDome.js';
 import { initWeather, updateWeather, getWeatherModifiers } from './systems/weather.js';
 import { initRainFX, updateRainFX, prewarmRainFX, resetRainFX, pauseRainFX } from './systems/rainFX.js';
@@ -503,8 +505,10 @@ async function buildWorld() {
   scene.pointerMovePredicate = () => false;
 
   initGrid();
+  generateRoads();       // before buildings — they orient to the road network
   generateBuildings();
   buildGround(scene);
+  buildRoadMesh(scene);  // after buildings — flat zones alter road-cell heights
   buildFloors(scene);
   step(3);
 
@@ -526,6 +530,7 @@ async function buildWorld() {
   const stairMesh = getMergedStairs();
   if (stairMesh) addTorchShadowCaster(stairMesh);
   placeTorches(scene);
+  placeRoadTorches(scene); // after initTorchLightPool — same clustered-light path
   placeDoors(scene);
   placeDoorTorches(scene);
   placeFurniture(scene);
@@ -533,6 +538,28 @@ async function buildWorld() {
   buildWater(scene);
   initRainFX(scene); // needs the building grid marks + terrain
   setDepthRenderList(scene); // fog depth pass: big merged meshes only
+
+  // Building interiors as fog-free volumes: the fog shader subtracts ray
+  // segments inside these AABBs, so rooms stay clear during storms from any
+  // viewpoint (inside, or looking in through open doors/windows)
+  if (CFG.GFX.VOL_FOG) {
+    const boxes = [];
+    for (const b of getBuildings()) {
+      const c0 = g2w(b.x, b.z);
+      const c1 = g2w(b.x + b.w - 1, b.z + b.h - 1);
+      const cx = (c0.x + c1.x) / 2, cz = (c0.z + c1.z) / 2;
+      const base = getTerrainHeight(cx, cz);
+      boxes.push({
+        min: { x: c0.x - CFG.CELL / 2 + 0.3, y: base - 0.5, z: c0.z - CFG.CELL / 2 + 0.3 },
+        max: {
+          x: c1.x + CFG.CELL / 2 - 0.3,
+          y: base + CFG.WALL_H * (b.stories === 2 ? 2 : 1) + 0.6,
+          z: c1.z + CFG.CELL / 2 - 0.3,
+        },
+      });
+    }
+    setFogInteriorBoxes(boxes);
+  }
   step(4);
 
   await yieldFrame();
@@ -701,15 +728,18 @@ async function buildWorld() {
       // Manual physics stepping skips the pre-step node->body sync, so
       // setting transformNode.position alone never moved the capsule —
       // teleport through the Havok plugin's low-level body transform.
+      // NOTE: getPlayerBody() returns the PhysicsBodyWrapper; the raw
+      // PhysicsBody (with _pluginData) is wrapper.havokBody.
       const body = getPlayerBody();
-      if (body && body.transformNode) {
+      const raw = body && (body.havokBody || body);
+      if (raw && raw._pluginData) {
         const ty = y !== undefined ? y : getTerrainHeight(x, z) + 2;
         try {
           const plugin = scene.getPhysicsEngine().getPhysicsPlugin();
           plugin._hknp.HP_Body_SetQTransform(
-            body._pluginData.hpBodyId, [[x, ty, z], [0, 0, 0, 1]]);
-        } catch (e) { console.warn('[TP] low-level teleport failed:', e); }
-        body.transformNode.position.set(x, ty, z);
+            raw._pluginData.hpBodyId, [[x, ty, z], [0, 0, 0, 1]]);
+          if (raw.transformNode) raw.transformNode.position.set(x, ty, z);
+        } catch (e) { console.warn('[TP] teleport failed:', e); }
       }
     },
     pos: () => {
