@@ -58,10 +58,12 @@ export function buildGround(scene) {
     } else {
         mat = new StandardMaterial('groundMat', scene);
         mat.diffuseTexture = loadTex('./assets/textures/grass.jpg', size / 4, size / 4, scene);
-        mat.diffuseColor = new Color3(1.2, 1.2, 1.0);
-        mat.ambientColor = new Color3(0.6, 0.6, 0.5);
+        // Green-shifted tint — the sparse-grass texture reads as bare dirt
+        // with a neutral tint; the instanced grass tufts sit on top of this.
+        mat.diffuseColor = new Color3(0.8, 1.2, 0.6);
+        mat.ambientColor = new Color3(0.45, 0.6, 0.38);
         mat.specularColor = new Color3(0.02, 0.02, 0.02);
-        mat.emissiveColor = new Color3(0.02, 0.03, 0.01);
+        mat.emissiveColor = new Color3(0.015, 0.03, 0.01);
     }
     ground.material = mat;
     ground.metadata = { isGround: true };
@@ -170,12 +172,17 @@ uniform float uHeightMin;
 uniform float uHeightRange;
 uniform float uWorldHalf;
 uniform float uCrestThreshold;
+uniform float uRainRipple;
 
 const vec3 DEEP       = vec3(0.02, 0.08, 0.15);
 const vec3 SHALLOW    = vec3(0.05, 0.20, 0.30);
 const vec3 SHORE_TINT = vec3(0.10, 0.30, 0.32);
 
 float hash12(vec2 p) {
+    // Wrap cell coords to keep hash inputs small: raw world-XZ + growing time
+    // offsets degrade float precision and the hash collapses into a hard
+    // checkerboard (noise tiles seamlessly every 289 cells instead).
+    p = mod(p, 289.0);
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
@@ -198,6 +205,17 @@ float fbm(vec2 p) {
     return v;
 }
 
+vec2 rainRing(vec2 p, float t) {
+    vec2 cell = floor(p);
+    vec2 f = fract(p) - 0.5;
+    float h = hash12(cell * 7.31);
+    float phase = fract(t * 0.9 + h);
+    vec2 off = (vec2(hash12(cell + 3.7), hash12(cell + 9.1)) - 0.5) * 0.5;
+    float d = length(f + off);
+    float ring = exp(-70.0 * abs(d - phase * 0.45)) * (1.0 - phase);
+    return normalize(f + off + vec2(1e-4)) * ring;
+}
+
 void main() {
     float camDist = length(uCameraPos - vWorldPos);
     float distFade = 1.0 - smoothstep(25.0, 70.0, camDist); // kills detail shimmer far away
@@ -208,6 +226,14 @@ void main() {
     float h0 = fbm(np);
     vec2 grad = vec2(fbm(np + vec2(e, 0.0)) - h0, fbm(np + vec2(0.0, e)) - h0) / e;
     vec3 N = normalize(normalize(vNormal) + vec3(-grad.x, 0.0, -grad.y) * 0.35 * distFade);
+
+    // Rain ripples: expanding phase-offset rings, one per surface cell,
+    // two overlapping scales so the grid never reads as a grid
+    if (uRainRipple > 0.001) {
+        vec2 rr = rainRing(vWorldPos.xz * 1.6, uTime)
+                + rainRing(vWorldPos.xz * 2.7 + 13.1, uTime * 1.25) * 0.6;
+        N = normalize(N + vec3(rr.x, 0.0, rr.y) * 0.5 * uRainRipple * distFade);
+    }
 
     vec3 V = normalize(uCameraPos - vWorldPos);
     vec3 L = -normalize(uSunDir);  // direction TO sun
@@ -225,10 +251,15 @@ void main() {
     vec3 body = mix(DEEP, SHALLOW, fresnel);
     body = mix(SHORE_TINT, body, smoothstep(0.0, 1.2, waterDepth));
 
-    // Planar reflection (mirror RTT, projective UV) with procedural-sky fallback
+    // Planar reflection (mirror RTT, projective UV) with procedural-sky fallback.
+    // Distort with the SMOOTH geometric wave normal, not the fbm detail normal:
+    // the fbm gradient aliases per-pixel at distance, and at reflected object
+    // silhouettes that noise flips samples between object and sky every frame
+    // — houses/rocks visibly flicker in the reflection while moving.
+    vec3 Ng2 = normalize(vNormal);
     vec4 clipR = uReflectVP * vec4(vWorldPos, 1.0);
     vec2 ruv = clipR.xy / max(clipR.w, 1e-4) * 0.5 + 0.5;
-    ruv = clamp(ruv + N.xz * 0.03, 0.001, 0.999);  // wave distortion + edge clamp
+    ruv = clamp(ruv + Ng2.xz * 0.022 + N.xz * 0.012 * distFade, 0.001, 0.999);
     vec4 mir = texture2D(uReflectionTex, ruv);
     vec3 skyRefl = uSkyColor * 0.7 + vec3(0.05, 0.08, 0.12);
     vec3 refl = mix(skyRefl, mir.rgb, mir.a * uReflOn); // alpha-0 clear = no geometry -> sky
@@ -242,22 +273,21 @@ void main() {
     float spec = pow(max(dot(N, H), 0.0), 256.0);
     col += uSunColor * spec * 1.5 * NdL;
 
-    // Sun glitter — cell-quantized micro-normal jitter, discrete sparkles
-    vec2 cellId = floor(vWorldPos.xz * 9.0 + uTime * vec2(2.1, -1.6));
-    vec2 jit = vec2(hash12(cellId), hash12(cellId + 19.19)) - 0.5;
-    vec3 Ng = normalize(N + vec3(jit.x, 0.0, jit.y) * 0.18);
-    float glint = pow(max(dot(Ng, H), 0.0), 900.0);
-    col += uSunColor * min(glint * 6.0, 2.0) * NdL * distFade;
+    // (No cell-based sun glitter: constant jittered normals per grid cell
+    // light up as solid hard-edged squares at grazing sun angles — looked
+    // like pixelation. The pow-256 specular + detail normals shimmer enough.)
 
     // Fake subsurface scattering toward sun
     vec3 sssDir = normalize(L + N * 0.6);
     float sss = pow(max(dot(V, -sssDir), 0.0), 4.0) * 0.3;
     col += vec3(0.05, 0.15, 0.12) * sss * max(L.y, 0.0);
 
-    // Foam: animated shoreline band + wave-crest pinch (Gerstner Jacobian)
+    // Foam: animated shoreline band + wave-crest pinch (Gerstner Jacobian).
+    // The gate starts AT the waterline (0.0) — a negative start let the foam
+    // band render as a white film on the beach above the water's edge.
     float shoreNoise = fbm(vWorldPos.xz * 2.5 + vec2(uTime * 0.35, -uTime * 0.27));
     float foamShore = (1.0 - smoothstep(0.05, 0.55 + shoreNoise * 0.35, waterDepth))
-                    * smoothstep(-0.05, 0.02, waterDepth);
+                    * smoothstep(0.0, 0.06, waterDepth);
     float crest = clamp((uCrestThreshold - vJacobian) * 3.0, 0.0, 1.0);
     float crestNoise = fbm(vWorldPos.xz * 3.0 + vec2(uTime * 0.6, uTime * 0.4));
     float foamCrest = crest * smoothstep(0.35, 0.75, crestNoise) * distFade;
@@ -268,8 +298,10 @@ void main() {
     float fogFac = clamp((uFogEnd - camDist) / (uFogEnd - uFogStart), 0.0, 1.0);
     col = mix(col, mix(uFogColor, col, fogFac), uUseShaderFog);
 
-    // Alpha: more opaque at grazing angles, soft fade onto the shore, foam solid
-    float alphaShore = smoothstep(-0.05, 0.4, waterDepth);
+    // Alpha: more opaque at grazing angles, soft fade onto the shore, foam
+    // solid. Window starts slightly ABOVE the waterline so no translucent
+    // water film (or shadows cast onto it) survives over dry land.
+    float alphaShore = smoothstep(0.02, 0.45, waterDepth);
     float alpha = mix(0.55, 0.85, fresnel) * alphaShore;
     alpha = max(alpha, foamMask * 0.9 * alphaShore);
 
@@ -285,7 +317,9 @@ export function getWaterMaterial() { return _waterMat; }
 
 /** Bake the analytic terrain heightmap into an R8 texture for shore foam/fade. */
 function bakeShoreHeightTexture(scene, mat, size) {
-    const HRES = 512;
+    // 1024: at 512 the ~0.35u texels + 8-bit quantization let the shore
+    // foam/alpha bands bleed well past the real waterline onto the beach
+    const HRES = 1024;
     const HALF = size / 2;
     const raw = new Float32Array(HRES * HRES);
     let hMin = Infinity, hMax = -Infinity;
@@ -315,27 +349,48 @@ function bakeShoreHeightTexture(scene, mat, size) {
 
 /** Half-res planar mirror over the water plane, sampled projectively by the ocean shader. */
 function setupWaterReflection(scene, mat) {
-    const mirrorPlane = new Plane(0, -1, 0, CFG.WATER_Y - 0.05); // keeps y >= WATER_Y in the pass
+    // Plane sits 0.4 BELOW the waterline: shore-level geometry (house bases,
+    // rocks) straddles the surface, and with the plane right at WATER_Y the
+    // walking head-bob clipped them in/out of the reflection every frame —
+    // "objects flicker in the water". Reflecting 0.4u of underwater geometry
+    // is visually harmless.
+    const mirrorPlane = new Plane(0, -1, 0, CFG.WATER_Y - 0.4);
     const mirror = new MirrorTexture('waterRefl', { ratio: 0.5 }, scene, true);
     mirror.mirrorPlane = mirrorPlane;
     // Small list of big outdoor meshes — interiors/props aren't visible from open water
+    // NOTE: no hidden-layer proxies here (mergedCanopy/mergedBushes) — RTT
+    // renderLists IGNORE camera layer masks, so proxies would show in the
+    // mirror as solid blobs that don't exist in the world
     const names = ['ground', 'walls', 'flatRoofs', 'slantRoofs',
-                   'mergedTrunks', 'mergedCanopy', 'mergedRocks'];
+                   'mergedTrunks', 'mergedLeafCards', 'mergedNeedleCards',
+                   'mergedBushCards', 'mergedRocks'];
     mirror.renderList = names.map(n => scene.getMeshByName(n)).filter(Boolean);
+    // Skip frustum culling for these — culling against the REFLECTED camera
+    // is marginal while the player moves, and meshes popping in/out of the
+    // mirror read as objects flickering in the reflection. The list is a
+    // handful of world-sized merged meshes that are effectively always
+    // visible anyway, so the cost of always drawing them is nil.
+    for (const m of mirror.renderList) m.alwaysSelectAsActiveMesh = true;
     // Alpha-0 clear: mirror alpha becomes a geometry coverage mask, sky elsewhere
     mirror.onClearObservable.add((eng) => eng.clear(new Color4(0, 0, 0, 0), true, true, true));
-    mirror.refreshRate = 2; // every other frame — imperceptible on distorted water
+    // Soft reflections: the mirror is half-res, and raw bilinear sampling of
+    // it shimmers/flickers during camera motion. A blur suits wave-distorted
+    // water anyway. A/B at runtime via:
+    //   _dbg.scene().customRenderTargets.find(t => t.name === 'waterRefl').blurKernel = 0
+    mirror.blurKernel = 24;
+    // refreshRate MUST stay 1: planar reflections are view-dependent, so a
+    // frame-old mirror seen from the current camera is misaligned — at
+    // refreshRate 2 the reflection visibly jerks back and forth while moving.
+    mirror.refreshRate = 1;
     // A ShaderMaterial never triggers RTT rendering by itself — must be a customRenderTarget
     scene.customRenderTargets.push(mirror);
     mat.setTexture('uReflectionTex', mirror);
     mat.setFloat('uReflOn', 1);
 
-    // Reflected view-projection for the projective UV — captured only on frames
-    // the mirror actually renders (refreshRate=2), so matrix and texture stay in
-    // sync (a fresh matrix on a stale texture makes reflections jitter while the
-    // camera turns). MirrorTexture's internal observer (registered first) has
-    // already set the scene transform to reflection*view*proj at this point;
-    // copy it because the scene transform is restored after the mirror pass.
+    // Reflected view-projection for the projective UV, captured when the mirror
+    // renders. MirrorTexture's internal observer (registered first) has already
+    // set the scene transform to reflection*view*proj at this point; copy it
+    // because the scene transform is restored after the mirror pass.
     const _RVP = new Matrix();
     mirror.onBeforeRenderObservable.add(() => {
         _RVP.copyFrom(scene.getTransformMatrix());
@@ -383,6 +438,7 @@ export function buildWater(scene) {
             'uSkyColor', 'uFogColor', 'uFogStart', 'uFogEnd', 'uUseShaderFog',
             'uReflectVP', 'uReflOn',
             'uHeightMin', 'uHeightRange', 'uWorldHalf', 'uCrestThreshold',
+            'uRainRipple',
         ],
         samplers: ['uReflectionTex', 'uHeightTex'],
         needAlphaBlending: true,
@@ -398,6 +454,7 @@ export function buildWater(scene) {
 
     mat.setFloat('uTime', 0);
     mat.setFloat('uCrestThreshold', 0.9);
+    mat.setFloat('uRainRipple', 0);
     mat.setFloat('uUseShaderFog', CFG.GFX.VOL_FOG ? 0 : 1);
     mat.setMatrix('uReflectVP', Matrix.Identity());
     mat.backFaceCulling = false;

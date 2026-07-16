@@ -42,6 +42,7 @@ export const CFG = {
   // Vegetation
   TREES: 80,
   ROCKS: 50,
+  BUSHES: 90,            // walk-through shrubs (merged, 1 draw call)
 
   // Stone pickup & throwing
   ROCK_PICK_DIST: 2.5,
@@ -75,9 +76,13 @@ export const CFG = {
     // SSAO2 (half-res, prepass): barely visible on this flat-shaded low-poly
     // world but costs a partial extra geometry pass — off by default.
     SSAO: false,
-    MSAA: 2,               // pipeline texture samples (1 = off); FXAA covers the rest
+    MSAA: 1,               // keep 1: MSAA'd edges vs single-sampled fog depth = edge crawl
+    BLOOM: true,           // watch for pulsing around thin tree silhouettes vs bright sky
     PIPELINE: true,        // DefaultRenderingPipeline: bloom/FXAA/grain/vignette/sharpen
-    GLOW: true,            // GlowLayer on torch flames
+    // GlowLayer has no depth occlusion (screen-space additive) — through-wall
+    // bleed is prevented by a per-frame camera line-of-sight gate on each
+    // flame's inclusion (glowSetVisible in updateTorchEmbers).
+    GLOW: true,
     VOL_FOG: true,         // volumetric height fog post-process (replaces linear fog)
     GOD_RAYS: true,        // screen-space sun shafts inside the fog pass
     SKY_DOME: true,        // procedural atmosphere/cloud/star dome

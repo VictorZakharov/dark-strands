@@ -72,10 +72,12 @@ void main() {
   float integ = (abs(dy) > 1e-4) ? (exp(-s0 * dy) - exp(-t * dy)) / dy : (t - s0);
   float trans = exp(-max(sigma * integ, 0.0));   // transmittance along the ray
 
-  // Sun in-scatter tint on the fog
+  // Sun in-scatter tint on the fog. Multiplier deliberately well below the
+  // physical 4pi normalization — at full strength the phase lobe turns the
+  // horizon fog under the sun into a bright "second sun" blob.
   float mu = dot(rayDir, uSunDir);
   float phase = phaseSchlick(mu, uRayParams.w);
-  vec3 inscatter = uFogColor + uSunColor * phase * uRayParams.z * 6.2831853;
+  vec3 inscatter = uFogColor + uSunColor * phase * uRayParams.z * 3.0;
 
   // Screen-space god rays: march toward the sun, accumulating sky visibility
   float rays = 0.0;
@@ -99,13 +101,15 @@ void main() {
 `;
 
 // The fog depth map only needs the big static occluders (fog varies smoothly
-// with distance — small dynamic props contribute nothing visible). A short
-// whitelist keeps the extra depth pass to ~a dozen draws instead of the
-// whole 400+ mesh scene. Water is included (forceDepthWriteTransparentMeshes)
-// so the fog pass sees the water surface, not the seabed behind it.
+// with distance — small dynamic props contribute nothing visible). Bisect
+// measured this pass at ~13ms/frame when it carried interior geometry and
+// every door with zero culling — it re-rasterized the whole world at full
+// res each frame. Interior meshes (floors/stairs/doors) are EXCLUDED: the
+// fog integral starts past interior distances by design, so they contribute
+// nothing. Water is included (forceDepthWriteTransparentMeshes) so the fog
+// pass sees the water surface, not the seabed behind it.
 const DEPTH_PASS_MESHES = [
   'ground', 'water', 'walls', 'flatRoofs', 'slantRoofs',
-  'mergedFloors', 'mergedMidFloors', 'mergedStairs',
   'mergedTrunks', 'mergedCanopy', 'mergedRocks',
 ];
 
@@ -115,32 +119,53 @@ const DEPTH_PASS_MESHES = [
 // straight through it.
 const _extraDepthMeshes = [];
 
+let _depthSet = null;
+
 export function addFogDepthMesh(mesh) {
   if (!mesh || !CFG.GFX.VOL_FOG) return;
   _extraDepthMeshes.push(mesh);
+  if (_depthSet) _depthSet.add(mesh);
   mesh.onDisposeObservable.add(() => {
     const i = _extraDepthMeshes.indexOf(mesh);
     if (i >= 0) _extraDepthMeshes.splice(i, 1);
-    const dm = _depthRenderer && _depthRenderer.getDepthMap();
-    if (dm && dm.renderList) {
-      const j = dm.renderList.indexOf(mesh);
-      if (j >= 0) dm.renderList.splice(j, 1);
-    }
+    if (_depthSet) _depthSet.delete(mesh);
   });
-  const dm = _depthRenderer && _depthRenderer.getDepthMap();
-  if (dm && dm.renderList) dm.renderList.push(mesh);
 }
 
 /** Call after world build — points the fog depth pass at the merged world meshes. */
 export function setDepthRenderList(scene) {
   if (!_depthRenderer) return;
   const list = DEPTH_PASS_MESHES.map(n => scene.getMeshByName(n)).filter(Boolean);
-  // Door leaves are individual multi-material meshes, not merged into 'walls'
+  // Doors MUST write fog depth: a closed door fills a doorway silhouetted
+  // against outdoor sky — without a depth entry the fog paints the sky
+  // gradient over the door and it reads as half transparent. They're cheap
+  // now that the list is frustum-culled per frame.
   for (const m of scene.meshes) {
     if (m.name.startsWith('doorMerged_')) list.push(m);
   }
   list.push(..._extraDepthMeshes);
-  _depthRenderer.getDepthMap().renderList = list;
+  _depthSet = new Set(list);
+  const dm = _depthRenderer.getDepthMap();
+  dm.renderList = list;
+  // Per-pass list: frustum-culled (Babylon 9 RTTs do NO culling of their
+  // own) and layerMask-aware (the 3rd-person player model is hidden in
+  // first person purely via camera.layerMask — without this check the fog
+  // pass would paint a model-shaped ghost).
+  const scratch = [];
+  dm.getCustomRenderList = () => {
+    scratch.length = 0;
+    const cam = scene.activeCamera;
+    const planes = scene.frustumPlanes;
+    for (const m of _depthSet) {
+      if (!m.isEnabled() || !m.isVisible) continue;
+      // __fogDepthAlways: hidden-layer foliage proxies (pine cones) — they
+      // must write fog depth even though no camera renders them
+      if (!m.__fogDepthAlways && cam && (m.layerMask & cam.layerMask) === 0) continue;
+      if (planes && !m.isInFrustum(planes)) continue;
+      scratch.push(m);
+    }
+    return scratch;
+  };
 }
 
 let _depthRenderer = null;
@@ -165,10 +190,34 @@ const _sunCol = new Color3(1, 0.9, 0.8);
 export function getGlowLayer() { return _glow; }
 export function getFogPostProcess() { return _fogPP; }
 
+const _glowVisible = new Set(); // flames currently in the includedOnly list
+
 /** Register a mesh with the glow layer (torch flames). Safe to call before init. */
 export function glowInclude(mesh) {
-  if (_glow) _glow.addIncludedOnlyMesh(mesh);
-  else _pendingGlow.push(mesh);
+  if (_glow) {
+    _glow.addIncludedOnlyMesh(mesh);
+    _glowVisible.add(mesh);
+  } else {
+    _pendingGlow.push(mesh);
+  }
+}
+
+/**
+ * Toggle a flame's glow-layer membership. The GlowLayer composites
+ * additively in screen space with NO depth occlusion, so an occluded flame
+ * bleeds its halo through walls — callers gate this with a physics
+ * line-of-sight test from the camera (see updateTorchEmbers).
+ */
+export function glowSetVisible(mesh, visible) {
+  if (!_glow || !mesh) return;
+  const has = _glowVisible.has(mesh);
+  if (visible && !has) {
+    _glow.addIncludedOnlyMesh(mesh);
+    _glowVisible.add(mesh);
+  } else if (!visible && has) {
+    _glow.removeIncludedOnlyMesh(mesh);
+    _glowVisible.delete(mesh);
+  }
 }
 
 function smoothstep01(e0, e1, x) {
@@ -202,6 +251,11 @@ export function initPostFX(scene, camera) {
     // setDepthRenderList keeps every other translucent mesh out of the pass
     _depthRenderer.forceDepthWriteTransparentMeshes = true;
 
+    // Ratio MUST stay 1.0: this is the FIRST post-process in the chain, and
+    // the first PP's ratio defines the render target the whole SCENE draws
+    // into — 0.5 here rendered the entire game at half resolution ("looks
+    // low res now"), and FPS didn't even move, proving the frame cost is
+    // not pixel-bound.
     _fogPP = new PostProcess('volumetricFog', 'volumetricFog',
       ['uCamPos', 'uCamForward', 'uCamRight', 'uCamUp', 'uTanFov', 'uSunDir', 'uSunColor',
        'uFogColor', 'uSunScreenUV', 'uFogParams', 'uRayParams'],
@@ -261,32 +315,36 @@ export function initPostFX(scene, camera) {
                * Math.max(0, 1 - m.cloudCover * 1.2);
       }
       effect.setFloat2('uSunScreenUV', su, sv);
-      effect.setFloat4('uRayParams', 1.2, 0.93, sunVis, 0.6);
+      effect.setFloat4('uRayParams', 1.2, 0.93, sunVis, 0.45); // g 0.45: wider, subtler sun lobe
     });
 
     // The post-process now owns fogging — kill built-in linear fog
     scene.fogMode = Scene.FOGMODE_NONE;
   }
 
-  // 3. DefaultRenderingPipeline — bloom, FXAA, ACES via shared config, grain, vignette, sharpen
+  // 3. DefaultRenderingPipeline — FXAA only by default.
+  // MSAA is deliberately 1: the fog pass samples a single-sampled depth map,
+  // and MSAA'd scene edges vs aliased fog depth produce crawling fringes on
+  // every tree/sky silhouette ("flickering trees"). With FXAA-only, color and
+  // fog alias identically and FXAA smooths the combined result.
+  // Bloom/sharpen are off for the same reason — bloom pulses around thin dark
+  // canopy edges against the bright sky; the GlowLayer carries the torches.
   if (CFG.GFX.PIPELINE) {
     _drp = new DefaultRenderingPipeline('drp', true /* HDR chain */, scene, [camera]);
-    _drp.samples = CFG.GFX.MSAA;
+    _drp.samples = 1;
     _drp.fxaaEnabled = true;
-    _drp.bloomEnabled = true;
+    _drp.bloomEnabled = CFG.GFX.BLOOM === true; // opt-in via flag
     _drp.bloomThreshold = 0.9;
-    _drp.bloomWeight = 0.18;
+    _drp.bloomWeight = 0.15;
     _drp.bloomKernel = 56;
     _drp.bloomScale = 0.5;
     // Tone mapping stays INLINE on materials (scene.imageProcessingConfiguration
     // ACES, same as before this PR). Moving IP into the post chain makes the
     // ACES curve operate on linear values — empirically far darker mids, and
-    // it retints every custom shader. Bloom/FXAA/sharpen don't need it.
+    // it retints every custom shader. FXAA doesn't need it.
     _drp.imageProcessingEnabled = false;
-    _drp.grainEnabled = false; // film grain reads as noise here — keep off
-    _drp.sharpenEnabled = true;
-    _drp.sharpen.edgeAmount = 0.25;
-    _drp.sharpen.colorAmount = 1.0;
+    _drp.grainEnabled = false;   // film grain reads as noise here
+    _drp.sharpenEnabled = false; // amplifies edge crawl on flat-shaded geometry
   }
 
   // 4. GlowLayer — torch flames only (includeOnly keeps the RTT pass tiny)
@@ -296,7 +354,10 @@ export function initPostFX(scene, camera) {
       blurKernelSize: 32,
     });
     _glow.intensity = 0.8;
-    for (const m of _pendingGlow) _glow.addIncludedOnlyMesh(m);
+    for (const m of _pendingGlow) {
+      _glow.addIncludedOnlyMesh(m);
+      _glowVisible.add(m);
+    }
     _pendingGlow.length = 0;
   }
 
@@ -309,6 +370,15 @@ export function initPostFX(scene, camera) {
       grain: (on) => { if (_drp) _drp.grainEnabled = !!on; },
       sharpen: (on) => { if (_drp) _drp.sharpenEnabled = !!on; },
       glow: (v) => { _glowMul = v; }, // multiplier — updatePostFX owns the base intensity
+      // Bisect helper: force the sun shadow map back to every-frame rendering
+      // (disables the event-driven refresh optimization entirely)
+      shadowEveryFrame: () => {
+        const sun = getSunLight();
+        const sg = sun && sun.getShadowGenerator && sun.getShadowGenerator();
+        const sm = sg && sg.getShadowMap();
+        if (sm) { sm.refreshRate = 1; return 'sun shadow: every frame'; }
+        return 'no shadow map';
+      },
       pipeline: () => ({ ssao: !!_ssao, fog: !!_fogPP, drp: !!_drp, glow: !!_glow }),
     };
   }

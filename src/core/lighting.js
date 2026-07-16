@@ -8,6 +8,7 @@ import { CFG } from '../config.js';
 let sunLight, hemiLight, sunCSM;
 let stars = null, sunGroup = null, sunLensflare = null;
 let sunGlowMat = null;
+let _throttleSunShadow = false; // WebGL2 only — see initLighting
 
 export function getSunLight() { return sunLight; }
 export function getHemiLight() { return hemiLight; }
@@ -92,18 +93,44 @@ export function initLighting(scene) {
     sunCSM.bias = 0.01;
     sunCSM.normalBias = 0.02;
   } else {
-    // Default — single-map PCF following the player (identical to pre-VFX look)
+    // Default — single-map PCF following the player (identical to pre-VFX look).
+    // FIXED-SIZE frustum: the default auto-fit re-fits the projection around
+    // ALL casters (including wandering NPCs) on every render, so a throttled
+    // map reframes between refreshes and tree canopies strobe between
+    // shadowed/unshadowed facets. A fixed frustum makes every re-render
+    // identically framed, which is what allows the event-driven refresh in
+    // updateSunShadow (the sun shadow pass is ~870 draws — by far the largest
+    // per-frame cost when rendered every frame).
     sunCSM = new ShadowGenerator(CFG.GFX.SHADOW_MAP, sunLight);
     sunCSM.usePercentageCloserFiltering = true;
+    // MEDIUM, not HIGH: HIGH doubles per-pixel shadow cost SCENE-WIDE and
+    // measurably capped FPS (~34ms GPU floor). The day/night shadow lurch it
+    // was bumped for is actually fixed by the rotation-aware texel rounding.
     sunCSM.filteringQuality = ShadowGenerator.QUALITY_MEDIUM;
     sunCSM.setDarkness(0.1);
-    sunCSM.bias        = 0.003;
-    sunCSM.normalBias  = 0.01;
-    // Event-driven refresh: the map re-renders only when updateSunShadow
-    // decides something changed (player cell, sun direction, heartbeat) —
-    // saves the full ~100-caster shadow pass on most frames.
-    const sm = sunCSM.getShadowMap();
-    if (sm) sm.refreshRate = 0; // REFRESHRATE_RENDER_ONCE; resetRefreshCounter() re-arms
+    // Bias low: high values open a lit "shadow gap" strip under roof eaves
+    // (peter-panning). The acne flicker that motivated higher bias is fixed
+    // structurally — the shadow frustum follows the player on a FIXED texel
+    // lattice, so shadow sampling is world-stable while moving.
+    sunCSM.bias        = 0.002;
+    sunCSM.normalBias  = 0.012;
+    sunLight.shadowFrustumSize = 120; // ±60 around the player — fog hides the rest
+    sunLight.shadowMinZ = 1;
+    sunLight.shadowMaxZ = 200;
+    // Event-driven refresh is WebGL2-ONLY. On WebGPU a throttled shadow map
+    // (any skipped frame: refreshRate=0+re-arm, 2, or 8) intermittently
+    // re-renders from stale GPU-side state — a bit-exact replay of an
+    // earlier pass that ignores current uniforms — so trees/houses strobe
+    // at the refresh cadence. Reproduced on Babylon 8.52.1/8.56.2/9.17.0,
+    // compat mode on/off, UBO content-check off, drawContext.reset(), with
+    // and without skinned casters (screenshot pixel-diff harness). Until
+    // fixed upstream, WebGPU renders the map every frame; the fixed frustum
+    // still culls casters, which keeps the pass far cheaper than auto-fit.
+    _throttleSunShadow = !isWebGPU();
+    if (_throttleSunShadow) {
+      const sm = sunCSM.getShadowMap();
+      if (sm) sm.refreshRate = 0; // REFRESHRATE_RENDER_ONCE; resetRefreshCounter() re-arms
+    }
   }
 
   // --- Sun visual (glowing radial gradient in the sky) ---
@@ -155,34 +182,66 @@ export function updateSunShadow(px, py, pz) {
   // position is ignored, only sunLight.direction matters (set in main loop).
   if (CFG.GFX.SHADOWS === 'csm') return;
 
-  // The shadow map is expensive (~all casters). Re-render it only when:
-  //  - the player crossed a 2-unit snap cell (light frustum must follow),
-  //  - the sun direction animated (day/night cycle on),
-  //  - a slow heartbeat fires (NPCs/doors/stones move without the player).
-  const SNAP = 2;
-  const qx = Math.round(px / SNAP) * SNAP;
-  const qy = Math.round(py / SNAP) * SNAP;
-  const qz = Math.round(pz / SNAP) * SNAP;
+  // WebGPU renders the map every frame, so follow the player CONTINUOUSLY —
+  // the texel-lattice rounding below keeps the map's world-space texel grid
+  // stationary, so a wall pixel's shadow classification never changes while
+  // walking. (The old 2-unit snap re-framed the map in 34-texel jumps and
+  // the grazing eave-shadow band on walls flickered at every crossing.)
+  // WebGL2 keeps the snap: it gates the event-driven re-render cadence.
+  const SNAP = _throttleSunShadow ? 2 : 0;
+  const qx = SNAP ? Math.round(px / SNAP) * SNAP : px;
+  const qy = SNAP ? Math.round(py / SNAP) * SNAP : py;
+  const qz = SNAP ? Math.round(pz / SNAP) * SNAP : pz;
   _shFrame++;
 
   const d = sunLight.direction;
-  const moved = qx !== _shSnapX || qy !== _shSnapY || qz !== _shSnapZ;
   const dirChanged = Math.abs(d.x - _shLastDir.x) + Math.abs(d.y - _shLastDir.y)
                    + Math.abs(d.z - _shLastDir.z) > 0.0005;
-  const heartbeat = _shFrame % 8 === 0;
-  if (!moved && !dirChanged && !heartbeat) return;
-
-  _shSnapX = qx; _shSnapY = qy; _shSnapZ = qz;
+  if (_throttleSunShadow) {
+    const moved = qx !== _shSnapX || qy !== _shSnapY || qz !== _shSnapZ;
+    const heartbeat = _shFrame % 8 === 0;
+    if (!moved && !dirChanged && !heartbeat) return;
+    _shSnapX = qx; _shSnapY = qy; _shSnapZ = qz;
+  }
   _shLastDir.copyFrom(d);
 
-  // Position light opposite to direction, centered on the snapped player cell
+  // Texel-align the frustum center: a 2-unit world snap is a NON-integer
+  // number of shadow texels (2 / (120/2048) = 34.13), so each refresh would
+  // re-resolve every shadow edge slightly differently and borderline
+  // flat-shaded facets flip (flickering trees/houses). Snapping the center to
+  // whole texels in the light's view basis makes consecutive maps exact
+  // whole-texel shifts of each other — same idea as CSM stabilizeCascades.
+  // Basis matches Babylon's shadow view matrix: LookAtLH(pos, pos+dir, UP).
+  const fl = Math.hypot(d.x, d.y, d.z);
+  const fx = d.x / fl, fy = d.y / fl, fz = d.z / fl;
+  let axx = fz, axy = 0, axz = -fx;            // cross(UP, f)
+  const al = Math.hypot(axx, axz);
+  if (al > 1e-4) { axx /= al; axz /= al; } else { axx = 1; axz = 0; } // sun overhead
+  const ayx = fy * axz - fz * axy;             // cross(f, xaxis)
+  const ayy = fz * axx - fx * axz;
+  const ayz = fx * axy - fy * axx;
+  // Texel-round ONLY while the sun is stationary. Rounding against a
+  // ROTATING basis (day/night cycle on) disagrees between frames by up to a
+  // whole texel, lurching the entire map sideways each frame — shadow bands
+  // on walls visibly flicker while standing still. A smooth crawl reads as
+  // intended motion; the snap only exists to stabilize the static-sun case.
+  const texel = (sunLight.shadowFrustumSize || 120) / CFG.GFX.SHADOW_MAP;
+  let cx = qx * axx + qy * axy + qz * axz;
+  let cy = qx * ayx + qy * ayy + qz * ayz;
+  if (!dirChanged) {
+    cx = Math.round(cx / texel) * texel;
+    cy = Math.round(cy / texel) * texel;
+  }
+  const cf = qx * fx + qy * fy + qz * fz;      // along-dir: depth only, no snap needed
   sunLight.position.set(
-    qx - d.x * 70,
-    qy - d.y * 70,
-    qz - d.z * 70
+    axx * cx + ayx * cy + fx * (cf - 70),
+    axy * cx + ayy * cy + fy * (cf - 70),
+    axz * cx + ayz * cy + fz * (cf - 70)
   );
-  const sm = sunCSM ? sunCSM.getShadowMap() : null;
-  if (sm) sm.resetRefreshCounter();
+  if (_throttleSunShadow) {
+    const sm = sunCSM ? sunCSM.getShadowMap() : null;
+    if (sm) sm.resetRefreshCounter();
+  }
 }
 
 /** Fade the sun glow billboard (0..1) — cloud cover hides the sun disc */

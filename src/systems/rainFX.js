@@ -203,10 +203,17 @@ export function initRainFX(scene) {
     _splash.emitter = new Vector3(0, 0, 0);
     _splash.emitRate = 0;
     _splash.manualEmitCount = 0;
-    _splash.direction1 = new Vector3(0, 0, 0);
-    _splash.direction2 = new Vector3(0, 0, 0);
-    _splash.minEmitPower = 0;
-    _splash.maxEmitPower = 0;
+    // FLAT ground rings: non-billboard particle quads lie perpendicular to
+    // the particle's direction (shader: yaxis = normalize(direction)), so
+    // direction straight up + non-billboard = ring lying on the ground.
+    // Camera-facing billboards read as circles floating in the air ("screen
+    // effect"). Power must be nonzero or the stored direction collapses to
+    // a zero vector and the shader normalize() produces NaN.
+    _splash.isBillboardBased = false;
+    _splash.direction1 = new Vector3(0, 1, 0);
+    _splash.direction2 = new Vector3(0, 1, 0);
+    _splash.minEmitPower = 0.001;
+    _splash.maxEmitPower = 0.001;
     _splash.gravity = new Vector3(0, 0, 0);
     _splash.minLifeTime = 0.25;
     _splash.maxLifeTime = 0.35;

@@ -39,7 +39,9 @@ export async function initScene() {
         powerPreference: 'high-performance',
       });
       await engine.initAsync();
-      engine.compatibilityMode = false;
+      // ?compat forces the slow submission path for debugging GPU-state bugs
+      engine.compatibilityMode =
+        new URLSearchParams(location.search).has('compat');
       _useWebGPU = true;
       console.log('Using WebGPU');
     } catch (e) {

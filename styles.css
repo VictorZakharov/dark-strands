@@ -155,6 +155,32 @@ canvas#game {
   accent-color: #e8d8a0;
 }
 
+#gfx-toggles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 18px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(232, 216, 160, 0.12);
+}
+
+.gfx-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(200, 200, 200, 0.45);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.gfx-toggle input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+  accent-color: #e8d8a0;
+}
+
 #menu-play {
   margin-top: 8px;
   padding: 10px 40px;

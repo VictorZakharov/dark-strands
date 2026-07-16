@@ -38,6 +38,7 @@ uniform float uFlash;      // lightning envelope 0..1
 uniform float uSunVis;     // sun visibility through clouds 0..1
 
 float hash12(vec2 p) {
+  p = mod(p, 289.0); // keep hash inputs small — wind offset grows over a session
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
@@ -72,25 +73,38 @@ void main() {
   // uWindOff is integrated on the CPU (offset += wind * dt): multiplying the
   // CURRENT wind by absolute time would amplify every wind change by elapsed
   // session time, making the cloud field race/boil after long play sessions.
-  vec2 cp = dir.xz / max(dir.y, 0.06) * 0.9 + uWindOff;
-  vec2 q = vec2(fbm(cp), fbm(cp + vec2(5.2, 1.3)));
-  float f = fbm(cp + q * 1.8 + uWindOff * 0.5);
-  float thr = mix(0.72, 0.18, uCloudCover);
-  float cloud = smoothstep(thr, thr + 0.28, f) * smoothstep(0.02, 0.18, h);
-  float dens = smoothstep(thr, thr + 0.55, f);
+  // Warp kept moderate and edges kept soft: a strong warp + hard threshold
+  // slices low-coverage noise into dark stringy filaments that read as
+  // render artifacts against the blue sky.
+  // Early-out below the horizon and in clear skies: the 9 fbm evaluations
+  // here are the dome's dominant per-pixel cost, and they were running for
+  // ground-occluded and cloudless pixels too (dome draws full-screen).
+  float cloud = 0.0;
+  float dens = 0.0;
+  if (h > 0.0 && uCloudCover > 0.03) {
+    vec2 cp = dir.xz / max(dir.y, 0.06) * 0.9 + uWindOff;
+    vec2 q = vec2(fbm(cp), fbm(cp + vec2(5.2, 1.3)));
+    float f = fbm(cp + q * 0.9 + uWindOff * 0.5);
+    float thr = mix(0.72, 0.18, uCloudCover);
+    cloud = smoothstep(thr, thr + 0.45, f) * smoothstep(0.02, 0.18, h);
+    cloud *= smoothstep(0.03, 0.22, uCloudCover); // fair weather: fade wisps out entirely
+    dens = smoothstep(thr, thr + 0.6, f);
+  }
 
   // Stars — hash-based on quantized direction, twinkling, hidden by clouds.
   // Azimuth cell count is an exact integer (138 / 2pi) so the atan seam falls
   // on a cell boundary — no sliced stars at the +-pi wrap.
-  vec2 sp = vec2(atan(dir.x, dir.z) * 21.9634954, dir.y * 60.0);
-  vec2 cell = floor(sp);
-  vec2 fp = fract(sp) - 0.5;
-  float hs = hash12(cell);
-  vec2 starOff = (vec2(hash12(cell + 7.1), hash12(cell + 3.7)) - 0.5) * 0.7;
-  float star = smoothstep(0.10, 0.02, length(fp - starOff)) * step(0.92, hs);
-  star *= 0.6 + 0.4 * sin(uTime * (2.0 + hs * 4.0) + hs * 6.28);
-  star *= 1.0 - smoothstep(0.95, 0.995, h); // lat-long cells degenerate at the zenith
-  col += vec3(star) * uStarAlpha * (1.0 - cloud) * step(0.0, h);
+  if (uStarAlpha > 0.001 && h > 0.0) {
+    vec2 sp = vec2(atan(dir.x, dir.z) * 21.9634954, dir.y * 60.0);
+    vec2 cell = floor(sp);
+    vec2 fp = fract(sp) - 0.5;
+    float hs = hash12(cell);
+    vec2 starOff = (vec2(hash12(cell + 7.1), hash12(cell + 3.7)) - 0.5) * 0.7;
+    float star = smoothstep(0.10, 0.02, length(fp - starOff)) * step(0.92, hs);
+    star *= 0.6 + 0.4 * sin(uTime * (2.0 + hs * 4.0) + hs * 6.28);
+    star *= 1.0 - smoothstep(0.95, 0.995, h); // lat-long cells degenerate at the zenith
+    col += vec3(star) * uStarAlpha * (1.0 - cloud);
+  }
 
   // Moon — antipodal to the sun, with a soft halo
   vec3 moonDir = -uSunDir;
@@ -102,10 +116,11 @@ void main() {
   // Broad sun haze (the billboard glow keeps the tight core)
   col += vec3(1.0, 0.85, 0.55) * pow(max(sd, 0.0), 32.0) * 0.35 * uSunVis * step(0.0, uSunH);
 
-  // Cloud shading: lit tops -> dark bases, day/night tint, sunset-lit edges
+  // Cloud shading: lit tops -> dark bases, day/night tint, sunset-lit edges.
+  // Fair-weather clouds stay bright — only storm cloudDark pulls them grey.
   float dayLum = clamp(uSunH * 1.4 + 0.12, 0.03, 1.0);
-  vec3 cloudCol = mix(vec3(1.0, 0.98, 0.95), vec3(0.28, 0.30, 0.35),
-                      dens * (0.35 + uCloudDark * 0.65));
+  vec3 cloudCol = mix(vec3(1.02, 1.0, 0.98), vec3(0.42, 0.44, 0.50),
+                      dens * (0.25 + uCloudDark * 0.75));
   cloudCol *= dayLum;
   cloudCol += vec3(1.0, 0.5, 0.25) * pow(max(sd, 0.0), 3.0) * sunsetK * (1.0 - dens) * 0.8;
   col = mix(col, cloudCol, cloud);

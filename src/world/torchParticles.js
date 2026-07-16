@@ -3,8 +3,11 @@ import {
 } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getPlayerState } from '../entities/player.js';
-import { getShadowSlots } from './torchLighting.js';
+import { getShadowSlots, setSlotShadowCasters, clearSlotShadowCasters } from './torchLighting.js';
 import { getPickableTorches } from './torches.js';
+import { glowSetVisible } from '../core/postfx.js';
+import { hasLineOfSightMask, GRP_ALL, GRP_PLAYER, GRP_WINDOW } from '../core/physics.js';
+import { getCamera } from '../core/scene.js';
 
 const EMBER_VIS_DIST = 30;
 let _emberTex = null;
@@ -12,6 +15,7 @@ let _smokeTex = null;
 let _emberScene = null;
 let _torchTimer = 0;
 let _slotFrame = 0; // staggered shadow-slot refresh heartbeat
+let _losFrame = 0;  // staggered torch line-of-sight raycasts
 
 export function getTorchTimer() { return _torchTimer; }
 
@@ -233,6 +237,8 @@ export function updateTorchEmbers(dt) {
   const pickableTorches = getPickableTorches();
   const shadowSlots = getShadowSlots();
   const torchDistances = [];
+  _losFrame++;
+  let _losIdx = 0;
   for (const t of pickableTorches) {
     try {
       if (!t || !t.active || !t.light) continue;
@@ -242,8 +248,42 @@ export function updateTorchEmbers(dt) {
       if (meta.baseIntensity === undefined || isNaN(meta.baseIntensity)) meta.baseIntensity = 2.0;
       let targetIntensity = meta.baseIntensity * flicker;
       if (isNaN(targetIntensity)) targetIntensity = 0;
-      t.light.intensity = targetIntensity;
       t._lit = (meta.baseIntensity > 0);
+
+      // Clustered torch lights have NO shadow maps, so their light passes
+      // straight through walls into adjacent rooms/exteriors. Fade a torch's
+      // clustered contribution out when the camera has no line of sight to
+      // it. The two shadow-slot torches are given their UNFADED intensity in
+      // the slot loop below — their shadow cubes occlude correctly, and the
+      // slots always hold the torches nearest the player. Windows are
+      // excluded from the ray: light through glass is legitimate.
+      // Raycasts are staggered — each torch re-tests every 4th frame and the
+      // 0.25s fade hides the staleness (35 Havok casts/frame was measurable).
+      const cam = getCamera();
+      if (cam && t.light.position && (_losFrame + _losIdx) % 4 === 0) {
+        const ldx = t.light.position.x - cam.globalPosition.x;
+        const ldy = t.light.position.y - cam.globalPosition.y;
+        const ldz = t.light.position.z - cam.globalPosition.z;
+        // Mask keeps CEILING blocking (mid-floor slabs are in that group —
+        // the interaction-oriented hasLineOfSight excludes it and let light
+        // and glow leak between floors of 2-story buildings)
+        meta.losVisible = (ldx * ldx + ldy * ldy + ldz * ldz < 2500)
+          && hasLineOfSightMask(cam.globalPosition, t.light.position,
+               GRP_ALL & ~GRP_PLAYER & ~GRP_WINDOW);
+        // The screen-space glow halo needs STRICT visibility — window glass
+        // may pass LIGHT, but a halo blooming onto the wall beside a window
+        // (ray threads the glass, flame is screen-occluded) reads as a leak
+        meta.losGlow = meta.losVisible
+          && hasLineOfSightMask(cam.globalPosition, t.light.position,
+               GRP_ALL & ~GRP_PLAYER);
+      }
+      _losIdx++;
+      const los = meta.losVisible !== false;
+      if (meta.losFade === undefined) meta.losFade = 1;
+      meta.losFade = Math.max(0, Math.min(1, meta.losFade + (los ? 1 : -1) * dt * 4));
+      meta.fullIntensity = targetIntensity;
+      t._losVisible = los;
+      t.light.intensity = targetIntensity * meta.losFade;
 
       const s = 0.9 + 0.1 * flicker;
       const validS = isNaN(s) ? 1.0 : s;
@@ -254,6 +294,10 @@ export function updateTorchEmbers(dt) {
           t.glow.scaling.set(validS * 1.5, validS * 1.5, 1);
           t.glow.isVisible = t.flame.isVisible;
         }
+
+        // GlowLayer bleeds through walls (screen-space additive, no depth) —
+        // gate flame inclusion on the STRICT (glass-blocking) visibility.
+        glowSetVisible(t.flame, t._lit && meta.losGlow === true);
       }
 
       if (targetIntensity > 0 && !isNaN(t.wx)) {
@@ -297,14 +341,24 @@ export function updateTorchEmbers(dt) {
                    || Math.abs(slot.position.y - t.light.position.y) > 0.01
                    || Math.abs(slot.position.z - t.light.position.z) > 0.01;
         slot.position.copyFrom(t.light.position);
-        slot.intensity = t.light.intensity;
+        // Unfaded intensity: the slot's shadow cube occludes correctly, so
+        // the camera-LOS fade applied to clustered torches must not dim it
+        const tm = t.light.metadata || {};
+        slot.intensity = tm.fullIntensity !== undefined ? tm.fullIntensity : t.light.intensity;
         slot.shadowEnabled = true;
         t.light.intensity = 0;
-        if (moved || _slotFrame % 8 === i * 4) {
+        if (moved) {
+          // Slot jumped to another torch — rebuild its near-torch caster
+          // subset (the cube renders every frame; the subset keeps it cheap)
+          setSlotShadowCasters(i, slot.position);
           const sm = slot.metadata.shadowGen && slot.metadata.shadowGen.getShadowMap();
-          if (sm) sm.resetRefreshCounter();
+          if (sm) sm.resetRefreshCounter(); // WebGL2 throttled path re-arm
+        } else if ((_slotFrame + i * 4) % 8 === 0) {
+          const sm = slot.metadata.shadowGen && slot.metadata.shadowGen.getShadowMap();
+          if (sm) sm.resetRefreshCounter(); // WebGL2 heartbeat (no-op on WebGPU)
         }
       } else {
+        if (slot.position.y !== -100) clearSlotShadowCasters(i);
         slot.position.y = -100;
         slot.intensity = 0.001;
       }

@@ -171,7 +171,10 @@ export async function initPhysics() {
 }
 
 const FIXED_STEP = 1 / 60;
-const MAX_STEPS = 10;
+// 3, not 10: each extra substep re-runs the world step AND the per-body JS
+// sync loops. Below ~20 FPS the sim runs slightly slower than realtime
+// instead of feeding a death spiral (more substeps -> lower FPS -> more dt).
+const MAX_STEPS = 3;
 let accumulator = 0;
 
 export function stepPhysics(dt) {
@@ -256,6 +259,7 @@ export function createStaticBox(hx, hy, hz, px, py, pz, material, collisionGroup
   applyCollisionGroups(shape, collisionGroup);
   body.shape = shape;
   body.disablePreStep = true;
+  body.disableSync = true; // static: skip the per-substep body->node sync (614 bodies x 10 substeps was 30-60ms/frame)
   return new PhysicsBodyWrapper(body, node, shape);
 }
 
@@ -275,6 +279,7 @@ export function createRotatedStaticBox(hx, hy, hz, px, py, pz, ax, ay, az, angle
   applyCollisionGroups(shape, collisionGroup);
   body.shape = shape;
   body.disablePreStep = true;
+  body.disableSync = true; // static: skip the per-substep body->node sync (614 bodies x 10 substeps was 30-60ms/frame)
   return new PhysicsBodyWrapper(body, node, shape);
 }
 
@@ -292,6 +297,7 @@ export function createStaticCylinder(radius, halfHeight, px, py, pz, material) {
   applyCollisionGroups(shape, undefined);
   body.shape = shape;
   body.disablePreStep = true;
+  body.disableSync = true; // static: skip the per-substep body->node sync (614 bodies x 10 substeps was 30-60ms/frame)
   return new PhysicsBodyWrapper(body, node, shape);
 }
 
@@ -305,6 +311,7 @@ export function createStaticSphere(radius, px, py, pz, material, collisionGroup)
   applyCollisionGroups(shape, collisionGroup);
   body.shape = shape;
   body.disablePreStep = true;
+  body.disableSync = true; // static: skip the per-substep body->node sync (614 bodies x 10 substeps was 30-60ms/frame)
   return new PhysicsBodyWrapper(body, node, shape);
 }
 
@@ -340,6 +347,7 @@ export function createTerrainBody() {
   applyCollisionGroups(shape, undefined);
   body.shape = shape;
   body.disablePreStep = true;
+  body.disableSync = true; // static: skip the per-substep body->node sync (614 bodies x 10 substeps was 30-60ms/frame)
 
   // Boundary walls
   const wallH = 30;
@@ -521,6 +529,20 @@ export function raycastClosest(from, to, excludePlayer = true, filterGroups) {
  * blocking the path returns false. Excludes player capsule automatically.
  */
 export function hasLineOfSight(from, to, ignoreGroup) {
+  // Exclude player capsule and ceiling slabs (ceiling is for movement physics only,
+  // not interaction blocking — both eye and torch flame sit inside the thick slab)
+  let mask = GRP_ALL & ~GRP_PLAYER & ~GRP_CEILING;
+  if (ignoreGroup !== undefined) mask &= ~ignoreGroup;
+  return hasLineOfSightMask(from, to, mask);
+}
+
+/**
+ * Line-of-sight with an explicit collision mask. Use when the caller needs
+ * ceilings to BLOCK the ray (e.g. torch light/glow gating — mid-floor slabs
+ * use the ceiling group, so the interaction-oriented hasLineOfSight lets
+ * light and glow leak between floors of 2-story buildings).
+ */
+export function hasLineOfSightMask(from, to, mask) {
   if (!physicsEngine) return true; // no physics = can't check, allow
   if (!_rayResult) _rayResult = new PhysicsRaycastResult();
 
@@ -528,10 +550,6 @@ export function hasLineOfSight(from, to, ignoreGroup) {
   const _to   = new Vector3(to.x,   to.y,   to.z);
 
   _rayResult.reset();
-  // Exclude player capsule and ceiling slabs (ceiling is for movement physics only,
-  // not interaction blocking — both eye and torch flame sit inside the thick slab)
-  let mask = GRP_ALL & ~GRP_PLAYER & ~GRP_CEILING;
-  if (ignoreGroup !== undefined) mask &= ~ignoreGroup;
   physicsEngine.raycastToRef(_from, _to, _rayResult, { collideWith: mask });
 
   // If nothing was hit, line of sight is clear.

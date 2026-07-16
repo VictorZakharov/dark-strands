@@ -1,4 +1,5 @@
-import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3, Vector3, Matrix } from 'babylonjs';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, DynamicTexture, Color3,
+         Vector3, Matrix, Quaternion, VertexData } from 'babylonjs';
 import { CFG } from '../config.js';
 import { getGrid, setCell, markTreeCell } from './grid.js';
 import { getBuildings } from './generator.js';
@@ -8,8 +9,9 @@ import { getPlayerState } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 import { createStaticSphere, createStaticCylinder, hasLineOfSight, ROCK_COLLISION_GROUP } from '../core/physics.js';
+import { addFogDepthMesh } from '../core/postfx.js';
 
-let barkTex, leafTex, rockTex;
+let barkTex, leafTex, rockTex, leafCardTex, needleCardTex;
 
 const rockColliders = [];
 
@@ -32,6 +34,91 @@ function getLeafTexture(scene) {
     leafTex.vScale = 2;
   }
   return leafTex;
+}
+
+/**
+ * Procedural leaf-cluster card texture — dozens of overlapping leaf shapes
+ * on a transparent background. Alpha-tested on the merged card mesh, so no
+ * blend sorting is needed and depth writes stay correct.
+ */
+function getLeafCardTexture(scene) {
+  if (leafCardTex) return leafCardTex;
+  const SZ = 256;
+  leafCardTex = new DynamicTexture('leafCards', SZ, scene, true);
+  const ctx = leafCardTex.getContext();
+  ctx.clearRect(0, 0, SZ, SZ);
+  // leaf = pointed ellipse; scatter clusters denser near the center
+  for (let i = 0; i < 170; i++) {
+    const cx = SZ / 2 + (Math.random() - 0.5) * SZ * 0.82;
+    const cy = SZ / 2 + (Math.random() - 0.5) * SZ * 0.82;
+    const r = Math.hypot(cx - SZ / 2, cy - SZ / 2) / (SZ / 2);
+    if (r > 0.92) continue;
+    const len = 16 + Math.random() * 18;
+    const wid = len * (0.38 + Math.random() * 0.2);
+    const ang = Math.random() * Math.PI * 2;
+    const shade = 0.75 + Math.random() * 0.45;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(ang);
+    ctx.fillStyle = `rgba(${Math.floor(95 * shade)}, ${Math.floor(160 * shade)}, ${Math.floor(62 * shade)}, 1)`;
+    ctx.beginPath();
+    ctx.moveTo(0, -len / 2);
+    ctx.quadraticCurveTo(wid / 2, 0, 0, len / 2);
+    ctx.quadraticCurveTo(-wid / 2, 0, 0, -len / 2);
+    ctx.fill();
+    // central vein
+    ctx.strokeStyle = `rgba(${Math.floor(40 * shade)}, ${Math.floor(90 * shade)}, ${Math.floor(30 * shade)}, 0.9)`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, -len / 2);
+    ctx.lineTo(0, len / 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  leafCardTex.update();
+  leafCardTex.hasAlpha = true;
+  return leafCardTex;
+}
+
+/** Needle-cluster card texture for pine fringes — thin radiating needles. */
+function getNeedleCardTexture(scene) {
+  if (needleCardTex) return needleCardTex;
+  const SZ = 256;
+  needleCardTex = new DynamicTexture('needleCards', SZ, scene, true);
+  const ctx = needleCardTex.getContext();
+  ctx.clearRect(0, 0, SZ, SZ);
+  for (let c = 0; c < 26; c++) {
+    const cx = SZ / 2 + (Math.random() - 0.5) * SZ * 0.7;
+    const cy = SZ / 2 + (Math.random() - 0.5) * SZ * 0.7;
+    if (Math.hypot(cx - SZ / 2, cy - SZ / 2) > SZ * 0.42) continue;
+    const baseAng = Math.random() * Math.PI * 2;
+    const shade = 0.6 + Math.random() * 0.5;
+    ctx.strokeStyle = `rgba(${Math.floor(40 * shade)}, ${Math.floor(105 * shade)}, ${Math.floor(52 * shade)}, 1)`;
+    ctx.lineWidth = 2.2;
+    for (let n = 0; n < 9; n++) {
+      const a = baseAng + (n / 9) * Math.PI * 1.5 + Math.random() * 0.25;
+      const len = 14 + Math.random() * 14;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * len, cy + Math.sin(a) * len);
+      ctx.stroke();
+    }
+  }
+  needleCardTex.update();
+  needleCardTex.hasAlpha = true;
+  return needleCardTex;
+}
+
+/** Shared material factory for alpha-tested foliage card meshes. */
+function makeCardMaterial(scene, name, texture) {
+  const mat = new StandardMaterial(name, scene);
+  mat.diffuseTexture = texture;
+  mat.useAlphaFromDiffuseTexture = false; // alpha TEST
+  mat.backFaceCulling = false;
+  mat.twoSidedLighting = true;
+  mat.emissiveColor = new Color3(0.06, 0.1, 0.04);
+  mat.specularColor = new Color3(0, 0, 0);
+  return mat;
 }
 
 export function getRockTexture(scene) {
@@ -117,12 +204,17 @@ export function placeTrees(scene) {
   trunkMat.diffuseTexture = getBarkTexture(scene);
   trunkMat.specularColor = new Color3(0.02, 0.02, 0.02);
 
+  // Canopy color comes from per-vertex colors (per-tree hue variation baked
+  // into the single merged mesh) — the material just passes them through.
   const leafMat = new StandardMaterial('leafMat', scene);
-  leafMat.diffuseColor = CFG.SNOW_MODE ? new Color3(0xc8 / 255, 0xcd / 255, 0xd0 / 255) : new Color3(0x3a / 255, 0x8a / 255, 0x3a / 255);
+  leafMat.diffuseColor = new Color3(1, 1, 1);
   leafMat.specularColor = new Color3(0.02, 0.02, 0.02);
 
   const trunkMeshes = [];
   const coneMeshes = [];
+  const lobeMeshes = []; // leafy canopy volumes — INVISIBLE shadow proxies
+  const cardMeshes = []; // alpha-tested leaf cards — the visible foliage
+  const needleMeshes = []; // needle-cluster fringe cards on pine tiers
   let placed = 0;
 
   for (let i = 0; i < CFG.TREES * 3 && placed < CFG.TREES; i++) {
@@ -148,11 +240,23 @@ export function placeTrees(scene) {
     markTreeCell(gx, gz);
 
     const ty = getTerrainHeight(p.x, p.z);
-    const trunkH = rng(1.4, 2.4);
-    const trunkRadBot = rng(0.14, 0.22);
+    // Mixed forest: pines + leafy deciduous. Snow biome stays pine-only
+    // (bare/snowy deciduous would need their own look).
+    const leafy = !CFG.SNOW_MODE && rng(0, 1) > 0.45;
+    const trunkH = leafy ? rng(1.9, 2.9) : rng(2.0, 2.8);
+    const trunkRadBot = rng(0.16, 0.26);
     const trunkRadTop = trunkRadBot * rng(0.5, 0.75);
-    const numCones = rngInt(3, 5);
-    const s = rng(1.6, 3.2);
+    const numCones = rngInt(4, 6);
+    const s = leafy ? rng(1.3, 2.3) : rng(1.6, 3.2);
+    const leanX = rng(-0.05, 0.05); // slight organic trunk lean
+    const leanZ = rng(-0.05, 0.05);
+
+    // Per-tree canopy tint — merged into one mesh via vertex colors
+    const treeCol = CFG.SNOW_MODE
+      ? { r: rng(0.76, 0.86), g: rng(0.80, 0.88), b: rng(0.84, 0.92) }
+      : leafy
+        ? { r: rng(0.20, 0.34), g: rng(0.45, 0.62), b: rng(0.12, 0.20) }
+        : { r: rng(0.15, 0.29), g: rng(0.42, 0.60), b: rng(0.13, 0.26) };
 
     // Trunk — create temp mesh, position/scale, bake transform for merging
     const tMesh = MeshBuilder.CreateCylinder('_trunk', {
@@ -162,26 +266,226 @@ export function placeTrees(scene) {
       tessellation: 6,
     }, scene);
     tMesh.scaling = new Vector3(s, s, s);
+    tMesh.rotation.set(leanX, 0, leanZ);
     tMesh.position = new Vector3(p.x, ty + trunkH / 2 * s, p.z);
     tMesh.bakeCurrentTransformIntoVertices();
     trunkMeshes.push(tMesh);
 
-    // Canopy cones
+    if (leafy) {
+      // Deciduous: 2-4 branches off the upper trunk + jagged ellipsoid
+      // canopy lobes (same displacement technique as the bushes, scaled up)
+      const jagSeed = rng(0, Math.PI * 2);
+      const numBranches = rngInt(2, 4);
+      const lobeSpecs = [{ ax: 0, az: 0, ay: trunkH + rng(0.5, 0.9), d: rng(1.9, 2.6) }];
+
+      for (let j = 0; j < numBranches; j++) {
+        const az = rng(0, Math.PI * 2);
+        const el = rng(0.6, 1.1); // tilt from vertical
+        const len = rng(0.8, 1.3);
+        const attachY = trunkH * rng(0.6, 0.92);
+        const dir = new Vector3(Math.sin(el) * Math.cos(az), Math.cos(el), Math.sin(el) * Math.sin(az));
+
+        const br = MeshBuilder.CreateCylinder('_branch', {
+          diameterTop: 0.05, diameterBottom: 0.1, height: len, tessellation: 5,
+        }, scene);
+        br.rotationQuaternion = new Quaternion();
+        Quaternion.FromUnitVectorsToRef(Vector3.Up(), dir, br.rotationQuaternion);
+        br.scaling.set(s, s, s);
+        br.position.set(
+          p.x + (leanX * attachY + dir.x * len * 0.5) * s,
+          ty + (attachY + dir.y * len * 0.5) * s,
+          p.z + (leanZ * attachY + dir.z * len * 0.5) * s
+        );
+        br.bakeCurrentTransformIntoVertices();
+        trunkMeshes.push(br);
+
+        // A lobe at each branch tip
+        lobeSpecs.push({
+          ax: (leanX * attachY + dir.x * len) , az: (leanZ * attachY + dir.z * len),
+          ay: attachY + dir.y * len + 0.25, d: rng(1.1, 1.7),
+        });
+      }
+      // 1-2 filler lobes to round the crown
+      for (let j = 0, n = rngInt(1, 2); j < n; j++) {
+        lobeSpecs.push({ ax: rng(-0.7, 0.7), az: rng(-0.7, 0.7), ay: trunkH + rng(0.2, 0.7), d: rng(1.2, 1.8) });
+      }
+
+      for (const spec of lobeSpecs) {
+        const lobe = MeshBuilder.CreateSphere('_lobe', { diameter: spec.d, segments: 4 }, scene);
+        const pos = lobe.getVerticesData('position');
+        for (let k = 0; k < pos.length; k += 3) {
+          const ang = Math.atan2(pos[k + 2], pos[k]);
+          const yn = pos[k + 1] / spec.d;
+          const jag = 1
+            + 0.15 * Math.sin(ang * 5 + jagSeed + yn * 4)
+            + 0.10 * Math.sin(ang * 8 + jagSeed * 1.7 - yn * 6);
+          pos[k] *= jag;
+          pos[k + 1] *= 1 + 0.08 * Math.sin(ang * 6 + jagSeed * 2.9);
+          pos[k + 2] *= jag;
+        }
+        lobe.updateVerticesData('position', pos);
+
+        // Lobe tint: DARK — the lobe is the canopy's shadowed interior mass;
+        // the leaf cards over it carry the lit foliage look
+        const vCount = pos.length / 3;
+        const cols = new Float32Array(vCount * 4);
+        for (let k = 0; k < vCount; k++) {
+          const t2 = 0.38 + 0.3 * Math.max(0, pos[k * 3 + 1] / spec.d + 0.5) * 0.7;
+          cols[k * 4] = Math.min(1, treeCol.r * t2);
+          cols[k * 4 + 1] = Math.min(1, treeCol.g * t2);
+          cols[k * 4 + 2] = Math.min(1, treeCol.b * t2);
+          cols[k * 4 + 3] = 1;
+        }
+        lobe.setVerticesData('color', cols);
+
+        lobe.scaling.set(s, s * rng(0.72, 0.88), s);
+        lobe.rotation.y = rng(0, Math.PI * 2);
+        const lcx = p.x + spec.ax * s + rng(-0.08, 0.08);
+        const lcy = ty + spec.ay * s;
+        const lcz = p.z + spec.az * s + rng(-0.08, 0.08);
+        lobe.position.set(lcx, lcy, lcz);
+        lobe.bakeCurrentTransformIntoVertices();
+        lobeMeshes.push(lobe);
+
+        // Leaf cards: textured alpha-tested quads scattered over the lobe
+        // surface. The solid lobe stays underneath as the dark inner mass
+        // and the shadow caster; cards give the soft realistic silhouette.
+        // Card normals are radial (plane +Z rotated onto the surface dir),
+        // so the canopy shades like one soft sphere instead of hard quads.
+        // The cards ARE the canopy now (the lobe underneath is an invisible
+        // shadow proxy) — dense volumetric fill, not a surface shell
+        const cardN = 70;
+        for (let c = 0; c < cardN; c++) {
+          const card = MeshBuilder.CreatePlane('_leafCard', {
+            size: spec.d * s * rng(0.48, 0.66),
+          }, scene);
+          const az2 = rng(0, Math.PI * 2);
+          const el2 = Math.acos(rng(-0.85, 1)); // full sphere, light top bias
+          const dir2 = new Vector3(
+            Math.sin(el2) * Math.cos(az2), Math.cos(el2), Math.sin(el2) * Math.sin(az2));
+          card.rotationQuaternion = new Quaternion();
+          Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), dir2, card.rotationQuaternion);
+          Quaternion.RotationAxis(dir2, rng(0, Math.PI * 2))
+            .multiplyToRef(card.rotationQuaternion, card.rotationQuaternion);
+          const r2 = spec.d * 0.5 * rng(0.35, 0.95) * s; // fill the volume, not just the shell
+          card.position.set(
+            lcx + dir2.x * r2, lcy + dir2.y * r2 * 0.8, lcz + dir2.z * r2);
+
+          const tc = rng(0.8, 1.25);
+          const cc = new Float32Array(4 * 4);
+          for (let vi = 0; vi < 4; vi++) {
+            cc[vi * 4] = Math.min(1, treeCol.r * tc + 0.08);
+            cc[vi * 4 + 1] = Math.min(1, treeCol.g * tc + 0.08);
+            cc[vi * 4 + 2] = Math.min(1, treeCol.b * tc + 0.08);
+            cc[vi * 4 + 3] = 1;
+          }
+          card.setVerticesData('color', cc);
+          card.bakeCurrentTransformIntoVertices();
+          cardMeshes.push(card);
+        }
+      }
+
+      treePosData.push({ x: p.x, z: p.z, ty, scale: s });
+      createStaticCylinder(trunkRadBot * s, trunkH * s / 2, p.x, ty + trunkH * s / 2, p.z);
+      placed++;
+      continue;
+    }
+
+    // Canopy tiers — jagged lobed silhouettes + drooped edges + per-tier tint.
+    // Radial jitter is a deterministic function of vertex ANGLE so the cap
+    // ring and side ring (duplicated verts) displace identically — no tearing.
+    const jagSeed = rng(0, Math.PI * 2);
+    // Tiers chain upward with spacing < tier height so they always overlap —
+    // independent per-tier offsets left gaps and detached floating tops.
+    // Canopy starts partway down the trunk so the lowest tier attaches.
+    let tierY = trunkH * 0.55;
     for (let j = 0; j < numCones; j++) {
       const frac = 1 - j / numCones;
-      const coneR = rng(1.0, 1.5) * (0.25 + 0.75 * frac);
-      const coneH = rng(0.9, 1.4);
-      const coneY = trunkH + j * rng(0.5, 0.7);
+      const coneR = rng(0.85, 1.2) * (0.3 + 0.7 * frac);
+      const coneH = rng(0.9, 1.3);
+      const coneY = tierY;
+      tierY += coneH * rng(0.42, 0.55);
       const cMesh = MeshBuilder.CreateCylinder('_cone', {
         diameterTop: 0,
         diameterBottom: Math.max(coneR, 0.25) * 2,
         height: coneH,
-        tessellation: 6,
+        tessellation: 7,
       }, scene);
+
+      // Jag + droop the base ring by angle
+      const pos = cMesh.getVerticesData('position');
+      let minY = Infinity;
+      for (let k = 1; k < pos.length; k += 3) minY = Math.min(minY, pos[k]);
+      const droop = coneH * rng(0.10, 0.22);
+      for (let k = 0; k < pos.length; k += 3) {
+        if (pos[k + 1] < minY + 0.01) {
+          const x = pos[k], z = pos[k + 2];
+          const r = Math.sqrt(x * x + z * z);
+          if (r > 0.01) {
+            const ang = Math.atan2(z, x);
+            const jag = 1 + 0.17 * (Math.sin(ang * 3 + jagSeed) + Math.sin(ang * 5 + jagSeed * 1.7));
+            pos[k] = x * jag;
+            pos[k + 2] = z * jag;
+            pos[k + 1] -= droop * (0.5 + 0.5 * Math.sin(ang * 4 + jagSeed * 2.3));
+          }
+        }
+      }
+      cMesh.updateVerticesData('position', pos);
+
+      // Tier tint: darker at the bottom, brighter toward the tip
+      const shade = 0.72 + 0.38 * (j / Math.max(1, numCones - 1));
+      const vCount = pos.length / 3;
+      const cols = new Float32Array(vCount * 4);
+      for (let k = 0; k < vCount; k++) {
+        cols[k * 4] = Math.min(1, treeCol.r * shade + 0.03);
+        cols[k * 4 + 1] = Math.min(1, treeCol.g * shade + 0.03);
+        cols[k * 4 + 2] = Math.min(1, treeCol.b * shade + 0.03);
+        cols[k * 4 + 3] = 1;
+      }
+      cMesh.setVerticesData('color', cols);
+
       cMesh.scaling = new Vector3(s, s, s);
-      cMesh.position = new Vector3(p.x, ty + coneY * s, p.z);
+      cMesh.rotation.y = rng(0, Math.PI * 2); // break aligned tier silhouettes
+      cMesh.position = new Vector3(
+        p.x + leanX * coneY * s + rng(-0.06, 0.06) * s,
+        ty + coneY * s,
+        p.z + leanZ * coneY * s + rng(-0.06, 0.06) * s
+      );
       cMesh.bakeCurrentTransformIntoVertices();
       coneMeshes.push(cMesh);
+
+      // Needle cards over the whole tier surface — the cone mesh is a hidden
+      // proxy now, so the cards must BE the visible pine foliage
+      for (let c2 = 0; c2 < 15; c2++) {
+        const a2 = rng(0, Math.PI * 2);
+        const hFrac = rng(0, 0.85); // 0 = tier base, 1 = tip
+        const rimR = Math.max(coneR, 0.25);
+        const rr = rimR * (1 - hFrac * 0.8) * rng(0.75, 1.1);
+        const card = MeshBuilder.CreatePlane('_needleCard', {
+          size: coneH * s * rng(0.55, 0.85),
+        }, scene);
+        const dirN = new Vector3(Math.cos(a2) * 0.85, 0.45, Math.sin(a2) * 0.85).normalize();
+        card.rotationQuaternion = new Quaternion();
+        Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), dirN, card.rotationQuaternion);
+        Quaternion.RotationAxis(dirN, rng(0, Math.PI * 2))
+          .multiplyToRef(card.rotationQuaternion, card.rotationQuaternion);
+        card.position.set(
+          p.x + leanX * coneY * s + Math.cos(a2) * rr * s,
+          ty + (coneY - coneH * 0.5 + hFrac * coneH) * s,
+          p.z + leanZ * coneY * s + Math.sin(a2) * rr * s
+        );
+        const tcn = rng(0.8, 1.2);
+        const ccn = new Float32Array(4 * 4);
+        for (let vi = 0; vi < 4; vi++) {
+          ccn[vi * 4] = Math.min(1, treeCol.r * tcn + 0.05);
+          ccn[vi * 4 + 1] = Math.min(1, treeCol.g * tcn + 0.05);
+          ccn[vi * 4 + 2] = Math.min(1, treeCol.b * tcn + 0.05);
+          ccn[vi * 4 + 3] = 1;
+        }
+        card.setVerticesData('color', ccn);
+        card.bakeCurrentTransformIntoVertices();
+        needleMeshes.push(card);
+      }
     }
 
     treePosData.push({ x: p.x, z: p.z, ty, scale: s });
@@ -201,11 +505,298 @@ export function placeTrees(scene) {
   if (coneMeshes.length > 0) {
     const merged = Mesh.MergeMeshes(coneMeshes, true, true, undefined, false, true);
     merged.name = 'mergedCanopy';
+    merged.isPickable = false; // interactions are physics-based; camera raycasts pay per triangle
     merged.material = leafMat;
     merged.convertToFlatShadedMesh();
+    // Hidden shadow/fog-depth proxy — the needle cards ARE the visible pine
+    // foliage now. __fogDepthAlways bypasses the depth pass's layerMask
+    // check (without depth the fog would ghost entire pines into the sky).
+    merged.layerMask = 0x40000000; // proxy-only bit: NEVER in any camera mask (0x20000000 is the 3rd-person player-model bit)
+    merged.__fogDepthAlways = true;
     addShadowCaster(merged);
-    enableShadowReceiving(merged);
   }
+
+  // Leafy canopy volumes: INVISIBLE shadow proxies. Hidden from every camera
+  // via layerMask (shadow maps ignore camera layer masks — same trick that
+  // hides the 1st-person player model while keeping its shadow), so the
+  // canopy still casts believable blob shadows while only cards are seen.
+  if (lobeMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(lobeMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedCanopyCore';
+    merged.isPickable = false; // invisible shadow proxy — never raycast it
+    merged.material = leafMat;
+    merged.convertToFlatShadedMesh();
+    merged.layerMask = 0x40000000; // proxy-only bit: NEVER in any camera mask (0x20000000 is the 3rd-person player-model bit)
+    addShadowCaster(merged);
+    merged.freezeWorldMatrix();
+  }
+
+  // Merge all leaf cards into 1 alpha-tested draw call. Cards do NOT cast
+  // shadows — untested alpha would shadow as solid quads; the lobes cast.
+  if (cardMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(cardMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedLeafCards';
+    // ~40k alpha-tested triangles — letting the camera-collision raycasts
+    // test these cost ~30ms/frame (the 50 -> 23 FPS regression)
+    merged.isPickable = false;
+    merged.material = makeCardMaterial(scene, 'leafCardMat', getLeafCardTexture(scene));
+    merged.freezeWorldMatrix();
+    // MUST write fog depth: without it the volumetric fog samples the SKY
+    // behind the cards and fogs entire crowns into translucent ghosts (the
+    // old opaque lobes used to provide this depth before they went hidden)
+    addFogDepthMesh(merged);
+  }
+
+  // Pine needle fringe cards — same treatment, needle texture
+  if (needleMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(needleMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedNeedleCards';
+    merged.isPickable = false;
+    merged.material = makeCardMaterial(scene, 'needleCardMat', getNeedleCardTexture(scene));
+    merged.freezeWorldMatrix();
+    addFogDepthMesh(merged);
+  }
+}
+
+/**
+ * Low-poly bushes — 1-3 squashed jagged spheres per bush, per-bush hue via
+ * vertex colors, all merged into a single flat-shaded mesh (1 draw call).
+ * Bushes don't block the grid or have physics — the player walks through.
+ */
+export function placeBushes(scene) {
+  const grid = getGrid();
+  const buildings = getBuildings();
+  const blobMeshes = [];
+  const bushCardMeshes = []; // leaf cards over the dark cores
+  let placed = 0;
+
+  for (let i = 0; i < CFG.BUSHES * 3 && placed < CFG.BUSHES; i++) {
+    const gx = rngInt(1, CFG.GRID - 2);
+    const gz = rngInt(1, CFG.GRID - 2);
+    if (!grid[gx][gz]) continue;
+    if (Math.abs(gx - CFG.GRID / 2) < 4 && Math.abs(gz - CFG.GRID / 2) < 4) continue;
+
+    let inside = false;
+    for (const b of buildings) {
+      if (gx >= b.x - 1 && gx < b.x + b.w + 1 && gz >= b.z - 1 && gz < b.z + b.h + 1) {
+        inside = true;
+        break;
+      }
+    }
+    if (inside) continue;
+
+    const p = g2w(gx, gz);
+    if (getTerrainHeight(p.x, p.z) < CFG.WATER_Y + 0.2) continue;
+
+    const bushCol = CFG.SNOW_MODE
+      ? { r: rng(0.72, 0.84), g: rng(0.78, 0.88), b: rng(0.82, 0.92) }
+      : { r: rng(0.12, 0.24), g: rng(0.35, 0.55), b: rng(0.10, 0.22) };
+    const numBlobs = rngInt(3, 5);
+    const jagSeed = rng(0, Math.PI * 2);
+
+    for (let j = 0; j < numBlobs; j++) {
+      const d = rng(0.45, 0.85);
+      const blob = MeshBuilder.CreateSphere('_bush', { diameter: d, segments: 4 }, scene);
+
+      // Leafy lobes: multi-frequency radial displacement. Deterministic in
+      // (angle, y) with INTEGER angular frequencies so the duplicated seam
+      // ring (ang = ±PI) displaces identically — no tearing. A single low
+      // frequency here reads as a faceted rock, not foliage.
+      const pos = blob.getVerticesData('position');
+      for (let k = 0; k < pos.length; k += 3) {
+        const ang = Math.atan2(pos[k + 2], pos[k]);
+        const yn = pos[k + 1] / d;
+        const jag = 1
+          + 0.16 * Math.sin(ang * 5 + jagSeed + yn * 4)
+          + 0.11 * Math.sin(ang * 9 + jagSeed * 1.7 - yn * 7)
+          + 0.07 * Math.sin(ang * 3 - jagSeed * 2.3 + yn * 11);
+        pos[k] *= jag;
+        pos[k + 1] *= 1 + 0.10 * Math.sin(ang * 7 + jagSeed * 3.1);
+        pos[k + 2] *= jag;
+      }
+      blob.updateVerticesData('position', pos);
+
+      // Dark core — the leaf cards over it carry the lit foliage surface
+      const vCount = pos.length / 3;
+      const cols = new Float32Array(vCount * 4);
+      for (let k = 0; k < vCount; k++) {
+        const t = (0.75 + 0.5 * Math.max(0, pos[k * 3 + 1] / d)) * 0.55;
+        cols[k * 4] = Math.min(1, bushCol.r * t);
+        cols[k * 4 + 1] = Math.min(1, bushCol.g * t);
+        cols[k * 4 + 2] = Math.min(1, bushCol.b * t);
+        cols[k * 4 + 3] = 1;
+      }
+      blob.setVerticesData('color', cols);
+
+      const bx = p.x + (j === 0 ? 0 : rng(-0.45, 0.45));
+      const bz = p.z + (j === 0 ? 0 : rng(-0.45, 0.45));
+      const by = getTerrainHeight(bx, bz);
+      blob.scaling.set(1, rng(0.6, 0.8), 1); // squash into a shrub
+      blob.rotation.y = rng(0, Math.PI * 2);
+      blob.position.set(bx, by + d * rng(0.2, 0.38), bz);
+      blob.bakeCurrentTransformIntoVertices();
+      blobMeshes.push(blob);
+    }
+
+    // Leaf cards over the bush volume — the blobs are hidden shadow proxies,
+    // so the cards are the whole visible bush
+    const bushY = getTerrainHeight(p.x, p.z);
+    for (let c = 0; c < 16; c++) {
+      const card = MeshBuilder.CreatePlane('_bushCard', { size: rng(0.6, 0.95) }, scene);
+      const az2 = rng(0, Math.PI * 2);
+      const el2 = Math.acos(rng(-0.3, 1)); // upper-biased
+      const dir2 = new Vector3(
+        Math.sin(el2) * Math.cos(az2), Math.cos(el2), Math.sin(el2) * Math.sin(az2));
+      card.rotationQuaternion = new Quaternion();
+      Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), dir2, card.rotationQuaternion);
+      Quaternion.RotationAxis(dir2, rng(0, Math.PI * 2))
+        .multiplyToRef(card.rotationQuaternion, card.rotationQuaternion);
+      const rr = rng(0.15, 0.65);
+      card.position.set(
+        p.x + dir2.x * rr, bushY + 0.3 + dir2.y * rr * 0.55, p.z + dir2.z * rr);
+      const tc = rng(0.9, 1.4);
+      const cc = new Float32Array(4 * 4);
+      for (let vi = 0; vi < 4; vi++) {
+        cc[vi * 4] = Math.min(1, bushCol.r * tc + 0.06);
+        cc[vi * 4 + 1] = Math.min(1, bushCol.g * tc + 0.06);
+        cc[vi * 4 + 2] = Math.min(1, bushCol.b * tc + 0.06);
+        cc[vi * 4 + 3] = 1;
+      }
+      card.setVerticesData('color', cc);
+      card.bakeCurrentTransformIntoVertices();
+      bushCardMeshes.push(card);
+    }
+    placed++;
+  }
+
+  if (bushCardMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(bushCardMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedBushCards';
+    merged.isPickable = false;
+    merged.material = makeCardMaterial(scene, 'bushCardMat', getLeafCardTexture(scene));
+    merged.freezeWorldMatrix();
+    addFogDepthMesh(merged);
+  }
+
+  if (blobMeshes.length > 0) {
+    const merged = Mesh.MergeMeshes(blobMeshes, true, true, undefined, false, true);
+    merged.name = 'mergedBushes';
+    merged.isPickable = false; // camera scene-raycasts pay per TRIANGLE
+    const bushMat = new StandardMaterial('bushMat', scene);
+    bushMat.diffuseColor = new Color3(1, 1, 1); // vertex colors carry the hue
+    bushMat.specularColor = new Color3(0.02, 0.02, 0.02);
+    merged.material = bushMat;
+    merged.convertToFlatShadedMesh();
+    // Hidden shadow proxy — the bush cards are the visible foliage
+    merged.layerMask = 0x40000000; // proxy-only bit: NEVER in any camera mask (0x20000000 is the 3rd-person player-model bit)
+    addShadowCaster(merged);
+    merged.freezeWorldMatrix();
+  }
+}
+
+/**
+ * Grass tufts — a single 5-blade fan mesh drawn thousands of times via thin
+ * instances (1 draw call total). Clumped into meadows by a smooth sine field
+ * so coverage reads as patches instead of uniform noise. No physics, no
+ * shadow casting; normals point up so blades shade like the ground.
+ */
+export function placeGrass(scene) {
+  if (CFG.SNOW_MODE) return; // buried under snow
+
+  // Template: 5 outward-leaning triangular blades
+  const BLADES = 5;
+  const positions = [];
+  const indices = [];
+  const normals = [];
+  const colors = [];
+  for (let b = 0; b < BLADES; b++) {
+    const a = (b / BLADES) * Math.PI * 2;
+    const lean = 0.16;
+    const bx = Math.cos(a), bz = Math.sin(a);
+    const base = positions.length / 3;
+    // two base verts + one tip, leaning outward
+    positions.push(
+      bx * 0.05 - bz * 0.045, 0, bz * 0.05 + bx * 0.045,
+      bx * 0.05 + bz * 0.045, 0, bz * 0.05 - bx * 0.045,
+      bx * lean, 0.32, bz * lean
+    );
+    // up normals: blades take the ground's lighting, no dark backfaces
+    normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
+    // dark base -> light tip (multiplied by per-instance color)
+    colors.push(0.55, 0.6, 0.45, 1, 0.55, 0.6, 0.45, 1, 0.95, 0.92, 0.7, 1);
+    indices.push(base, base + 1, base + 2);
+  }
+  const tuft = new Mesh('grassTufts', scene);
+  const vd = new VertexData();
+  vd.positions = positions;
+  vd.indices = indices;
+  vd.normals = normals;
+  vd.colors = colors;
+  vd.applyToMesh(tuft);
+
+  const mat = new StandardMaterial('grassTuftMat', scene);
+  mat.diffuseColor = new Color3(1, 1, 1);
+  mat.specularColor = new Color3(0, 0, 0);
+  mat.backFaceCulling = false;
+  tuft.material = mat;
+
+  const grid = getGrid();
+  const buildings = getBuildings();
+  const matrices = [];
+  const instColors = [];
+  const m = new Matrix();
+  const q = Quaternion.Identity();
+  const scl = new Vector3();
+  const pos = new Vector3();
+
+  // Building footprints as a lookup — interior floor cells are WALKABLE in
+  // the grid, so grid[x][z] alone lets grass grow through the floor slabs
+  const inBuilding = (gx, gz) => {
+    for (const b of buildings) {
+      if (gx >= b.x && gx < b.x + b.w && gz >= b.z && gz < b.z + b.h) return true;
+    }
+    return false;
+  };
+
+  for (let gx = 1; gx < CFG.GRID - 1; gx++) {
+    for (let gz = 1; gz < CFG.GRID - 1; gz++) {
+      if (!grid[gx][gz]) continue;
+      if (inBuilding(gx, gz)) continue;
+      // Meadow clumps: smooth patch field + per-cell thinning
+      const clump = 0.5 + 0.5 * Math.sin(gx * 0.31 + 1.7) * Math.sin(gz * 0.27 + 4.2);
+      if (clump < 0.4) continue;
+      const p = g2w(gx, gz);
+      const tufts = clump > 0.75 ? 3 : 2;
+      for (let t = 0; t < tufts; t++) {
+        const wx = p.x + rng(-0.9, 0.9);
+        const wz = p.z + rng(-0.9, 0.9);
+        const wy = getTerrainHeight(wx, wz);
+        if (wy < CFG.WATER_Y + 0.15) continue;
+        const s = rng(0.7, 1.5);
+        scl.set(s, s * rng(0.8, 1.3), s);
+        Quaternion.RotationYawPitchRollToRef(rng(0, Math.PI * 2), 0, 0, q);
+        pos.set(wx, wy - 0.01, wz);
+        Matrix.ComposeToRef(scl, q, pos, m);
+        const base = matrices.length;
+        matrices.length += 16;
+        m.copyToArray(matrices, base);
+        // per-tuft hue: earthy olive-green keyed to the clump field —
+        // vivid greens read as plastic against the muted ground texture
+        const g = rng(0.42, 0.6) * (0.85 + clump * 0.2);
+        instColors.push(rng(0.26, 0.36), g, rng(0.12, 0.2), 1);
+      }
+    }
+  }
+
+  if (matrices.length === 0) { tuft.dispose(); return; }
+  tuft.thinInstanceSetBuffer('matrix', new Float32Array(matrices), 16, true);
+  tuft.thinInstanceSetBuffer('color', new Float32Array(instColors), 4, true);
+  tuft.alwaysSelectAsActiveMesh = true; // one draw call — skip culling math
+  tuft.isPickable = false;
+  // No shadow receive: invisible at tuft scale, and shadow-sampling 100k+
+  // grass vertices' pixels costs real GPU time
+  tuft.freezeWorldMatrix();
+  console.log(`[GRASS] ${instColors.length / 4} tufts (1 draw call)`);
 }
 
 export function placeRocks(scene) {
