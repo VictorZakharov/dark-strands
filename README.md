@@ -1,6 +1,12 @@
 # Dark Strands
 
-A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (WebGPU/WebGL2). Explore a procedurally generated village of stone buildings connected by dirt roads, rolling hills, wind-swept forests, and wandering NPCs — with a full volumetric-fog/weather/water visual pipeline and ambient audio.
+**A real-time 3D rendering & engine tech demo built with Babylon.js 9 (WebGPU, with automatic WebGL2 fallback).**
+
+**▶ Live demo — https://darkst.netlify.app/** &nbsp;·&nbsp; desktop Chrome/Edge recommended for WebGPU; click to enter, WASD to move.
+
+Dark Strands is an interactive technical showcase — not a game you win. There are no objectives, score, or end state; it's a walkable sandbox built to exercise a from-scratch graphics and simulation stack: a procedurally generated village of stone buildings and dirt roads, rolling terrain, wind-swept [ez-tree](https://github.com/dgreenheck/ez-tree) forests, a Gerstner-wave ocean with planar reflections, volumetric height fog with god rays, a day/night cycle, a weather state machine, clustered torch lighting, Havok physics, and ambient audio. Explore it in first or third person, on desktop or mobile.
+
+> **Status:** Feature-complete — this is essentially its final form. Maintained for bug fixes only; not actively developing new features.
 
 ## Features
 
@@ -205,11 +211,18 @@ assets/
 
 **Textures**
 - grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg, fabric.png — [Poly Haven](https://polyhaven.com) (CC0)
-- Tree bark/leaf textures — embedded in `lib/eztree.bundle.js` from [ez-tree](https://github.com/dgreenheck/ez-tree) (MIT; bark textures sourced from Poly Haven / texturecan per the ez-tree README)
+- Tree bark/leaf textures — embedded in `lib/eztree.bundle.js`, distributed as part of [ez-tree](https://github.com/dgreenheck/ez-tree) and covered by its MIT license
 
 **Audio**
 - ambience.mp3 — looping outdoor ambience from the [ez-tree](https://github.com/dgreenheck/ez-tree) demo app (MIT)
 
 ## License
 
-Prototype / personal project. See individual asset licenses above.
+The original source code of Dark Strands is released under the **[MIT License](LICENSE)** — © 2026 Victor Zakharov. You're free to use, modify, and redistribute it; just keep the copyright notice.
+
+MIT covers *this project's code*. It does not relicense the third-party libraries and art assets the project bundles or redistributes — those keep their own (all MIT-compatible) licenses:
+
+- **Libraries** — Babylon.js core/loaders/materials (Apache-2.0), Babylon.js Havok (MIT), ez-tree, three.js, esbuild (MIT).
+- **Assets** — Poly Haven textures (CC0), three.js-example and ez-tree-demo models/audio (MIT), and `Fox.glb` (**CC-BY 4.0**, attribution required).
+
+Every dependency and asset, its license, and any required attribution are listed in **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)**. There are no copyleft or non-commercial components. The obligations are attribution-only: retaining the MIT copyright notices for the MIT-licensed libraries and assets, and the named CC-BY-4.0 credit for the fox — all of which that file provides.

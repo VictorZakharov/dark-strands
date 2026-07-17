@@ -2,6 +2,13 @@
   "name": "dark-strands-prototype",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "description": "A real-time 3D rendering & engine tech demo built with Babylon.js 9 (WebGPU/WebGL2).",
+  "homepage": "https://darkst.netlify.app/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VictorZakharov/dark-strands.git"
+  },
   "scripts": {
     "start": "npx serve . -p 3000 --no-clipboard",
     "dev": "npx serve . -p 3000 --no-clipboard",
