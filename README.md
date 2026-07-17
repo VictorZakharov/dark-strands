@@ -1,6 +1,6 @@
 # Dark Strands
 
-A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (WebGPU/WebGL2). Explore a procedurally generated village of stone buildings connected by dirt roads, rolling hills, forests, and wandering NPCs — with a full volumetric-fog/weather/water visual pipeline.
+A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (WebGPU/WebGL2). Explore a procedurally generated village of stone buildings connected by dirt roads, rolling hills, wind-swept forests, and wandering NPCs — with a full volumetric-fog/weather/water visual pipeline and ambient audio.
 
 ## Features
 
@@ -9,7 +9,8 @@ A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (We
 - **Procedural buildings** — Doorways, glass windows of varied shapes/sizes, flat/gable roofs, climbable stairs, 2nd floors, beds (sleep to morning)
 - **Terrain** — Gentle rolling hills with automatic flat zones under buildings; roads conform to the terrain
 - **Ocean & lakes** — Gerstner wave animated water with planar reflections, shoreline foam, rain ripples, Fresnel/specular/subsurface shading
-- **Forests** — Procedurally generated trees via [ez-tree](https://github.com/dgreenheck/ez-tree): oak/ash/aspen deciduous trees, pine groves (conifers cluster in stands), bush thickets — real branching geometry with alpha-tested leaf textures, thin-instanced (2 draw calls per species variant); plus ~7,000 instanced grass tufts in meadow clumps
+- **Forests** — Procedurally generated trees via [ez-tree](https://github.com/dgreenheck/ez-tree): oak/ash/aspen deciduous trees, pine groves, bush thickets — real branching geometry with alpha-tested leaf textures, thin-instanced (2 draw calls per species variant). Zoned placement (a road-distance field seeds single-species forest stands away from the roads, ornamental trees along the verges, and lone scatter between) with a per-instance autumn palette (green → gold → orange). Plus ~9,000 instanced grass tufts in meadow clumps and scattered white/blue/yellow wildflowers
+- **Wind** — Leaves, grass, and wildflowers sway in the wind via a vertex-displacement material plugin, with sway strength and direction driven by the live weather wind vector (a gentle idle in CLEAR, a full throw in STORM); pauses with the sim, speeds up under fast-forward
 
 ### Visual Effects (all toggleable from the main menu)
 - **Volumetric height fog + god rays** — analytic exponential fog post-process with screen-space sun shafts; building interiors stay fog-free from any viewpoint (the shader subtracts in-building ray segments)
@@ -27,7 +28,8 @@ A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (We
 
 ### Snow Biome
 - Toggle from main menu before entering the world
-- White snow ground, off-white tree leaves, frozen walkable ice replacing water
+- White snow ground; pines and bushes get frosted blue-white tints plus a cool ambient cast; grass and wildflowers stay buried
+- Frozen, walkable ice sheet replaces the water; drifting snowfall replaces rain
 - 50% chance of snow in menu scene
 
 ### NPCs
@@ -41,6 +43,8 @@ A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (We
 - **Doors** — Open/close with E key, smooth swing animation, collision in both states
 - **Flower picking** — Press E near flowers to collect them; they respawn far away after 15-30s (out of sight)
 - **Torch placement** — Pick up and place torches on walls, doors, and floors
+- **Stone throwing** — Pick up pebbles and hurl them (Havok dynamic bodies); glass windows shatter into a burst of tumbling thin-box shards that scatter, fall, and settle on the ground
+- **Rock placement** — Pick up and place/stack environment rocks; they drop under gravity and come to rest
 - **World-space hints** — `[E] Open/Close`, `[E] Talk`, `[E] Pick` labels track objects in 3D space
 - **Right-click zoom** — 3x zoom over 0.5 seconds with smooth animation
 - **Underwater** — Blue tint overlay, 40% movement speed, floaty jump/gravity
@@ -81,6 +85,9 @@ A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (We
 - Minimap — flowers shown in cyan, 2-story buildings in lighter brown
 - 5-slot hotbar with item icons and count badges
 - **In-game help overlay** — Shift+? opens a themed survival guide with 5 sections; freezes game while open
+
+### Audio
+- **Ambient loop** — Looping outdoor ambience starts on "Enter World" and pauses with the simulation (whenever the world is frozen)
 
 ## Getting Started
 
@@ -143,7 +150,8 @@ src/
   world/
     grid.js            2D collision grid, floor height, stair/road cells, walkability
     generator.js       Building placement along roads, road-facing doors, stairs, windows
-    roads.js           Village road network, dirt ribbon mesh, roadside torches
+    roadNetwork.js     Curve-first road spline network (Catmull-Rom, water/spawn avoidance)
+    roads.js           Dirt ribbon mesh from the spline (pinned edges/skirts), roadside torches
     terrainMeshes.js   Ground plane (displaced mesh) and Gerstner wave ocean shader
     walls.js           Building walls (VertexData, triplanar UV) and roofs
     floors.js          Ground floor slabs, mid-floor pieces, stair steps
@@ -151,6 +159,7 @@ src/
     staticPhysics.js   Havok static bodies for walls, floors, roofs, stairs
     vegetation.js      Tree/bush/rock/grass placement (grid, groves, exclusions), rocks, grass
     ezTreeFactory.js   ez-tree template generation + thin-instance spawning of trees/bushes
+    windSway.js        Wind-sway material plugin (world-space vertex displacement, GLSL+WGSL)
     terrain.js         Perlin noise terrain heightmap
     boundary.js        World-edge hex-grid shield effect
     torches.js         Torch core: mesh creation, materials, world placement, pickup
@@ -176,23 +185,30 @@ src/
     hud.js             FPS counter, minimap canvas (cached base layer), camera mode label
     npcAI.js           NPC wandering behavior, soldier dialogue (100 lines)
     projectiles.js     Stone throwing with Havok dynamic bodies
+    audio.js           Ambient outdoor audio loop (pauses with the sim)
     menu.js            Procedural campfire menu scene with ParticleHelper fire
   utils/
     helpers.js         Grid/world coordinate conversion, RNG
 assets/
-  models/              Soldier.glb, Fox.glb, Flower.glb, Horse.glb
-  textures/            grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg
+  models/              Soldier.glb, Fox.glb, Flower.glb
+    eztree/            grass.glb + grass.jpg, flower_white/blue/yellow.glb (ez-tree demo)
+  textures/            grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg, fabric.png
+  sounds/              ambience.mp3 (looping outdoor ambience)
 ```
 
 ## Asset Credits
 
 **Models**
-- Soldier.glb, Horse.glb, Flower.glb — [Three.js examples](https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf) (MIT)
+- Soldier.glb, Flower.glb — [Three.js examples](https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf) (MIT)
 - Fox.glb — [Khronos glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) (CC-BY 4.0)
+- Grass clump + white/blue/yellow wildflowers (`assets/models/eztree/`) — from the [ez-tree](https://github.com/dgreenheck/ez-tree) demo app (MIT)
 
 **Textures**
-- grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg — [Poly Haven](https://polyhaven.com) (CC0)
+- grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg, fabric.png — [Poly Haven](https://polyhaven.com) (CC0)
 - Tree bark/leaf textures — embedded in `lib/eztree.bundle.js` from [ez-tree](https://github.com/dgreenheck/ez-tree) (MIT; bark textures sourced from Poly Haven / texturecan per the ez-tree README)
+
+**Audio**
+- ambience.mp3 — looping outdoor ambience from the [ez-tree](https://github.com/dgreenheck/ez-tree) demo app (MIT)
 
 ## License
 
