@@ -40,9 +40,85 @@ export const CFG = {
   DAY_SEC: 120,
 
   // Vegetation
-  TREES: 80,
+  TREES: 140,
   ROCKS: 50,
-  BUSHES: 90,            // walk-through shrubs (merged, 1 draw call)
+  BUSHES: 100,           // walk-through shrubs (thin-instanced ez-tree bushes)
+
+  // ez-tree generated vegetation (trees + bushes). Each variant is generated
+  // ONCE at world-gen (template mesh pair: branches + leaves) and placed via
+  // thin instances — 2 draw calls per variant regardless of count.
+  EZTREE: {
+    // Per-category tessellation budget, applied to each preset BEFORE
+    // generate() (Math.min against the preset's own branch.sections /
+    // branch.segments arrays, indexed by recursion level 0-3).
+    // Raw ez-tree 1.1.0 presets total ~2.31M visible tris for 80 trees +
+    // 90 bushes (branch TUBES dominate — raw Bush 3 is 13.7k branch tris
+    // for a 1u shrub), and thin instances have no per-instance culling, so
+    // the whole batch also re-runs in the sun shadow map (every frame on
+    // WebGPU), the fog depth RTT and the water mirror. These caps bring
+    // the main pass to ~1.18M tris measured.
+    // leafMult scales leaves-per-terminal-branch; the factory compensates
+    // leaf size by 1/sqrt(leafMult) so canopy coverage holds. Lower the
+    // caps/leafMult further for weaker GPUs.
+    DETAIL: {
+      leafy: { sections: [8, 5, 3, 2], segments: [8, 5, 3, 3], leafMult: 0.7 },
+      pine:  { sections: [8, 5, 3, 2], segments: [8, 4, 3, 3], leafMult: 0.8 },
+      bush:  { sections: [3, 3, 2, 2], segments: [4, 3, 3, 3], leafMult: 0.8 },
+    },
+    SINK: 0.35,            // trunk-base sink below the LOWEST sampled nearby
+                           // ground — ez-tree trunks are open-bottomed tubes,
+                           // so a rim above the rendered surface reads as a
+                           // floating notched trunk (0.1 was not enough where
+                           // the coarse ground lattice dips on slopes)
+    // Placement zoning (see vegetation.js placeTrees): single-species forest
+    // stands away from the roads + ornamental roadside trees + lone scatter
+    ZONING: {
+      PINE_FORESTS: 2,       // pine-only stands
+      LEAFY_FORESTS: 2,      // deciduous-only stands
+      FOREST_R: [8, 11],     // zone radius range, grid cells
+      FOREST_ROAD_DIST: 12,  // min BFS cells from any road to a zone CENTER
+      FOREST_SEPARATION: 22, // min cells between zone centers
+      ROADSIDE_SHARE: 0.15,  // fraction of CFG.TREES lining the road verges
+      SCATTERED_SHARE: 0.15, // fraction placed as lone trees; rest = forests
+    },
+    // Per-instance leaf tints (thin-instance 'color' buffer on the leaves
+    // mesh; multiplies the leaf texture on top of the preset tint). Channels
+    // >1 are legal in the shader — that's what pushes the green-leaning leaf
+    // textures into vivid autumn yellow/orange. Verified live on WebGPU.
+    // { c: [r,g,b], w: pick weight }; every pick also gets 0.85-1.1
+    // uniform brightness jitter so same-tint neighbors don't twin.
+    TINTS: {
+      leafy: [
+        { c: [1, 1, 1],          w: 5 },   // preset green
+        { c: [1.25, 1.05, 0.55], w: 2 },   // late-summer yellow-green
+        { c: [2.1, 1.0, 0.28],   w: 2 },   // golden yellow
+        { c: [2.4, 0.65, 0.16],  w: 1.5 }, // orange
+      ],
+      pine: [
+        { c: [1, 1, 1],          w: 3 },   // preset green
+        { c: [0.82, 0.9, 0.85],  w: 1 },   // cool blue-green
+        { c: [1.12, 1.08, 0.9],  w: 1 },   // warm light green
+      ],
+      bush: [
+        { c: [1, 1, 1],          w: 4 },   // preset green
+        { c: [1.3, 1.05, 0.5],   w: 1 },   // yellowing shrub
+      ],
+    },
+    // { preset (ez-tree name), category, h: [minH, maxH] world-unit target
+    //   height range, weight: rng pick weight within its category }
+    VARIANTS: [
+      { id: 'oakMedium',   preset: 'Oak Medium',   category: 'leafy', h: [7, 10],    weight: 3 },
+      { id: 'oakLarge',    preset: 'Oak Large',    category: 'leafy', h: [9, 12],    weight: 1 },
+      { id: 'ashMedium',   preset: 'Ash Medium',   category: 'leafy', h: [7, 10],    weight: 2 },
+      { id: 'aspenMedium', preset: 'Aspen Medium', category: 'leafy', h: [8, 11],    weight: 2 },
+      { id: 'pineSmall',   preset: 'Pine Small',   category: 'pine',  h: [6, 8],     weight: 2 },
+      { id: 'pineMedium',  preset: 'Pine Medium',  category: 'pine',  h: [8, 11],    weight: 2 },
+      { id: 'pineLarge',   preset: 'Pine Large',   category: 'pine',  h: [10, 13],   weight: 1 },
+      { id: 'bush1',       preset: 'Bush 1',       category: 'bush',  h: [1.0, 1.6], weight: 2 },
+      { id: 'bush2',       preset: 'Bush 2',       category: 'bush',  h: [1.0, 1.6], weight: 2 },
+      { id: 'bush3',       preset: 'Bush 3',       category: 'bush',  h: [0.9, 1.4], weight: 1 },
+    ],
+  },
 
   // Stone pickup & throwing
   ROCK_PICK_DIST: 2.5,

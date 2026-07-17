@@ -9,7 +9,7 @@ A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (We
 - **Procedural buildings** — Doorways, glass windows of varied shapes/sizes, flat/gable roofs, climbable stairs, 2nd floors, beds (sleep to morning)
 - **Terrain** — Gentle rolling hills with automatic flat zones under buildings; roads conform to the terrain
 - **Ocean & lakes** — Gerstner wave animated water with planar reflections, shoreline foam, rain ripples, Fresnel/specular/subsurface shading
-- **Forests** — Card-based foliage: deciduous trees with branching trunks and leaf-card crowns, fir groves (conifers cluster in stands) with needle-spray branches, bushes with woody stems, ~7,000 instanced grass tufts in meadow clumps
+- **Forests** — Procedurally generated trees via [ez-tree](https://github.com/dgreenheck/ez-tree): oak/ash/aspen deciduous trees, pine groves (conifers cluster in stands), bush thickets — real branching geometry with alpha-tested leaf textures, thin-instanced (2 draw calls per species variant); plus ~7,000 instanced grass tufts in meadow clumps
 
 ### Visual Effects (all toggleable from the main menu)
 - **Volumetric height fog + god rays** — analytic exponential fog post-process with screen-space sun shafts; building interiors stay fog-free from any viewpoint (the shader subtracts in-building ray segments)
@@ -124,8 +124,9 @@ Open http://localhost:3000 in your browser and click to play.
 - **Babylon.js 9.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`
 - **WebGPU** engine with automatic WebGL2 fallback (`?webgl` URL param forces WebGL2)
 - **Babylon.js Havok** (`@babylonjs/havok`) — Havok WASM physics engine via Babylon.js v2 physics plugin
+- **ez-tree** (`@dgreenheck/ez-tree` + `three` peer dep) pre-bundled via esbuild into `lib/eztree.bundle.js` with bark/leaf textures embedded as data URIs — generates tree/bush geometry at world-gen time; three.js never renders (Babylon consumes the raw vertex arrays)
 - Pure ES modules for game code — `<script type="module" src="src/main.js">`
-- `npm install` required; `npm run bundle:babylon` to rebuild the Babylon.js bundle
+- `npm install` required; `npm run bundle:babylon` / `npm run bundle:eztree` to rebuild the bundles
 
 ## Project Structure
 
@@ -148,7 +149,8 @@ src/
     floors.js          Ground floor slabs, mid-floor pieces, stair steps
     windows.js         Glass panes (breakable) and wooden window frames
     staticPhysics.js   Havok static bodies for walls, floors, roofs, stairs
-    vegetation.js      Card-based trees (deciduous + fir groves), bushes, grass, rocks
+    vegetation.js      Tree/bush/rock/grass placement (grid, groves, exclusions), rocks, grass
+    ezTreeFactory.js   ez-tree template generation + thin-instance spawning of trees/bushes
     terrain.js         Perlin noise terrain heightmap
     boundary.js        World-edge hex-grid shield effect
     torches.js         Torch core: mesh creation, materials, world placement, pickup
@@ -190,6 +192,7 @@ assets/
 
 **Textures**
 - grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg — [Poly Haven](https://polyhaven.com) (CC0)
+- Tree bark/leaf textures — embedded in `lib/eztree.bundle.js` from [ez-tree](https://github.com/dgreenheck/ez-tree) (MIT; bark textures sourced from Poly Haven / texturecan per the ez-tree README)
 
 ## License
 

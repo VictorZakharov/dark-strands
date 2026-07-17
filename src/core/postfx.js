@@ -142,11 +142,10 @@ const DEPTH_PASS_MESHES = [
   // through a 2nd-floor window otherwise read sky depth, and the fog paints
   // ghost windows + fog lines onto the ceiling
   'mergedMidFloors',
-  // mergedCanopy (pine crown cones) is VISIBLE geometry again — it must
-  // write fog depth like any other silhouette-against-sky mesh. (While it
-  // was an invisible proxy it had to stay OUT or it fog-ghosted.)
-  'mergedCanopy',
-  'mergedTrunks', 'mergedRocks',
+  // ez-tree vegetation (ezTree_* branches/leaves) registers itself via
+  // addFogDepthMesh at world-gen — trees/bushes silhouette against the sky
+  // and MUST write fog depth.
+  'mergedRocks',
 ];
 
 // Dynamic meshes (NPCs, doors, torches, stones) opt into the fog depth pass —
@@ -194,8 +193,8 @@ export function setDepthRenderList(scene) {
     const planes = scene.frustumPlanes;
     for (const m of _depthSet) {
       if (!m.isEnabled() || !m.isVisible) continue;
-      // __fogDepthAlways: hidden-layer foliage proxies (pine cones) — they
-      // must write fog depth even though no camera renders them
+      // __fogDepthAlways: opt-out for hidden-layer meshes that must write
+      // fog depth even though no camera renders them (none at present)
       if (!m.__fogDepthAlways && cam && (m.layerMask & cam.layerMask) === 0) continue;
       if (planes && !m.isInFrustum(planes)) continue;
       scratch.push(m);

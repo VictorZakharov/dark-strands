@@ -12,6 +12,7 @@ import { buildWalls, buildRoofs, getWallMesh } from './world/walls.js';
 import { buildWindows } from './world/windows.js';
 import { createWorldPhysicsBodies } from './world/staticPhysics.js';
 import { placeTrees, placeRocks, placeBushes, placeGrass, getNearestPickableRock } from './world/vegetation.js';
+import { initEzTreeFactory } from './world/ezTreeFactory.js';
 import { placeTorches, placeDoorTorches, getNearestPickableTorch, initHeldTorch, updateHeldTorch, initTorchPreview, updateTorchPreview, initTorchLightPool, initTorchEmbers, updateTorchEmbers, updateDoorTorchPositions, addTorchShadowCaster, prewarmHeldTorch, hideHeldTorch, getTorchShadowGenerators } from './world/torches.js';
 import { placeDoors, updateDoors, getNearestDoor, getDoorPanelCenter } from './world/doors.js';
 import { placeFurniture, getNearestBed } from './world/furniture.js';
@@ -22,6 +23,7 @@ import { initControls, isGameActive, setGameStarted, getKeys, doInteract, doUseI
 import { isTouchDevice, getTouchMove, consumeTouchLook, consumeJump, consumeInteract, consumeUse, consumeSlotTap, setMobileGameActive, updateTouchProgress } from './systems/touch.js';
 import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH, isCycleEnabled, getSkyColor } from './systems/daynight.js';
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
+import { initAmbience, updateAmbience } from './systems/audio.js';
 import { updateFlowers, getNearestFlower, initFlowerPreview, updateFlowerPreview } from './world/flowers.js';
 import { getTerrainHeight } from './world/terrain.js';
 import { initHotbar, getSelectedSlot, getSlotItem, isPlacementMode, isAltMode, selectSlot } from './systems/hotbar.js';
@@ -282,6 +284,9 @@ function gameLoop(time) {
     // still but keep walking in place
     scene.animationsEnabled = speed !== 0;
 
+    // Ambient audio loop pauses with the sim
+    updateAmbience(speed === 0);
+
     // Particles (rain streaks, splashes, torch embers) also self-animate —
     // freeze their update speed so pause holds them mid-air instead of
     // letting rain keep falling (updateSpeed, not particlesEnabled: the
@@ -515,10 +520,14 @@ async function buildWorld() {
   await yieldFrame();
   buildWalls(scene);
   buildRoofs(scene);
+  // ez-tree template generation (dynamic import of the 4MB bundle) — MUST
+  // complete before placeTrees/placeBushes queue instances, and before
+  // buildWater/setDepthRenderList resolve vegetation meshes
+  await initEzTreeFactory(scene);
   placeTrees(scene);
   placeRocks(scene);
   placeBushes(scene);
-  placeGrass(scene);
+  await placeGrass(scene); // async: grass + flower GLB templates load here
   initTorchLightPool(scene); // must precede placeTorches — creates clustered container
   // Register floor meshes as torch shadow casters (blocks light between floors)
   const wallMesh = getWallMesh();
@@ -631,7 +640,7 @@ async function buildWorld() {
   const staticMeshNames = new Set([
     'ground', 'walls', 'mergedFloors', 'mergedStairs',
     'flatRoofs', 'slantRoofs', 'windowFrames', 'windowGlass',
-    'mergedTrunks', 'mergedCanopy', 'mergedRocks',
+    'mergedRocks', // ez-tree vegetation freezes itself in finalizeEz()
   ]);
   let frozenCount = 0;
   for (const mesh of scene.meshes) {
@@ -827,6 +836,8 @@ function setupPlayButton() {
     }
 
     const blocker = document.getElementById('blocker');
+    initAmbience(); // world ready — start the ambient loop (sticky activation
+                    // from the Enter World click authorizes playback)
     if (isTouchDevice) {
       if (blocker) blocker.style.display = 'none';
       setMobileGameActive(true);

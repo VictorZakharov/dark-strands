@@ -358,14 +358,19 @@ function setupWaterReflection(scene, mat) {
     const mirror = new MirrorTexture('waterRefl', { ratio: 0.5 }, scene, true);
     mirror.mirrorPlane = mirrorPlane;
     // Small list of big outdoor meshes — interiors/props aren't visible from open water
-    // NOTE: no hidden-layer proxies here (mergedCanopyCore/mergedBushes) —
-    // RTT renderLists IGNORE camera layer masks, so proxies would show in
-    // the mirror as solid blobs that don't exist in the world.
-    // mergedCanopy (pine crowns) is visible geometry and belongs here.
-    const names = ['ground', 'walls', 'flatRoofs', 'slantRoofs',
-                   'mergedTrunks', 'mergedCanopy', 'mergedLeafCards',
-                   'mergedNeedleCards', 'mergedBushCards', 'mergedRocks'];
+    // NOTE: no hidden-layer proxies here — RTT renderLists IGNORE camera
+    // layer masks, so proxies would show in the mirror as solid blobs that
+    // don't exist in the world. ez-tree vegetation (thin-instanced, visible
+    // geometry) is picked up by its 'ezTree_' name prefix.
+    const names = ['ground', 'walls', 'flatRoofs', 'slantRoofs', 'mergedRocks'];
     mirror.renderList = names.map(n => scene.getMeshByName(n)).filter(Boolean);
+    // Bushes excluded: 0.9-1.6u ground-hugging shrubs are invisible in the
+    // half-res blurred mirror (the old card system never reflected them),
+    // and the mirror re-renders its whole list every frame at refreshRate 1
+    for (const m of scene.meshes) {
+      if (m.name.startsWith('ezTree_') && m.isEnabled() &&
+          m.metadata?.ezCategory !== 'bush') mirror.renderList.push(m);
+    }
     // Skip frustum culling for these — culling against the REFLECTED camera
     // is marginal while the player moves, and meshes popping in/out of the
     // mirror read as objects flickering in the reflection. The list is a
@@ -403,17 +408,22 @@ export function buildWater(scene) {
     const size = CFG.GRID * CFG.CELL + 20;
 
     if (CFG.SNOW_MODE) {
-        // Frozen ice — flat mesh, opaque, no waves
+        // Frozen ice — flat mesh, opaque, no waves. Deliberately BLUER and
+        // glossier than the snow ground (0.867,0.894,0.910): the two used to
+        // be near-identical whites, and under the bloom/fog/tonemap pipeline
+        // the lake visually vanished into the snowfield.
         const water = MeshBuilder.CreateGround('water', {
             width: size, height: size,
         }, scene);
         water.position.y = CFG.WATER_Y;
         const mat = new StandardMaterial('iceMat', scene);
-        mat.diffuseColor = new Color3(0.722, 0.831, 0.890);
-        mat.specularColor = new Color3(0.3, 0.3, 0.3);
-        mat.specularPower = 64;
+        mat.diffuseColor = new Color3(0.55, 0.72, 0.86);
+        mat.specularColor = new Color3(0.5, 0.55, 0.6); // hard sun glint off the sheet
+        mat.specularPower = 96;
+        mat.emissiveColor = new Color3(0.03, 0.05, 0.08); // cold glow in shade
         water.material = mat;
         water.metadata = { isGround: true };
+        water.isPickable = false;
         enableShadowReceiving(water);
         return;
     }

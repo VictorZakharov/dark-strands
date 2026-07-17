@@ -1,7 +1,7 @@
-import { MeshBuilder, Mesh, StandardMaterial, Texture, DynamicTexture, Color3,
-         Vector3, Matrix, Quaternion, VertexData } from 'babylonjs';
+import { MeshBuilder, Mesh, StandardMaterial, Texture, Color3,
+         Vector3, Matrix, Quaternion, VertexData, SceneLoader } from 'babylonjs';
 import { CFG } from '../config.js';
-import { getGrid, setCell, markTreeCell, isRoadCell, isNearRoad } from './grid.js';
+import { getGrid, setCell, markTreeCell, isTreeCell, isRoadCell, isNearRoad } from './grid.js';
 import { getBuildings } from './generator.js';
 import { g2w, rng, rngInt } from '../utils/helpers.js';
 import { getTerrainHeight } from './terrain.js';
@@ -9,189 +9,14 @@ import { getPlayerState } from '../entities/player.js';
 import { getCamera } from '../core/scene.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 import { createStaticSphere, createStaticCylinder, hasLineOfSight, ROCK_COLLISION_GROUP } from '../core/physics.js';
-import { addFogDepthMesh } from '../core/postfx.js';
+import { spawnEz, finalizeEz } from './ezTreeFactory.js';
 
-let barkTex, leafTex, rockTex, leafCardTex, needleCardTex, needleMassTex;
+let rockTex;
 
 const rockColliders = [];
 
 // Tree positions for foliage collision checks
 const treePosData = []; // { x, z, ty, scale }
-
-function getBarkTexture(scene) {
-  if (!barkTex) {
-    barkTex = new Texture('./assets/textures/bark.jpg', scene);
-    barkTex.uScale = 1;
-    barkTex.vScale = 2;
-  }
-  return barkTex;
-}
-
-function getLeafTexture(scene) {
-  if (!leafTex) {
-    leafTex = new Texture('./assets/textures/grass.jpg', scene);
-    leafTex.uScale = 2;
-    leafTex.vScale = 2;
-  }
-  return leafTex;
-}
-
-/**
- * Procedural leaf-cluster card texture — dozens of overlapping leaf shapes
- * on a transparent background. Alpha-tested on the merged card mesh, so no
- * blend sorting is needed and depth writes stay correct.
- */
-function getLeafCardTexture(scene) {
-  if (leafCardTex) return leafCardTex;
-  const SZ = 256;
-  leafCardTex = new DynamicTexture('leafCards', SZ, scene, true);
-  const ctx = leafCardTex.getContext();
-  ctx.clearRect(0, 0, SZ, SZ);
-  // leaf = pointed ellipse; scatter clusters denser near the center
-  for (let i = 0; i < 170; i++) {
-    const cx = SZ / 2 + (Math.random() - 0.5) * SZ * 0.82;
-    const cy = SZ / 2 + (Math.random() - 0.5) * SZ * 0.82;
-    const r = Math.hypot(cx - SZ / 2, cy - SZ / 2) / (SZ / 2);
-    if (r > 0.92) continue;
-    const len = 16 + Math.random() * 18;
-    const wid = len * (0.38 + Math.random() * 0.2);
-    const ang = Math.random() * Math.PI * 2;
-    const shade = 0.75 + Math.random() * 0.45;
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(ang);
-    ctx.fillStyle = `rgba(${Math.floor(95 * shade)}, ${Math.floor(160 * shade)}, ${Math.floor(62 * shade)}, 1)`;
-    ctx.beginPath();
-    ctx.moveTo(0, -len / 2);
-    ctx.quadraticCurveTo(wid / 2, 0, 0, len / 2);
-    ctx.quadraticCurveTo(-wid / 2, 0, 0, -len / 2);
-    ctx.fill();
-    // central vein
-    ctx.strokeStyle = `rgba(${Math.floor(40 * shade)}, ${Math.floor(90 * shade)}, ${Math.floor(30 * shade)}, 0.9)`;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, -len / 2);
-    ctx.lineTo(0, len / 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-  leafCardTex.update();
-  leafCardTex.hasAlpha = true;
-  return leafCardTex;
-}
-
-/** Needle-cluster card texture for pine fringes — thin radiating needles. */
-function getNeedleCardTexture(scene) {
-  if (needleCardTex) return needleCardTex;
-  const SZ = 256;
-  needleCardTex = new DynamicTexture('needleCards', SZ, scene, true);
-  const ctx = needleCardTex.getContext();
-  ctx.clearRect(0, 0, SZ, SZ);
-  // DIRECTIONAL spray: all sprigs fan from the left edge toward +X, so a
-  // card rolled to point away from the trunk reads as a fir branch spray.
-  // CRITICAL for alpha-tested foliage: thin lines alone MIP-AVERAGE below
-  // the alpha cutoff and the cards vanish at any distance ("bare pole"
-  // trees) — each sprig first lays down a SOLID tapering backing mass that
-  // survives mipmapping, then draws needle detail over it.
-  for (let c = 0; c < 7; c++) {
-    const cx = 12 + Math.random() * 30;
-    const cy = 28 + Math.random() * (SZ - 56);
-    const twigAng = (Math.random() - 0.5) * 0.9; // fan around +X
-    const twigLen = 160 + Math.random() * 80;
-    const shade = 0.65 + Math.random() * 0.5;
-    const tx = Math.cos(twigAng), tyv = Math.sin(twigAng);
-    const px = -tyv, py = tx; // perpendicular
-
-    // solid feathered backing wedge (wide at base, pointed at tip)
-    ctx.fillStyle = `rgba(${Math.floor(24 * shade)}, ${Math.floor(72 * shade)}, ${Math.floor(38 * shade)}, 1)`;
-    ctx.beginPath();
-    ctx.moveTo(cx + px * 13, cy + py * 13);
-    for (let i = 1; i <= 6; i++) {
-      const f = i / 6;
-      const w = 13 * (1 - f * 0.85) * (0.8 + Math.random() * 0.5);
-      ctx.lineTo(cx + tx * twigLen * f + px * w, cy + tyv * twigLen * f + py * w);
-    }
-    for (let i = 6; i >= 0; i--) {
-      const f = i / 6;
-      const w = 13 * (1 - f * 0.85) * (0.8 + Math.random() * 0.5);
-      ctx.lineTo(cx + tx * twigLen * f - px * w, cy + tyv * twigLen * f - py * w);
-    }
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.strokeStyle = `rgba(${Math.floor(52 * shade)}, ${Math.floor(42 * shade)}, ${Math.floor(30 * shade)}, 1)`;
-    ctx.lineWidth = 3.0;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + tx * twigLen, cy + tyv * twigLen);
-    ctx.stroke();
-    ctx.strokeStyle = `rgba(${Math.floor(34 * shade)}, ${Math.floor(96 * shade)}, ${Math.floor(50 * shade)}, 1)`;
-    ctx.lineWidth = 3.5;
-    for (let i = 0; i < 30; i++) {
-      const f = 0.05 + (i / 30) * 0.95;
-      const bx = cx + tx * twigLen * f;
-      const by = cy + tyv * twigLen * f;
-      const side = i % 2 === 0 ? 1 : -1;
-      // needles sweep toward the twig tip and shorten near it
-      const na = twigAng + side * (1.05 - f * 0.3);
-      const nl = (16 + Math.random() * 6) * (1 - f * 0.45);
-      ctx.beginPath();
-      ctx.moveTo(bx, by);
-      ctx.lineTo(bx + Math.cos(na) * nl, by + Math.sin(na) * nl);
-      ctx.stroke();
-    }
-  }
-  needleCardTex.update();
-  needleCardTex.hasAlpha = true;
-  return needleCardTex;
-}
-
-/**
- * Opaque tileable needle-mass texture for the pine crown cones — smooth
- * vertex-colored cones read as plastic "green blobs" against the detailed
- * needle sprays; this makes the whole crown one visual language.
- */
-function getNeedleMassTexture(scene) {
-  if (needleMassTex) return needleMassTex;
-  const SZ = 256;
-  needleMassTex = new DynamicTexture('needleMass', SZ, scene, true);
-  const ctx = needleMassTex.getContext();
-  ctx.fillStyle = 'rgb(22, 40, 24)';
-  ctx.fillRect(0, 0, SZ, SZ);
-  for (let i = 0; i < 1500; i++) {
-    const x = Math.random() * SZ;
-    const y = Math.random() * SZ;
-    const a = Math.random() * Math.PI * 2;
-    const len = 7 + Math.random() * 8;
-    const shade = 0.55 + Math.random() * 0.75;
-    ctx.strokeStyle = `rgba(${Math.floor(38 * shade)}, ${Math.floor(84 * shade)}, ${Math.floor(46 * shade)}, 1)`;
-    ctx.lineWidth = 1.8;
-    // draw with wrap offsets so the tile is seamless at the edges
-    for (const ox of [0, -SZ, SZ]) {
-      for (const oy of [0, -SZ, SZ]) {
-        if ((ox !== 0 || oy !== 0) && x > 24 && x < SZ - 24 && y > 24 && y < SZ - 24) continue;
-        ctx.beginPath();
-        ctx.moveTo(x + ox, y + oy);
-        ctx.lineTo(x + ox + Math.cos(a) * len, y + oy + Math.sin(a) * len);
-        ctx.stroke();
-      }
-    }
-  }
-  needleMassTex.update();
-  return needleMassTex;
-}
-
-/** Shared material factory for alpha-tested foliage card meshes. */
-function makeCardMaterial(scene, name, texture) {
-  const mat = new StandardMaterial(name, scene);
-  mat.diffuseTexture = texture;
-  mat.useAlphaFromDiffuseTexture = false; // alpha TEST
-  mat.backFaceCulling = false;
-  mat.twoSidedLighting = true;
-  mat.emissiveColor = new Color3(0.06, 0.1, 0.04);
-  mat.specularColor = new Color3(0, 0, 0);
-  return mat;
-}
 
 export function getRockTexture(scene) {
   if (!rockTex) {
@@ -267,467 +92,207 @@ export function getRockSurfaceHeight(wx, wz, currentY) {
   return bestTop;
 }
 
+// ─── Zoned tree placement ────────────────────────────────────────────────────
+// The map is planted with intent instead of uniform scatter:
+//   - FORESTS: single-species stands (separate pine forests and leafy
+//     forests) around centers picked far from the roads,
+//   - ROADSIDE: sparse ornamental leafy trees lining the road verges,
+//   - SCATTERED: a few lone trees anywhere valid.
+
+// BFS distance-to-nearest-road-cell over the walk grid, in cells (4-connected,
+// ~Manhattan). Roads span the map so the flood reaches everywhere.
+function computeRoadDistField() {
+  const N = CFG.GRID;
+  const d = Array.from({ length: N }, () => new Array(N).fill(Infinity));
+  const q = [];
+  for (let x = 0; x < N; x++) {
+    for (let z = 0; z < N; z++) {
+      if (isRoadCell(x, z)) { d[x][z] = 0; q.push(x, z); }
+    }
+  }
+  for (let head = 0; head < q.length; head += 2) {
+    const x = q[head], z = q[head + 1], nd = d[x][z] + 1;
+    if (x + 1 < N && d[x + 1][z] > nd) { d[x + 1][z] = nd; q.push(x + 1, z); }
+    if (x - 1 >= 0 && d[x - 1][z] > nd) { d[x - 1][z] = nd; q.push(x - 1, z); }
+    if (z + 1 < N && d[x][z + 1] > nd) { d[x][z + 1] = nd; q.push(x, z + 1); }
+    if (z - 1 >= 0 && d[x][z - 1] > nd) { d[x][z - 1] = nd; q.push(x, z - 1); }
+  }
+  return d;
+}
+
+// Shared placement validity (bounds, walkable, off roads/verges, off the
+// spawn clearing, clear of buildings, on land)
+function treeCellOk(gx, gz, grid, buildings, clearance) {
+  if (gx < 1 || gx > CFG.GRID - 2 || gz < 1 || gz > CFG.GRID - 2) return false;
+  if (!grid[gx][gz]) return false;
+  if (isNearRoad(gx, gz, 1)) return false;
+  if (Math.abs(gx - CFG.GRID / 2) < 5 && Math.abs(gz - CFG.GRID / 2) < 5) return false;
+  for (const b of buildings) {
+    if (gx >= b.x - clearance && gx < b.x + b.w + clearance &&
+        gz >= b.z - clearance && gz < b.z + b.h + clearance) return false;
+  }
+  const p = g2w(gx, gz);
+  if (getTerrainHeight(p.x, p.z) < CFG.WATER_Y) return false;
+  return true;
+}
+
+// Trunk tubes are open-bottomed cylinders — the rim must sit below the LOWEST
+// ground the base can meet. Sample the analytic height around the trunk
+// (slopes), then sink further for the coarse rendered lattice, which can dip
+// a couple tenths below the analytic surface (measured on the road work).
+function trunkBaseY(x, z, sink) {
+  let y = getTerrainHeight(x, z);
+  y = Math.min(y, getTerrainHeight(x + 0.7, z), getTerrainHeight(x - 0.7, z),
+               getTerrainHeight(x, z + 0.7), getTerrainHeight(x, z - 0.7));
+  return y - sink;
+}
+
+// Forest zones live for the whole world build — placeBushes seeds undergrowth
+// around the same centers. { gx, gz, r (cells), type: 'pine'|'leafy' }
+let _forestZones = [];
+
+export function getForestZones() { return _forestZones; }
+
+function placeOneTree(gx, gz, category) {
+  const p = g2w(gx, gz);
+  setCell(gx, gz, false);
+  markTreeCell(gx, gz);
+  const ty = getTerrainHeight(p.x, p.z);
+  const spawned = spawnEz(category, p.x, trunkBaseY(p.x, p.z, CFG.EZTREE.SINK), p.z);
+  if (!spawned) return false;
+  const h = spawned.height;
+  treePosData.push({ x: p.x, z: p.z, ty, scale: h / 5 });
+  // Trunk physics: lower trunk only — the canopy has no collision
+  const trunkR = Math.min(0.45, Math.max(0.18, h * 0.04));
+  const colH = h * 0.45;
+  createStaticCylinder(trunkR, colH / 2, p.x, ty + colH / 2, p.z);
+  return true;
+}
+
 export function placeTrees(scene) {
   const grid = getGrid();
   const buildings = getBuildings();
+  const roadDist = computeRoadDistField();
+  const Z = CFG.EZTREE.ZONING;
 
-  // Shared materials (StandardMaterial for shadow compatibility)
-  const trunkMat = new StandardMaterial('trunkMat', scene);
-  trunkMat.diffuseTexture = getBarkTexture(scene);
-  trunkMat.specularColor = new Color3(0.02, 0.02, 0.02);
-
-  // Canopy color comes from per-vertex colors (per-tree hue variation baked
-  // into the single merged mesh) — the material just passes them through.
-  const leafMat = new StandardMaterial('leafMat', scene);
-  leafMat.diffuseColor = new Color3(1, 1, 1);
-  leafMat.specularColor = new Color3(0.02, 0.02, 0.02);
-
-  const trunkMeshes = [];
-  const coneMeshes = [];
-  const lobeMeshes = []; // leafy canopy volumes — INVISIBLE shadow proxies
-  const cardMeshes = []; // alpha-tested leaf cards — the visible foliage
-  const needleMeshes = []; // needle-cluster fringe cards on pine tiers
-  let placed = 0;
-
-  // Fir GROVES: conifers grow in single-species stands, so pines cluster
-  // around a few grove centers instead of scattering randomly (random
-  // placement reads fine for leafy trees, incoherent for firs).
-  const pineTarget = CFG.SNOW_MODE ? CFG.TREES : Math.floor(CFG.TREES * 0.45);
-  const groves = [];
-  for (let tries = 0; groves.length < 3 && tries < 80; tries++) {
-    const ggx = rngInt(8, CFG.GRID - 9);
-    const ggz = rngInt(8, CFG.GRID - 9);
-    if (!grid[ggx][ggz]) continue;
-    if (Math.abs(ggx - CFG.GRID / 2) < 8 && Math.abs(ggz - CFG.GRID / 2) < 8) continue;
-    const gp = g2w(ggx, ggz);
-    if (getTerrainHeight(gp.x, gp.z) < CFG.WATER_Y + 0.3) continue;
-    groves.push({ gx: ggx, gz: ggz });
-  }
-  let pinesPlaced = 0;
-
-  for (let i = 0; i < CFG.TREES * 4 && placed < CFG.TREES; i++) {
-    const wantPine = groves.length > 0 && pinesPlaced < pineTarget;
-    let gx, gz;
-    if (wantPine) {
-      const gv = groves[rngInt(0, groves.length - 1)];
-      gx = gv.gx + Math.round(rng(-4.5, 4.5));
-      gz = gv.gz + Math.round(rng(-4.5, 4.5));
-      if (gx < 1 || gx > CFG.GRID - 2 || gz < 1 || gz > CFG.GRID - 2) continue;
-    } else {
-      gx = rngInt(1, CFG.GRID - 2);
-      gz = rngInt(1, CFG.GRID - 2);
-    }
-
-    if (!grid[gx][gz]) continue;
-    if (isNearRoad(gx, gz, 1)) continue; // keep trees off roads and verges
-    if (Math.abs(gx - CFG.GRID / 2) < 5 && Math.abs(gz - CFG.GRID / 2) < 5) continue;
-
-    let tooClose = false;
-    for (const b of buildings) {
-      if (gx >= b.x - 2 && gx < b.x + b.w + 2 && gz >= b.z - 2 && gz < b.z + b.h + 2) {
-        tooClose = true;
-        break;
+  // Chebyshev spacing between placed trees (forests breathe, roadside stays
+  // sparse) — tracked per-cell across all three passes
+  const taken = new Set();
+  const spaced = (gx, gz, r) => {
+    for (let ox = -r; ox <= r; ox++) {
+      for (let oz = -r; oz <= r; oz++) {
+        if (taken.has((gx + ox) * 1000 + gz + oz)) return false;
       }
     }
-    if (tooClose) continue;
+    return true;
+  };
 
-    const p = g2w(gx, gz);
-    if (getTerrainHeight(p.x, p.z) < CFG.WATER_Y) continue;
-
-    setCell(gx, gz, false);
-    markTreeCell(gx, gz);
-
-    const ty = getTerrainHeight(p.x, p.z);
-    // Mixed forest: pines + leafy deciduous. Snow biome stays pine-only
-    // (bare/snowy deciduous would need their own look).
-    const leafy = !CFG.SNOW_MODE && !wantPine;
-    const trunkH = leafy ? rng(1.9, 2.9) : rng(1.5, 2.1);
-    const trunkRadBot = rng(0.16, 0.26);
-    const trunkRadTop = trunkRadBot * rng(0.5, 0.75);
-    const numCones = leafy ? rngInt(4, 6) : rngInt(5, 7); // firs: taller denser stack
-    // Pines stay modest: tall scales blew the crown stack up to 3x house
-    // height with metre-thick branch poles
-    const s = leafy ? rng(1.3, 2.3) : rng(1.3, 2.2);
-    // Firs grow STRAIGHT — lean also broke the base/upper trunk joint (the
-    // two segments pivot differently, leaving a visible kink mid-trunk)
-    const leanX = leafy ? rng(-0.05, 0.05) : 0;
-    const leanZ = leafy ? rng(-0.05, 0.05) : 0;
-
-    // Per-tree canopy tint — merged into one mesh via vertex colors
-    const treeCol = CFG.SNOW_MODE
-      ? { r: rng(0.76, 0.86), g: rng(0.80, 0.88), b: rng(0.84, 0.92) }
-      : leafy
-        ? { r: rng(0.20, 0.34), g: rng(0.45, 0.62), b: rng(0.12, 0.20) }
-        : { r: rng(0.55, 0.75), g: rng(0.75, 0.95), b: rng(0.6, 0.8) }; // firs: brightness multiplier over the needle-mass texture
-
-    // Trunk — create temp mesh, position/scale, bake transform for merging
-    const tMesh = MeshBuilder.CreateCylinder('_trunk', {
-      diameterTop: trunkRadTop * 2,
-      diameterBottom: trunkRadBot * 2,
-      height: trunkH,
-      tessellation: 6,
-    }, scene);
-    tMesh.scaling = new Vector3(s, s, s);
-    tMesh.rotation.set(leanX, 0, leanZ);
-    tMesh.position = new Vector3(p.x, ty + trunkH / 2 * s, p.z);
-    tMesh.bakeCurrentTransformIntoVertices();
-    trunkMeshes.push(tMesh);
-
-    if (leafy) {
-      // Deciduous: 2-4 branches off the upper trunk + jagged ellipsoid
-      // canopy lobes (same displacement technique as the bushes, scaled up)
-      const jagSeed = rng(0, Math.PI * 2);
-      const numBranches = rngInt(2, 4);
-      const lobeSpecs = [{ ax: 0, az: 0, ay: trunkH + rng(0.5, 0.9), d: rng(1.9, 2.6) }];
-
-      for (let j = 0; j < numBranches; j++) {
-        const az = rng(0, Math.PI * 2);
-        const el = rng(0.6, 1.1); // tilt from vertical
-        const len = rng(0.8, 1.3);
-        const attachY = trunkH * rng(0.6, 0.92);
-        const dir = new Vector3(Math.sin(el) * Math.cos(az), Math.cos(el), Math.sin(el) * Math.sin(az));
-
-        const br = MeshBuilder.CreateCylinder('_branch', {
-          diameterTop: 0.05, diameterBottom: 0.1, height: len, tessellation: 5,
-        }, scene);
-        br.rotationQuaternion = new Quaternion();
-        Quaternion.FromUnitVectorsToRef(Vector3.Up(), dir, br.rotationQuaternion);
-        br.scaling.set(s, s, s);
-        br.position.set(
-          p.x + (leanX * attachY + dir.x * len * 0.5) * s,
-          ty + (attachY + dir.y * len * 0.5) * s,
-          p.z + (leanZ * attachY + dir.z * len * 0.5) * s
-        );
-        br.bakeCurrentTransformIntoVertices();
-        trunkMeshes.push(br);
-
-        // A lobe at each branch tip
-        lobeSpecs.push({
-          ax: (leanX * attachY + dir.x * len) , az: (leanZ * attachY + dir.z * len),
-          ay: attachY + dir.y * len + 0.25, d: rng(1.1, 1.7),
-        });
-      }
-      // 1-2 filler lobes to round the crown
-      for (let j = 0, n = rngInt(1, 2); j < n; j++) {
-        lobeSpecs.push({ ax: rng(-0.7, 0.7), az: rng(-0.7, 0.7), ay: trunkH + rng(0.2, 0.7), d: rng(1.2, 1.8) });
-      }
-
-      for (const spec of lobeSpecs) {
-        const lobe = MeshBuilder.CreateSphere('_lobe', { diameter: spec.d, segments: 4 }, scene);
-        const pos = lobe.getVerticesData('position');
-        for (let k = 0; k < pos.length; k += 3) {
-          const ang = Math.atan2(pos[k + 2], pos[k]);
-          const yn = pos[k + 1] / spec.d;
-          const jag = 1
-            + 0.15 * Math.sin(ang * 5 + jagSeed + yn * 4)
-            + 0.10 * Math.sin(ang * 8 + jagSeed * 1.7 - yn * 6);
-          pos[k] *= jag;
-          pos[k + 1] *= 1 + 0.08 * Math.sin(ang * 6 + jagSeed * 2.9);
-          pos[k + 2] *= jag;
-        }
-        lobe.updateVerticesData('position', pos);
-
-        // Lobe tint: DARK — the lobe is the canopy's shadowed interior mass;
-        // the leaf cards over it carry the lit foliage look
-        const vCount = pos.length / 3;
-        const cols = new Float32Array(vCount * 4);
-        for (let k = 0; k < vCount; k++) {
-          const t2 = 0.38 + 0.3 * Math.max(0, pos[k * 3 + 1] / spec.d + 0.5) * 0.7;
-          cols[k * 4] = Math.min(1, treeCol.r * t2);
-          cols[k * 4 + 1] = Math.min(1, treeCol.g * t2);
-          cols[k * 4 + 2] = Math.min(1, treeCol.b * t2);
-          cols[k * 4 + 3] = 1;
-        }
-        lobe.setVerticesData('color', cols);
-
-        lobe.scaling.set(s, s * rng(0.72, 0.88), s);
-        lobe.rotation.y = rng(0, Math.PI * 2);
-        const lcx = p.x + spec.ax * s + rng(-0.08, 0.08);
-        const lcy = ty + spec.ay * s;
-        const lcz = p.z + spec.az * s + rng(-0.08, 0.08);
-        lobe.position.set(lcx, lcy, lcz);
-        lobe.bakeCurrentTransformIntoVertices();
-        lobeMeshes.push(lobe);
-
-        // Leaf cards: textured alpha-tested quads scattered over the lobe
-        // surface. The solid lobe stays underneath as the dark inner mass
-        // and the shadow caster; cards give the soft realistic silhouette.
-        // Card normals are radial (plane +Z rotated onto the surface dir),
-        // so the canopy shades like one soft sphere instead of hard quads.
-        // The cards ARE the canopy now (the lobe underneath is an invisible
-        // shadow proxy) — dense volumetric fill, not a surface shell.
-        // 50, not 70: alpha-test overdraw of a screen-filling crown is a
-        // real GPU cost when standing under a tree.
-        const cardN = 50;
-        for (let c = 0; c < cardN; c++) {
-          const card = MeshBuilder.CreatePlane('_leafCard', {
-            size: spec.d * s * rng(0.46, 0.62),
-          }, scene);
-          const az2 = rng(0, Math.PI * 2);
-          const el2 = Math.acos(rng(-0.85, 1)); // full sphere, light top bias
-          const dir2 = new Vector3(
-            Math.sin(el2) * Math.cos(az2), Math.cos(el2), Math.sin(el2) * Math.sin(az2));
-          card.rotationQuaternion = new Quaternion();
-          Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), dir2, card.rotationQuaternion);
-          Quaternion.RotationAxis(dir2, rng(0, Math.PI * 2))
-            .multiplyToRef(card.rotationQuaternion, card.rotationQuaternion);
-          const r2 = spec.d * 0.5 * rng(0.35, 0.95) * s; // fill the volume, not just the shell
-          card.position.set(
-            lcx + dir2.x * r2, lcy + dir2.y * r2 * 0.8, lcz + dir2.z * r2);
-
-          const tc = rng(0.8, 1.25);
-          const cc = new Float32Array(4 * 4);
-          for (let vi = 0; vi < 4; vi++) {
-            cc[vi * 4] = Math.min(1, treeCol.r * tc + 0.08);
-            cc[vi * 4 + 1] = Math.min(1, treeCol.g * tc + 0.08);
-            cc[vi * 4 + 2] = Math.min(1, treeCol.b * tc + 0.08);
-            cc[vi * 4 + 3] = 1;
-          }
-          card.setVerticesData('color', cc);
-          card.bakeCurrentTransformIntoVertices();
-          cardMeshes.push(card);
-        }
-      }
-
-      treePosData.push({ x: p.x, z: p.z, ty, scale: s });
-      createStaticCylinder(trunkRadBot * s, trunkH * s / 2, p.x, ty + trunkH * s / 2, p.z);
-      placed++;
-      continue;
+  // ---- forest zone centers: far from roads, apart from each other --------
+  _forestZones = [];
+  const wantZones = [];
+  for (let i = 0; i < Z.PINE_FORESTS; i++) wantZones.push('pine');
+  for (let i = 0; i < Z.LEAFY_FORESTS; i++) wantZones.push(CFG.SNOW_MODE ? 'pine' : 'leafy');
+  for (const type of wantZones) {
+    for (let tries = 0; tries < 300; tries++) {
+      const gx = rngInt(8, CFG.GRID - 9);
+      const gz = rngInt(8, CFG.GRID - 9);
+      if (roadDist[gx][gz] < Z.FOREST_ROAD_DIST) continue;
+      if (!treeCellOk(gx, gz, grid, buildings, 2)) continue;
+      if (_forestZones.some(f => Math.hypot(f.gx - gx, f.gz - gz) < Z.FOREST_SEPARATION)) continue;
+      _forestZones.push({ gx, gz, r: rngInt(Z.FOREST_R[0], Z.FOREST_R[1]), type });
+      break;
     }
+  }
 
-    // Canopy tiers — jagged lobed silhouettes + drooped edges + per-tier tint.
-    // Radial jitter is a deterministic function of vertex ANGLE so the cap
-    // ring and side ring (duplicated verts) displace identically — no tearing.
-    const jagSeed = rng(0, Math.PI * 2);
-    // Tiers chain upward with spacing < tier height so they always overlap —
-    // independent per-tier offsets left gaps and detached floating tops.
-    // Reference-fir proportions: the crown starts LOW (trunk mostly hidden)
-    // and is wide at the base, tapering to the tip.
-    let tierY = trunkH * 0.35;
-    for (let j = 0; j < numCones; j++) {
-      const frac = 1 - j / numCones;
-      const coneR = rng(1.05, 1.35) * (0.25 + 0.75 * frac);
-      const coneH = rng(0.9, 1.3);
-      const coneY = tierY;
-      tierY += coneH * rng(0.36, 0.46); // tight stack — denser crown
-      const cMesh = MeshBuilder.CreateCylinder('_cone', {
-        diameterTop: 0,
-        diameterBottom: Math.max(coneR, 0.25) * 2,
-        height: coneH,
-        tessellation: 7,
-      }, scene);
+  // ---- budgets ------------------------------------------------------------
+  const nRoadside = Math.round(CFG.TREES * Z.ROADSIDE_SHARE);
+  const nScattered = Math.round(CFG.TREES * Z.SCATTERED_SHARE);
+  const nForest = CFG.TREES - nRoadside - nScattered;
 
-      // Jag + droop the base ring by angle
-      const pos = cMesh.getVerticesData('position');
-      let minY = Infinity;
-      for (let k = 1; k < pos.length; k += 3) minY = Math.min(minY, pos[k]);
-      const droop = coneH * rng(0.10, 0.22);
-      for (let k = 0; k < pos.length; k += 3) {
-        if (pos[k + 1] < minY + 0.01) {
-          const x = pos[k], z = pos[k + 2];
-          const r = Math.sqrt(x * x + z * z);
-          if (r > 0.01) {
-            const ang = Math.atan2(z, x);
-            const jag = 1 + 0.17 * (Math.sin(ang * 3 + jagSeed) + Math.sin(ang * 5 + jagSeed * 1.7));
-            pos[k] = x * jag;
-            pos[k + 2] = z * jag;
-            pos[k + 1] -= droop * (0.5 + 0.5 * Math.sin(ang * 4 + jagSeed * 2.3));
-          }
-        }
-      }
-      cMesh.updateVerticesData('position', pos);
-
-      // Tier tint: darker at the bottom, brighter toward the tip
-      const shade = 0.72 + 0.38 * (j / Math.max(1, numCones - 1));
-      const vCount = pos.length / 3;
-      const cols = new Float32Array(vCount * 4);
-      for (let k = 0; k < vCount; k++) {
-        cols[k * 4] = Math.min(1, treeCol.r * shade + 0.03);
-        cols[k * 4 + 1] = Math.min(1, treeCol.g * shade + 0.03);
-        cols[k * 4 + 2] = Math.min(1, treeCol.b * shade + 0.03);
-        cols[k * 4 + 3] = 1;
-      }
-      cMesh.setVerticesData('color', cols);
-
-      cMesh.scaling = new Vector3(s, s, s);
-      cMesh.rotation.y = rng(0, Math.PI * 2); // break aligned tier silhouettes
-      cMesh.position = new Vector3(
-        p.x + leanX * coneY * s + rng(-0.06, 0.06) * s,
-        ty + coneY * s,
-        p.z + leanZ * coneY * s + rng(-0.06, 0.06) * s
-      );
-      cMesh.bakeCurrentTransformIntoVertices();
-      coneMeshes.push(cMesh);
-
-      // Branch whorl with needle sprays ON the branches: fir foliage grows
-      // from branches in horizontal sprays pointing away from the trunk —
-      // free-floating randomly-oriented cards read as debris in the air.
-      for (let b2 = 0; b2 < 5; b2++) {
-        const ab = rng(0, Math.PI * 2);
-        const blen = Math.min(Math.max(coneR, 0.3) * rng(0.6, 0.85), 0.85);
-        const branch = MeshBuilder.CreateCylinder('_pineBranch', {
-          diameterTop: 0.025, diameterBottom: 0.055, height: blen, tessellation: 4,
-        }, scene);
-        const dirB = new Vector3(Math.cos(ab) * 0.96, -0.22, Math.sin(ab) * 0.96).normalize();
-        branch.rotationQuaternion = new Quaternion();
-        Quaternion.FromUnitVectorsToRef(Vector3.Up(), dirB, branch.rotationQuaternion);
-        branch.scaling.set(s, s, s);
-        const bBaseY = ty + (coneY - coneH * 0.3) * s;
-        branch.position.set(
-          p.x + leanX * coneY * s + dirB.x * blen * 0.5 * s,
-          bBaseY,
-          p.z + leanZ * coneY * s + dirB.z * blen * 0.5 * s
-        );
-        branch.bakeCurrentTransformIntoVertices();
-        trunkMeshes.push(branch);
-
-        // 3 sprays per branch, lying nearly flat, texture +X rolled to point
-        // outward along the branch (the spray texture is directional)
-        const outX = Math.cos(ab), outZ = Math.sin(ab);
-        for (let c2 = 0; c2 < 3; c2++) {
-          const f2 = c2 === 0 ? rng(0.3, 0.55) : c2 === 1 ? rng(0.6, 0.85) : rng(0.9, 1.1);
-          const card = MeshBuilder.CreatePlane('_needleCard', {
-            size: blen * s * rng(1.1, 1.45),
-          }, scene);
-          // card basis: normal mostly up with outward droop tilt
-          const n2 = new Vector3(outX * rng(0.1, 0.35), 1, outZ * rng(0.1, 0.35)).normalize();
-          let bx = new Vector3(outX, 0, outZ);
-          bx = bx.subtract(n2.scale(Vector3.Dot(bx, n2))).normalize();
-          const by = Vector3.Cross(n2, bx);
-          card.rotationQuaternion = Quaternion.RotationQuaternionFromAxis(bx, by, n2);
-          card.position.set(
-            p.x + leanX * coneY * s + dirB.x * blen * f2 * s + outX * blen * 0.35 * s,
-            bBaseY + dirB.y * blen * f2 * s - rng(0, 0.06) * s,
-            p.z + leanZ * coneY * s + dirB.z * blen * f2 * s + outZ * blen * 0.35 * s
-          );
-          const tcn = rng(0.85, 1.2);
-          const ccn = new Float32Array(4 * 4);
-          for (let vi = 0; vi < 4; vi++) {
-            ccn[vi * 4] = Math.min(1, treeCol.r * tcn + 0.05);
-            ccn[vi * 4 + 1] = Math.min(1, treeCol.g * tcn + 0.05);
-            ccn[vi * 4 + 2] = Math.min(1, treeCol.b * tcn + 0.05);
-            ccn[vi * 4 + 3] = 1;
-          }
-          card.setVerticesData('color', ccn);
-          card.bakeCurrentTransformIntoVertices();
-          needleMeshes.push(card);
-        }
+  // ---- forests: dense single-species stands (uniform disc around center) --
+  if (_forestZones.length > 0) {
+    const perZone = Math.ceil(nForest / _forestZones.length);
+    for (const zone of _forestZones) {
+      let placed = 0;
+      for (let i = 0; i < perZone * 8 && placed < perZone; i++) {
+        const ang = rng(0, Math.PI * 2);
+        const rad = zone.r * Math.sqrt(rng(0, 1));
+        const gx = zone.gx + Math.round(Math.cos(ang) * rad);
+        const gz = zone.gz + Math.round(Math.sin(ang) * rad);
+        if (!treeCellOk(gx, gz, grid, buildings, 2)) continue;
+        if (roadDist[gx][gz] < Z.FOREST_ROAD_DIST - zone.r) continue; // forest never spills onto the road
+        if (!spaced(gx, gz, 1)) continue; // 1-cell gap: dense but not merged
+        if (placeOneTree(gx, gz, zone.type)) { taken.add(gx * 1000 + gz); placed++; }
       }
     }
+  }
 
-    // Upper trunk: the base trunk ends at trunkH but the needle crown stacks
-    // well past it — without this the top of the pine floats on nothing
-    const pineTopY = tierY;
-    if (pineTopY > trunkH + 0.3) {
-      const upperH = pineTopY - trunkH;
-      const upper = MeshBuilder.CreateCylinder('_trunkUpper', {
-        diameterTop: 0.05, diameterBottom: trunkRadTop * 2, height: upperH, tessellation: 6,
-      }, scene);
-      upper.scaling.set(s, s, s);
-      upper.rotation.set(leanX, 0, leanZ);
-      upper.position.set(
-        p.x + leanX * (trunkH + upperH / 2) * s,
-        ty + (trunkH + upperH / 2) * s,
-        p.z + leanZ * (trunkH + upperH / 2) * s
-      );
-      upper.bakeCurrentTransformIntoVertices();
-      trunkMeshes.push(upper);
+  // ---- roadside: sparse ornamental leafy trees lining the verges ----------
+  let roadsidePlaced = 0;
+  for (let i = 0; i < nRoadside * 30 && roadsidePlaced < nRoadside; i++) {
+    const gx = rngInt(1, CFG.GRID - 2);
+    const gz = rngInt(1, CFG.GRID - 2);
+    const d = roadDist[gx][gz];
+    if (d < 2 || d > 3) continue; // just off the verge, clearly "planted along the road"
+    if (!treeCellOk(gx, gz, grid, buildings, 2)) continue;
+    if (!spaced(gx, gz, 3)) continue; // avenue spacing, not a wall of trees
+    if (placeOneTree(gx, gz, CFG.SNOW_MODE ? 'pine' : 'leafy')) {
+      taken.add(gx * 1000 + gz);
+      roadsidePlaced++;
     }
-
-    treePosData.push({ x: p.x, z: p.z, ty, scale: s });
-    createStaticCylinder(trunkRadBot * s, trunkH * s / 2, p.x, ty + trunkH * s / 2, p.z);
-    placed++;
-    if (!leafy) pinesPlaced++;
   }
 
-  // Merge all trunks into 1 draw call
-  if (trunkMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(trunkMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedTrunks';
-    merged.material = trunkMat;
-    addShadowCaster(merged);
+  // ---- scattered: lone trees anywhere valid, clear of roads and forests ---
+  let scatteredPlaced = 0;
+  for (let i = 0; i < nScattered * 10 && scatteredPlaced < nScattered; i++) {
+    const gx = rngInt(1, CFG.GRID - 2);
+    const gz = rngInt(1, CFG.GRID - 2);
+    if (roadDist[gx][gz] < 4) continue;
+    if (!treeCellOk(gx, gz, grid, buildings, 2)) continue;
+    if (!spaced(gx, gz, 2)) continue;
+    const category = CFG.SNOW_MODE || rng(0, 1) < 0.3 ? 'pine' : 'leafy';
+    if (placeOneTree(gx, gz, category)) { taken.add(gx * 1000 + gz); scatteredPlaced++; }
   }
 
-  // Merge all canopy cones into 1 draw call
-  if (coneMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(coneMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedCanopy';
-    merged.isPickable = false; // interactions are physics-based; camera raycasts pay per triangle
-    // Needle-mass texture unifies the crown with the sprays — smooth
-    // vertex-colored cones read as plastic blobs next to needle detail
-    const pineMat = new StandardMaterial('pineCrownMat', scene);
-    pineMat.diffuseTexture = getNeedleMassTexture(scene);
-    pineMat.diffuseTexture.uScale = 3;
-    pineMat.diffuseTexture.vScale = 3;
-    pineMat.diffuseColor = new Color3(1, 1, 1); // vertex colors carry per-tree tint
-    pineMat.specularColor = new Color3(0.01, 0.01, 0.01);
-    merged.material = pineMat;
-    merged.convertToFlatShadedMesh();
-    // VISIBLE (v5): a real fir is a dense solid cone of foliage — the
-    // needle sprays alone read as sparse whorls on a bare pole. The jagged
-    // tier cones are the crown body; sprays add silhouette detail over it.
-    addShadowCaster(merged);
-    enableShadowReceiving(merged);
-  }
-
-  // Leafy canopy volumes: INVISIBLE shadow proxies. Hidden from every camera
-  // via layerMask (shadow maps ignore camera layer masks — same trick that
-  // hides the 1st-person player model while keeping its shadow), so the
-  // canopy still casts believable blob shadows while only cards are seen.
-  if (lobeMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(lobeMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedCanopyCore';
-    merged.isPickable = false; // invisible shadow proxy — never raycast it
-    merged.material = leafMat;
-    merged.convertToFlatShadedMesh();
-    merged.layerMask = 0x40000000; // proxy-only bit: NEVER in any camera mask (0x20000000 is the 3rd-person player-model bit)
-    addShadowCaster(merged);
-    merged.freezeWorldMatrix();
-  }
-
-  // Merge all leaf cards into 1 alpha-tested draw call. Cards do NOT cast
-  // shadows — untested alpha would shadow as solid quads; the lobes cast.
-  if (cardMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(cardMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedLeafCards';
-    // ~40k alpha-tested triangles — letting the camera-collision raycasts
-    // test these cost ~30ms/frame (the 50 -> 23 FPS regression)
-    merged.isPickable = false;
-    merged.material = makeCardMaterial(scene, 'leafCardMat', getLeafCardTexture(scene));
-    merged.freezeWorldMatrix();
-    // MUST write fog depth: without it the volumetric fog samples the SKY
-    // behind the cards and fogs entire crowns into translucent ghosts (the
-    // old opaque lobes used to provide this depth before they went hidden)
-    addFogDepthMesh(merged);
-  }
-
-  // Pine needle fringe cards — same treatment, needle texture
-  if (needleMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(needleMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedNeedleCards';
-    merged.isPickable = false;
-    merged.material = makeCardMaterial(scene, 'needleCardMat', getNeedleCardTexture(scene));
-    merged.freezeWorldMatrix();
-    addFogDepthMesh(merged);
-  }
+  // Upload thin-instance buffers + register shadow/fog-depth per variant
+  finalizeEz('leafy');
+  finalizeEz('pine');
 }
 
 /**
- * Low-poly bushes — 1-3 squashed jagged spheres per bush, per-bush hue via
- * vertex colors, all merged into a single flat-shaded mesh (1 draw call).
+ * Bushes — ez-tree Bush presets, thin-instanced (2 draw calls per variant).
  * Bushes don't block the grid or have physics — the player walks through.
  */
 export function placeBushes(scene) {
   const grid = getGrid();
   const buildings = getBuildings();
-  const blobMeshes = [];
-  const bushCardMeshes = []; // leaf cards over the dark cores
-  const twigMeshes = []; // bark twigs fanning out of the ground
+  const roadDist = computeRoadDistField();
   let placed = 0;
 
-  for (let i = 0; i < CFG.BUSHES * 3 && placed < CFG.BUSHES; i++) {
-    const gx = rngInt(1, CFG.GRID - 2);
-    const gz = rngInt(1, CFG.GRID - 2);
+  for (let i = 0; i < CFG.BUSHES * 6 && placed < CFG.BUSHES; i++) {
+    let gx, gz;
+    // Bushes read as undergrowth, not scatter: most hug the forest edges,
+    // some line the road verges, the rest go anywhere valid.
+    const roll = rng(0, 1);
+    if (roll < 0.55 && _forestZones.length > 0) {
+      // Forest edge ring (just inside to well outside the tree line)
+      const zone = _forestZones[rngInt(0, _forestZones.length - 1)];
+      const ang = rng(0, Math.PI * 2);
+      const rad = zone.r * rng(0.8, 1.6);
+      gx = zone.gx + Math.round(Math.cos(ang) * rad);
+      gz = zone.gz + Math.round(Math.sin(ang) * rad);
+      if (gx < 1 || gx > CFG.GRID - 2 || gz < 1 || gz > CFG.GRID - 2) continue;
+    } else if (roll < 0.75) {
+      // Road verge band
+      gx = rngInt(1, CFG.GRID - 2);
+      gz = rngInt(1, CFG.GRID - 2);
+      const d = roadDist[gx][gz];
+      if (d < 2 || d > 4) continue;
+    } else {
+      gx = rngInt(1, CFG.GRID - 2);
+      gz = rngInt(1, CFG.GRID - 2);
+    }
+
     if (!grid[gx][gz]) continue;
     if (isNearRoad(gx, gz, 1)) continue; // clear of the road and its curved verges
     if (Math.abs(gx - CFG.GRID / 2) < 4 && Math.abs(gz - CFG.GRID / 2) < 4) continue;
@@ -744,138 +309,16 @@ export function placeBushes(scene) {
     const p = g2w(gx, gz);
     if (getTerrainHeight(p.x, p.z) < CFG.WATER_Y + 0.2) continue;
 
-    const bushCol = CFG.SNOW_MODE
-      ? { r: rng(0.72, 0.84), g: rng(0.78, 0.88), b: rng(0.82, 0.92) }
-      : { r: rng(0.12, 0.24), g: rng(0.35, 0.55), b: rng(0.10, 0.22) };
-    const numBlobs = rngInt(3, 5);
-    const jagSeed = rng(0, Math.PI * 2);
+    // Bushes place after rocks — never grow one inside a boulder
+    if (collidesWithRock(p.x, p.z, 0.7)) continue;
 
-    for (let j = 0; j < numBlobs; j++) {
-      const d = rng(0.45, 0.85);
-      const blob = MeshBuilder.CreateSphere('_bush', { diameter: d, segments: 4 }, scene);
-
-      // Leafy lobes: multi-frequency radial displacement. Deterministic in
-      // (angle, y) with INTEGER angular frequencies so the duplicated seam
-      // ring (ang = ±PI) displaces identically — no tearing. A single low
-      // frequency here reads as a faceted rock, not foliage.
-      const pos = blob.getVerticesData('position');
-      for (let k = 0; k < pos.length; k += 3) {
-        const ang = Math.atan2(pos[k + 2], pos[k]);
-        const yn = pos[k + 1] / d;
-        const jag = 1
-          + 0.16 * Math.sin(ang * 5 + jagSeed + yn * 4)
-          + 0.11 * Math.sin(ang * 9 + jagSeed * 1.7 - yn * 7)
-          + 0.07 * Math.sin(ang * 3 - jagSeed * 2.3 + yn * 11);
-        pos[k] *= jag;
-        pos[k + 1] *= 1 + 0.10 * Math.sin(ang * 7 + jagSeed * 3.1);
-        pos[k + 2] *= jag;
-      }
-      blob.updateVerticesData('position', pos);
-
-      // Dark core — the leaf cards over it carry the lit foliage surface
-      const vCount = pos.length / 3;
-      const cols = new Float32Array(vCount * 4);
-      for (let k = 0; k < vCount; k++) {
-        const t = (0.75 + 0.5 * Math.max(0, pos[k * 3 + 1] / d)) * 0.55;
-        cols[k * 4] = Math.min(1, bushCol.r * t);
-        cols[k * 4 + 1] = Math.min(1, bushCol.g * t);
-        cols[k * 4 + 2] = Math.min(1, bushCol.b * t);
-        cols[k * 4 + 3] = 1;
-      }
-      blob.setVerticesData('color', cols);
-
-      const bx = p.x + (j === 0 ? 0 : rng(-0.45, 0.45));
-      const bz = p.z + (j === 0 ? 0 : rng(-0.45, 0.45));
-      const by = getTerrainHeight(bx, bz);
-      blob.scaling.set(1, rng(0.6, 0.8), 1); // squash into a shrub
-      blob.rotation.y = rng(0, Math.PI * 2);
-      blob.position.set(bx, by + d * rng(0.2, 0.38), bz);
-      blob.bakeCurrentTransformIntoVertices();
-      blobMeshes.push(blob);
-    }
-
-    // Twigs: thin bark branches fanning up-and-out of the ground — a bush is
-    // a cluster of woody stems, not a floating ball of leaves
-    const bushY = getTerrainHeight(p.x, p.z);
-    for (let t2 = 0, nT = rngInt(3, 5); t2 < nT; t2++) {
-      const at = rng(0, Math.PI * 2);
-      const tl = rng(0.5, 0.85);
-      const twig = MeshBuilder.CreateCylinder('_bushTwig', {
-        diameterTop: 0.02, diameterBottom: 0.05, height: tl, tessellation: 4,
-      }, scene);
-      const dirT = new Vector3(Math.cos(at) * rng(0.3, 0.6), 1, Math.sin(at) * rng(0.3, 0.6)).normalize();
-      twig.rotationQuaternion = new Quaternion();
-      Quaternion.FromUnitVectorsToRef(Vector3.Up(), dirT, twig.rotationQuaternion);
-      twig.position.set(
-        p.x + rng(-0.15, 0.15) + dirT.x * tl * 0.5,
-        bushY + dirT.y * tl * 0.5,
-        p.z + rng(-0.15, 0.15) + dirT.z * tl * 0.5
-      );
-      twig.bakeCurrentTransformIntoVertices();
-      twigMeshes.push(twig);
-    }
-    for (let c = 0; c < 16; c++) {
-      const card = MeshBuilder.CreatePlane('_bushCard', { size: rng(0.6, 0.95) }, scene);
-      const az2 = rng(0, Math.PI * 2);
-      const el2 = Math.acos(rng(-0.3, 1)); // upper-biased
-      const dir2 = new Vector3(
-        Math.sin(el2) * Math.cos(az2), Math.cos(el2), Math.sin(el2) * Math.sin(az2));
-      card.rotationQuaternion = new Quaternion();
-      Quaternion.FromUnitVectorsToRef(new Vector3(0, 0, 1), dir2, card.rotationQuaternion);
-      Quaternion.RotationAxis(dir2, rng(0, Math.PI * 2))
-        .multiplyToRef(card.rotationQuaternion, card.rotationQuaternion);
-      const rr = rng(0.15, 0.65);
-      card.position.set(
-        p.x + dir2.x * rr, bushY + 0.3 + dir2.y * rr * 0.55, p.z + dir2.z * rr);
-      const tc = rng(0.9, 1.4);
-      const cc = new Float32Array(4 * 4);
-      for (let vi = 0; vi < 4; vi++) {
-        cc[vi * 4] = Math.min(1, bushCol.r * tc + 0.06);
-        cc[vi * 4 + 1] = Math.min(1, bushCol.g * tc + 0.06);
-        cc[vi * 4 + 2] = Math.min(1, bushCol.b * tc + 0.06);
-        cc[vi * 4 + 3] = 1;
-      }
-      card.setVerticesData('color', cc);
-      card.bakeCurrentTransformIntoVertices();
-      bushCardMeshes.push(card);
-    }
+    // Shallower than trees, but still below the lowest nearby rendered ground
+    // — bush stems are open tubes too
+    spawnEz('bush', p.x, trunkBaseY(p.x, p.z, CFG.EZTREE.SINK * 0.6), p.z);
     placed++;
   }
 
-  if (bushCardMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(bushCardMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedBushCards';
-    merged.isPickable = false;
-    merged.material = makeCardMaterial(scene, 'bushCardMat', getLeafCardTexture(scene));
-    merged.freezeWorldMatrix();
-    addFogDepthMesh(merged);
-  }
-
-  if (twigMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(twigMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedBushTwigs';
-    merged.isPickable = false;
-    const twigMat = new StandardMaterial('bushTwigMat', scene);
-    twigMat.diffuseTexture = getBarkTexture(scene);
-    twigMat.specularColor = new Color3(0.02, 0.02, 0.02);
-    merged.material = twigMat;
-    merged.freezeWorldMatrix();
-  }
-
-  if (blobMeshes.length > 0) {
-    const merged = Mesh.MergeMeshes(blobMeshes, true, true, undefined, false, true);
-    merged.name = 'mergedBushes';
-    merged.isPickable = false; // camera scene-raycasts pay per TRIANGLE
-    const bushMat = new StandardMaterial('bushMat', scene);
-    bushMat.diffuseColor = new Color3(1, 1, 1); // vertex colors carry the hue
-    bushMat.specularColor = new Color3(0.02, 0.02, 0.02);
-    merged.material = bushMat;
-    merged.convertToFlatShadedMesh();
-    // Hidden shadow proxy — the bush cards are the visible foliage
-    merged.layerMask = 0x40000000; // proxy-only bit: NEVER in any camera mask (0x20000000 is the 3rd-person player-model bit)
-    addShadowCaster(merged);
-    merged.freezeWorldMatrix();
-  }
+  finalizeEz('bush');
 }
 
 /**
@@ -884,44 +327,56 @@ export function placeBushes(scene) {
  * so coverage reads as patches instead of uniform noise. No physics, no
  * shadow casting; normals point up so blades shade like the ground.
  */
-export function placeGrass(scene) {
+/** Loads a GLB from assets/models/eztree/, returns a single unparented mesh
+ *  (multi-mesh files get merged, materials preserved) with transforms baked,
+ *  plus its bounding height — ready to be a thin-instance template. */
+async function loadEzTemplate(scene, file) {
+  const res = await SceneLoader.ImportMeshAsync('', './assets/models/eztree/', file, scene);
+  const real = res.meshes.filter(m => m.getTotalVertices() > 0);
+  let tmpl;
+  if (real.length > 1) {
+    tmpl = Mesh.MergeMeshes(real, true, true, undefined, false, true);
+  } else {
+    tmpl = real[0];
+    tmpl.setParent(null);
+    tmpl.bakeCurrentTransformIntoVertices();
+  }
+  // dispose leftover empty transform nodes (gltf __root__ etc.)
+  for (const m of res.meshes) if (m !== tmpl && !m.isDisposed()) m.dispose();
+  tmpl.refreshBoundingInfo();
+  const bb = tmpl.getBoundingInfo().boundingBox;
+  return { tmpl, height: bb.maximum.y - bb.minimum.y };
+}
+
+export async function placeGrass(scene) {
   if (CFG.SNOW_MODE) return; // buried under snow
 
-  // Template: 5 outward-leaning triangular blades
-  const BLADES = 5;
-  const positions = [];
-  const indices = [];
-  const normals = [];
-  const colors = [];
-  for (let b = 0; b < BLADES; b++) {
-    const a = (b / BLADES) * Math.PI * 2;
-    const lean = 0.16;
-    const bx = Math.cos(a), bz = Math.sin(a);
-    const base = positions.length / 3;
-    // two base verts + one tip, leaning outward
-    positions.push(
-      bx * 0.05 - bz * 0.045, 0, bz * 0.05 + bx * 0.045,
-      bx * 0.05 + bz * 0.045, 0, bz * 0.05 - bx * 0.045,
-      bx * lean, 0.32, bz * lean
-    );
-    // up normals: blades take the ground's lighting, no dark backfaces
-    normals.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
-    // dark base -> light tip (multiplied by per-instance color)
-    colors.push(0.55, 0.6, 0.45, 1, 0.55, 0.6, 0.45, 1, 0.95, 0.92, 0.7, 1);
-    indices.push(base, base + 1, base + 2);
-  }
-  const tuft = new Mesh('grassTufts', scene);
-  const vd = new VertexData();
-  vd.positions = positions;
-  vd.indices = indices;
-  vd.normals = normals;
-  vd.colors = colors;
-  vd.applyToMesh(tuft);
+  // Grass clump model from the ez-tree demo app (MIT) — real blade geometry,
+  // not alpha cards, so no cutout/mip issues. One thin-instanced draw call.
+  const { tmpl: tuft, height: rawH } = await loadEzTemplate(scene, 'grass.glb');
+  tuft.name = 'grassTufts';
+  const norm = 0.58 / rawH; // world-unit clump height before per-instance jitter
+
+  // Straight-up normals: blades inherit the ground's lighting instead of
+  // going dark side-on at low sun angles (same trick the old tufts used)
+  const nVerts = tuft.getTotalVertices();
+  const upNormals = new Float32Array(nVerts * 3);
+  for (let i = 0; i < nVerts; i++) upNormals[i * 3 + 1] = 1;
+  tuft.setVerticesData('normal', upNormals);
 
   const mat = new StandardMaterial('grassTuftMat', scene);
-  mat.diffuseColor = new Color3(1, 1, 1);
+  const loadedTex = tuft.material && tuft.material.albedoTexture;
+  mat.diffuseTexture = loadedTex || new Texture('./assets/models/eztree/grass.jpg', scene);
+  // The clump is a few crossed CARDS — the blade shapes live in the texture's
+  // alpha channel (same recipe as the old foliage cards: alpha TEST, no blend)
+  mat.diffuseTexture.hasAlpha = true;
+  mat.useAlphaFromDiffuseTexture = false;
   mat.specularColor = new Color3(0, 0, 0);
+  mat.emissiveColor = new Color3(0.04, 0.07, 0.03); // never fully black in shade
   mat.backFaceCulling = false;
+  // NO twoSidedLighting: it flips the hand-set up-normals to DOWN on
+  // back-winding blades (near-black tufts). Culling off + up normals is
+  // exactly the old tuft recipe — both sides take the ground's lighting.
   tuft.material = mat;
 
   const grid = getGrid();
@@ -951,24 +406,24 @@ export function placeGrass(scene) {
       const clump = 0.5 + 0.5 * Math.sin(gx * 0.31 + 1.7) * Math.sin(gz * 0.27 + 4.2);
       if (clump < 0.4) continue;
       const p = g2w(gx, gz);
-      const tufts = clump > 0.75 ? 3 : 2;
+      const tufts = clump > 0.75 ? 4 : 3;
       for (let t = 0; t < tufts; t++) {
         const wx = p.x + rng(-0.9, 0.9);
         const wz = p.z + rng(-0.9, 0.9);
         const wy = getTerrainHeight(wx, wz);
         if (wy < CFG.WATER_Y + 0.15) continue;
-        const s = rng(0.7, 1.5);
+        const s = rng(0.7, 1.5) * norm;
         scl.set(s, s * rng(0.8, 1.3), s);
         Quaternion.RotationYawPitchRollToRef(rng(0, Math.PI * 2), 0, 0, q);
-        pos.set(wx, wy - 0.01, wz);
+        pos.set(wx, wy - 0.02, wz);
         Matrix.ComposeToRef(scl, q, pos, m);
         const base = matrices.length;
         matrices.length += 16;
         m.copyToArray(matrices, base);
-        // per-tuft hue: earthy olive-green keyed to the clump field —
-        // vivid greens read as plastic against the muted ground texture
-        const g = rng(0.42, 0.6) * (0.85 + clump * 0.2);
-        instColors.push(rng(0.26, 0.36), g, rng(0.12, 0.2), 1);
+        // per-tuft tint MULTIPLIES the blade texture — bright meadow greens,
+        // slightly deeper in sparse cells so patches read as variation
+        const v = 0.85 + clump * 0.15;
+        instColors.push(rng(0.75, 0.95) * v, rng(0.95, 1.2) * v, rng(0.5, 0.7) * v, 1);
       }
     }
   }
@@ -981,7 +436,54 @@ export function placeGrass(scene) {
   // No shadow receive: invisible at tuft scale, and shadow-sampling 100k+
   // grass vertices' pixels costs real GPU time
   tuft.freezeWorldMatrix();
-  console.log(`[GRASS] ${instColors.length / 4} tufts (1 draw call)`);
+  console.log(`[GRASS] ${instColors.length / 4} tufts x ${tuft.getTotalVertices()} verts (1 draw call)`);
+
+  await placeFlowers(scene, grid, buildings, inBuilding);
+}
+
+/** Wildflowers from the ez-tree demo app (MIT): white/blue/yellow GLB
+ *  clusters thin-instanced across grassy cells — 1 draw call per color. */
+async function placeFlowers(scene, grid, buildings, inBuilding) {
+  const kinds = [
+    ['flower_white.glb', 'flowersWhite', 55],
+    ['flower_yellow.glb', 'flowersYellow', 50],
+    ['flower_blue.glb', 'flowersBlue', 35],
+  ];
+  const m = new Matrix();
+  const q = Quaternion.Identity();
+  const scl = new Vector3();
+  const pos = new Vector3();
+  for (const [file, name, count] of kinds) {
+    const { tmpl, height: rawH } = await loadEzTemplate(scene, file);
+    tmpl.name = name;
+    const norm = 0.32 / rawH;
+    const matrices = [];
+    for (let i = 0; i < count * 12 && matrices.length / 16 < count; i++) {
+      const gx = rngInt(1, CFG.GRID - 2);
+      const gz = rngInt(1, CFG.GRID - 2);
+      if (!grid[gx][gz]) continue;
+      if (inBuilding(gx, gz)) continue;
+      if (isRoadCell(gx, gz)) continue;
+      const p = g2w(gx, gz);
+      const wx = p.x + rng(-0.8, 0.8);
+      const wz = p.z + rng(-0.8, 0.8);
+      const wy = getTerrainHeight(wx, wz);
+      if (wy < CFG.WATER_Y + 0.15) continue;
+      const s = rng(0.8, 1.3) * norm;
+      scl.set(s, s, s);
+      Quaternion.RotationYawPitchRollToRef(rng(0, Math.PI * 2), 0, 0, q);
+      pos.set(wx, wy - 0.02, wz);
+      Matrix.ComposeToRef(scl, q, pos, m);
+      const base = matrices.length;
+      matrices.length += 16;
+      m.copyToArray(matrices, base);
+    }
+    if (matrices.length === 0) { tmpl.dispose(); continue; }
+    tmpl.thinInstanceSetBuffer('matrix', new Float32Array(matrices), 16, true);
+    tmpl.alwaysSelectAsActiveMesh = true; // tiny meshes, 1 draw call each
+    tmpl.isPickable = false;
+    tmpl.freezeWorldMatrix();
+  }
 }
 
 export function placeRocks(scene) {
@@ -1030,6 +532,16 @@ export function placeRocks(scene) {
 
     const p0 = g2w(gx, gz);
     if (getTerrainHeight(p0.x, p0.z) < CFG.WATER_Y) continue;
+
+    // Boulders bulge ~1.5u past their own cell — never grow one against a
+    // tree trunk placed earlier (reads as a tree sprouting from the rock)
+    let nearTree = false;
+    for (let tox = -1; tox <= 1 && !nearTree; tox++) {
+      for (let toz = -1; toz <= 1; toz++) {
+        if (isTreeCell(gx + tox, gz + toz)) { nearTree = true; break; }
+      }
+    }
+    if (nearTree) continue;
 
     let s;
     if (placedPebbles < CFG.THROWABLE_STONES && (placedEnv >= CFG.ROCKS || Math.random() < 0.3)) {

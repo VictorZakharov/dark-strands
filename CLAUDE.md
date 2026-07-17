@@ -40,8 +40,9 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 ## Tech Stack
 - **Babylon.js 9.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`, loaded via importmap as `'babylonjs'`
 - **Babylon.js Havok** (`@babylonjs/havok`) — Havok WASM physics engine via Babylon.js v2 physics plugin
+- **ez-tree** (`@dgreenheck/ez-tree` + `three` peer dep) pre-bundled via esbuild into `lib/eztree.bundle.js` (importmap name `'eztree'`, dynamically imported at world build). Bundled from the package's `src/` so bark/leaf textures embed as data URIs (exposed synchronously via the `TEXTURE_URIS` export in `lib/eztree-entry.js`); three.js never renders — Babylon consumes the generated BufferGeometry arrays verbatim (both engines are right-handed Y-up here, no winding flip)
 - Pure ES modules, no bundler for game code — `<script type="module" src="src/main.js">`
-- `npm install` required; `npm run bundle:babylon` to rebuild the Babylon.js bundle; Havok WASM served from `node_modules/` via importmap; `npx serve` for local HTTP server
+- `npm install` required; `npm run bundle:babylon` / `npm run bundle:eztree` to rebuild the bundles (rebuild eztree after editing `lib/eztree-entry.js`); Havok WASM served from `node_modules/` via importmap; `npx serve` for local HTTP server
 
 ## Architecture
 
@@ -66,7 +67,8 @@ src/
     floors.js              # Ground floor slabs, mid-floor pieces, stair steps
     windows.js             # Glass panes (breakable) and wooden window frames
     staticPhysics.js       # Havok static bodies for walls, floors, roofs, ceiling slabs, stairs
-    vegetation.js          # Card-based foliage: deciduous trees, fir groves, bushes, grass, rocks
+    vegetation.js          # Vegetation placement (grid blocking, groves, exclusions), rocks, grass
+    ezTreeFactory.js       # ez-tree template generation (branches+leaves per variant) + thin-instance spawning
     terrain.js             # Perlin noise terrain heightmap
     boundary.js            # World-edge hex-grid shield effect
     torches.js             # Torch core: mesh creation, materials, world placement, pickup
@@ -91,6 +93,7 @@ src/
     sleep.js               # Time-skip mechanics when interacting with beds
     hud.js                 # FPS counter, minimap canvas, camera mode label
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
+    audio.js               # Ambient audio loop (ez-tree demo ambience.mp3), pauses with the sim
     projectiles.js         # Stone throwing with Havok dynamic bodies
     menu.js                # Procedural campfire menu scene
     campfire-custom-particles.bak.js  # BACKUP: Custom 4-layer ParticleSystem fire (fire core, flame tips, embers, smoke) with procedural DynamicTextures — saved before switching to ParticleHelper.CreateAsync("fire")
@@ -212,6 +215,10 @@ All textures downloaded from **Poly Haven** (https://polyhaven.com) under **CC0 
 - `assets/textures/stone_wall.jpg` — from Poly Haven stone wall texture
 - `assets/textures/bark.jpg` — from Poly Haven pine bark texture
 
+Tree bark/leaf textures are embedded in `lib/eztree.bundle.js` from **ez-tree** (https://github.com/dgreenheck/ez-tree, MIT license; its bark textures are sourced from Poly Haven / texturecan per the ez-tree README) — accessed in-game via the `TEXTURE_URIS` export.
+
+Additional assets lifted from the ez-tree DEMO APP (ships inside the npm package, same MIT license): `assets/models/eztree/` (grass.glb blade-clump + flower_white/blue/yellow.glb wildflowers) and `assets/sounds/ambience.mp3` (looping outdoor ambience).
+
 ### Other free model sources for future use
 - **Kenney.nl** (CC0): https://kenney.nl/assets?t=gltf — hundreds of low-poly packs (nature, castle, medieval, furniture). Download zips, self-host.
 - **Quaternius** (CC0): https://quaternius.com/ — 1400+ low-poly models (Medieval Village, Stylized Nature, animated characters). Google Drive downloads.
@@ -238,9 +245,9 @@ Keep entries append-only — never edit or remove previous entries.
 - **Every new mesh MUST set `isPickable = false` unless it's interactable** — camera-collision `multiPickWithRay` pays per TRIANGLE of every pickable mesh (foliage cards being pickable cost 34ms/frame)
 - **Shadow maps render EVERY FRAME on WebGPU** — any throttled RTT (refreshRate 0+re-arm, 2, or 8) intermittently replays stale GPU state (bit-exact old passes; verified Babylon 8.52-9.17). WebGL2 (`?webgl`) keeps the event-driven refresh path, gated on `!isWebGPU()`.
 - **Sun shadow**: fixed `shadowFrustumSize` (auto-fit reframes per render), light follows the player every frame on a FIXED texel lattice (world-stable sampling — no snap jumps), bias LOW (high bias opens lit gaps under roof eaves)
-- **Fog depth pass** (`postfx.js DEPTH_PASS_MESHES` + `addFogDepthMesh`): anything that can silhouette against sky/far geometry MUST write fog depth (leaf/needle/bush cards, doors, mid-floors) or the fog paints ghost silhouettes/transparency over it. Interior-only meshes stay OUT (perf). The list is frustum-culled per frame via getCustomRenderList — Babylon 9 RTT renderLists do NO culling of their own.
+- **Fog depth pass** (`postfx.js DEPTH_PASS_MESHES` + `addFogDepthMesh`): anything that can silhouette against sky/far geometry MUST write fog depth (ez-tree branch/leaf meshes, doors, mid-floors) or the fog paints ghost silhouettes/transparency over it. Interior-only meshes stay OUT (perf). The list is frustum-culled per frame via getCustomRenderList — Babylon 9 RTT renderLists do NO culling of their own. Thin-instanced meshes MUST call `thinInstanceRefreshBoundingInfo()` or the `isInFrustum` cull uses the template's origin-sized box and drops the whole batch.
 - **Building interiors are fog-free via AABB exclusion** (`setFogInteriorBoxes`): the fog shader subtracts in-building ray segments — do not try fogStart clamps (they fail when looking into rooms from outside)
-- **Hidden proxy meshes** (shadow/depth-only foliage volumes) use layerMask `0x40000000` — `0x20000000` is the 3rd-person player-model bit and cameras INCLUDE it. RTT renderLists ignore camera layer masks: never put hidden proxies into the water-mirror render list.
+- **Hidden proxy meshes** (if ever reintroduced) use layerMask `0x40000000` — `0x20000000` is the 3rd-person player-model bit and cameras INCLUDE it. RTT renderLists ignore camera layer masks: never put hidden proxies into the water-mirror render list. (Vegetation no longer uses proxies — ez-tree meshes are visible geometry that casts its own shadows.)
 - **The first PostProcess's ratio defines the SCENE's render target size** — never set it below 1.0
 - **Torch lights**: clustered lights have NO shadows — their intensity is faded by camera line-of-sight (mask keeps ceilings blocking, glass passes light but blocks the screen-space glow halo). 3 nearest torches get shadow cube slots with near-torch caster subsets rebuilt on slot reassignment.
 - `[PERF]`/`[PERF2]` logs every 5s (per-RTT draw attribution + per-loop-section ms) — use them before guessing about frame cost
