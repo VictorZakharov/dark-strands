@@ -874,3 +874,7 @@
 - **README reframed as a tech demo** (per project intent — final state, bug-fixes only, not a playable game): intro now "a real-time 3D rendering & engine tech demo" with the live-demo link (https://darkst.netlify.app/), an explicit "no objectives/score/end state" line and a Status note; License section rewritten from "prototype / personal project" to a proper MIT statement pointing at `LICENSE` + `THIRD-PARTY-NOTICES.md`.
 - **`package.json`**: added `"license": "MIT"`, `description`, `homepage` (live demo), and `repository`. Left `"private": true` (guards against accidental `npm publish`; does not affect GitHub visibility).
 - **Hygiene**: `.claude/settings.local.json` (local, machine-specific tool-permission grants — no secrets) added to `.gitignore` and untracked via `git rm --cached`. Repo-wide secret/token scan of all tracked non-binary files came back clean; `index.html` loads nothing external (importmap only — no CDN, no analytics).
+
+## 2026-07-17 (round 19 — drop .idea IDE config)
+
+- Removed the tracked `.idea/` JetBrains project files from the repo (`git rm -r .idea`) and added `.idea/` to `.gitignore` — no longer using Rider. Not a code change; repo hygiene only.
