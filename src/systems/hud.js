@@ -57,18 +57,21 @@ export function updateCameraMode() {
   if (el) el.textContent = state.firstPerson ? '1ST PERSON' : '3RD PERSON';
 }
 
-export function updateMinimap() {
-  const canvas = document.getElementById('minimap');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 160, 160);
+let _mapBase = null;   // offscreen canvas: grid + water + buildings (static)
+let _mapFrame = 0;
 
+/** Render the static map layers once — 6,400 fillRects were being redrawn
+ *  EVERY FRAME (plus water + buildings), a constant multi-ms CPU cost that
+ *  ran even while paused. */
+function buildMinimapBase() {
   const grid = getGrid();
   const buildings = getBuildings();
-  const state = getPlayerState();
   const s = 160 / CFG.GRID;
+  _mapBase = document.createElement('canvas');
+  _mapBase.width = 160;
+  _mapBase.height = 160;
+  const ctx = _mapBase.getContext('2d');
 
-  // Grid cells
   for (let x = 0; x < CFG.GRID; x++) {
     for (let z = 0; z < CFG.GRID; z++) {
       ctx.fillStyle = grid[x][z] ? '#1a3a1a' : '#555';
@@ -76,7 +79,6 @@ export function updateMinimap() {
     }
   }
 
-  // Water overlay — blue tint on cells below water level (cached)
   if (!CFG.SNOW_MODE) {
     if (!_waterCells) {
       _waterCells = [];
@@ -96,11 +98,26 @@ export function updateMinimap() {
     }
   }
 
-  // Building interiors
   for (const b of buildings) {
     ctx.fillStyle = b.stories === 2 ? '#4a3a2a' : '#3a2a1a';
     ctx.fillRect((b.x + 1) * s, (b.z + 1) * s, (b.w - 2) * s, (b.h - 2) * s);
   }
+}
+
+/** Force a static-layer rebuild (call if the grid/buildings ever change). */
+export function invalidateMinimapBase() { _mapBase = null; }
+
+export function updateMinimap() {
+  const canvas = document.getElementById('minimap');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 160, 160);
+
+  const state = getPlayerState();
+  const s = 160 / CFG.GRID;
+
+  if (!_mapBase) buildMinimapBase();
+  ctx.drawImage(_mapBase, 0, 0);
 
   // Flowers (cyan dots)
   ctx.fillStyle = '#0ff';

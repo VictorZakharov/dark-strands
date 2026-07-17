@@ -2,6 +2,7 @@ node_modules/
 dist/
 lib/babylon.bundle.js
 lib/babylon.bundle.js.map
+lib/eztree.bundle.js
 console.txt
 npm-debug.log*
 .DS_Store

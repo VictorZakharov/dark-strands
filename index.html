@@ -28,6 +28,17 @@
       <span>Snow Biome</span>
     </label>
 
+    <div id="gfx-toggles">
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-sky" checked><span>Sky &amp; Clouds</span></label>
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-fog" checked><span>Volumetric Fog</span></label>
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-rays" checked><span>God Rays</span></label>
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-weather" checked><span>Weather</span></label>
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-water" checked><span>Water Reflections</span></label>
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-glow" checked><span>Torch Glow</span></label>
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-pipeline" checked><span>Post FX (FXAA)</span></label>
+      <label class="gfx-toggle"><input type="checkbox" id="gfx-bloom" checked><span>Bloom</span></label>
+    </div>
+
     <button id="menu-play">Enter World</button>
   </div>
 
@@ -313,6 +324,7 @@
 {
   "imports": {
     "babylonjs": "./lib/babylon.bundle.js",
+    "eztree": "./lib/eztree.bundle.js",
     "@babylonjs/havok": "./node_modules/@babylonjs/havok/lib/esm/HavokPhysics_es.js"
   }
 }

@@ -12,6 +12,7 @@ import { getInventory } from './flowers.js';
 import { getClusteredContainer } from './torchLighting.js';
 import { addTorchEmbers } from './torchParticles.js';
 import { getCamera } from '../core/scene.js';
+import { glowInclude, addFogDepthMesh } from '../core/postfx.js';
 
 // Re-export from submodules for external consumers
 export { addTorchShadowCaster, getTorchShadowGenerators, initTorchLightPool } from './torchLighting.js';
@@ -52,18 +53,32 @@ export function ensureMaterials(scene) {
     _glowMat.emissiveColor = new Color3(1, 0.4, 0.1);
     _glowMat.alphaMode = Engine.ALPHA_ADD;
 
-    // Procedural glow gradient — much softer falloff for billboarded halo
-    const sz = 128;
+    // Procedural glow gradient. Dense exponential stops + per-pixel dither:
+    // a plain radial gradient quantizes to visible concentric 8-bit BANDS
+    // when the billboard fills a wall at night (additive blending amplifies
+    // every 1/255 step). Dither trades the rings for imperceptible noise.
+    const sz = 256;
     const tex = new DynamicTexture('torchGlowTex', sz, scene, false);
     const ctx = tex.getContext();
     const c = sz / 2;
     const grad = ctx.createRadialGradient(c, c, 0, c, c, c);
-    grad.addColorStop(0, 'rgba(255,220,150,0.6)');
-    grad.addColorStop(0.2, 'rgba(255,140,40,0.3)');
-    grad.addColorStop(0.5, 'rgba(200,60,10,0.1)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    for (let i = 0; i <= 16; i++) {
+      const t = i / 16;
+      const fall = Math.exp(-t * t * 5.2); // smooth exponential falloff
+      const r = Math.round(255 - 60 * t);
+      const g = Math.round(215 - 165 * t);
+      const b = Math.round(140 - 130 * t);
+      grad.addColorStop(t, `rgba(${r},${g},${b},${(0.55 * fall).toFixed(3)})`);
+    }
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, sz, sz);
+    const img = ctx.getImageData(0, 0, sz, sz);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const n = (Math.random() - 0.5) * 6; // +/-3 levels of dither
+      d[i + 3] = Math.max(0, Math.min(255, d[i + 3] + n));
+    }
+    ctx.putImageData(img, 0, 0);
     tex.update();
     _glowMat.emissiveTexture = tex;
     _glowMat.opacityTexture = tex;
@@ -112,6 +127,7 @@ export function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ)
   flame.position = new Vector3(tipX, tipY, tipZ);
   flame.scaling.set(0.8, 1.4, 0.8); // Teardrop shape
   flame.isPickable = false;
+  glowInclude(flame);
 
   // Billboard glow halo — soft texture that always faces camera
   const glow = MeshBuilder.CreatePlane('torchGlow', { size: 1.0 }, scene);
@@ -132,6 +148,8 @@ export function createWallTorch(scene, mountX, mountZ, mountY, normalX, normalZ)
   const yaw = Math.atan2(normalX, normalZ);
   stick.rotation = new Vector3(TILT, yaw, 0);
   stick.isPickable = false;
+  addFogDepthMesh(stick);
+  addFogDepthMesh(flame);
 
   return { light, flame, glow, stick, wx: tipX, wz: tipZ };
 }
@@ -158,6 +176,7 @@ export function createGroundTorch(scene, x, groundY, z) {
   flame.position = new Vector3(x, groundY + STICK_LEN + 0.08, z);
   flame.scaling.set(0.8, 1.4, 0.8);
   flame.isPickable = false;
+  glowInclude(flame);
 
   const glow = MeshBuilder.CreatePlane('groundTorchGlow', { size: 1.0 }, scene);
   glow.material = _glowMat;
@@ -171,6 +190,8 @@ export function createGroundTorch(scene, x, groundY, z) {
   stick.material = _stickMat;
   stick.position = new Vector3(x, groundY + STICK_LEN / 2, z);
   stick.isPickable = false;
+  addFogDepthMesh(stick);
+  addFogDepthMesh(flame);
 
   return { light, flame, glow, stick, wx: x, wz: z };
 }

@@ -11,6 +11,8 @@ import {
   getPickableTorches, getPlayerDoorTorches, getTorchLights,
   createWallTorch, createGroundTorch, TILT, TIP_OUT, TIP_UP, STICK_LEN
 } from './torches.js';
+import { isRoadCell } from './grid.js';
+import { w2g } from '../utils/helpers.js';
 
 let previewGroup = null;
 let previewStick = null;
@@ -78,6 +80,9 @@ function findPlacementTarget(camera) {
   if (normal.y > 0.5) {
     if (distPlayerSq > PLACE_MAX_DIST_GROUND * PLACE_MAX_DIST_GROUND) return null;
     if (isTooCloseToTorch(hitX, hitY + STICK_LEN, hitZ)) return null;
+    // No planting torches in the packed dirt of a road
+    const rg = w2g(hitX, hitZ);
+    if (isRoadCell(rg.x, rg.z)) return null;
 
     return { type: 'ground', x: hitX, z: hitZ, y: hitY };
   } else {

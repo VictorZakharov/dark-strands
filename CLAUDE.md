@@ -38,10 +38,11 @@ Open http://localhost:3000 in browser. Click to capture mouse.
 - Pause (||) and Help (?) buttons - Top-left
 
 ## Tech Stack
-- **Babylon.js 8.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`, loaded via importmap as `'babylonjs'`
+- **Babylon.js 9.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`, loaded via importmap as `'babylonjs'`
 - **Babylon.js Havok** (`@babylonjs/havok`) — Havok WASM physics engine via Babylon.js v2 physics plugin
+- **ez-tree** (`@dgreenheck/ez-tree` + `three` peer dep) pre-bundled via esbuild into `lib/eztree.bundle.js` (importmap name `'eztree'`, dynamically imported at world build). Bundled from the package's `src/` so bark/leaf textures embed as data URIs (exposed synchronously via the `TEXTURE_URIS` export in `lib/eztree-entry.js`); three.js never renders — Babylon consumes the generated BufferGeometry arrays verbatim (both engines are right-handed Y-up here, no winding flip)
 - Pure ES modules, no bundler for game code — `<script type="module" src="src/main.js">`
-- `npm install` required; `npm run bundle:babylon` to rebuild the Babylon.js bundle; Havok WASM served from `node_modules/` via importmap; `npx serve` for local HTTP server
+- `npm install` required; `npm run bundle:babylon` / `npm run bundle:eztree` to rebuild the bundles (rebuild eztree after editing `lib/eztree-entry.js`); Havok WASM served from `node_modules/` via importmap; `npx serve` for local HTTP server
 
 ## Architecture
 
@@ -52,18 +53,22 @@ src/
   main.js                  # Entry point, game loop, init orchestration
   config.js                # All tunable constants (CFG object)
   core/
-    scene.js               # WebGPU/WebGL2 engine, Scene, FreeCamera setup
-    lighting.js            # DirectionalLight (CSM), HemisphericLight, sun glow
-    physics.js             # Havok physics world, body helpers, step, raycast
+    scene.js               # WebGPU/WebGL2 engine, Scene, FreeCamera setup (?webgl / ?compat params)
+    lighting.js            # Sun shadow map (fixed frustum, texel-stable follow), hemi, sun glow
+    physics.js             # Havok physics world, body helpers, step, raycast (statics: disableSync!)
+    postfx.js              # Volumetric fog + god rays + interior fog-exclusion boxes, DRP, GlowLayer
+    skyDome.js             # Procedural sky: atmosphere, weather-driven clouds, stars, moon
   world/
-    grid.js                # 2D collision grid, walkability checks
-    generator.js           # Procedural building placement
+    grid.js                # 2D collision grid, walkability, stair cells, road cells
+    generator.js           # Building placement seeded from roads, road-facing primary doors
+    roads.js               # Village road network (main + branches), dirt ribbon mesh, road torches
     terrainMeshes.js       # Ground plane (displaced mesh) and Gerstner wave ocean (custom ShaderMaterial)
     walls.js               # Building walls (merged geometry with window holes, triplanar UV) and roofs
     floors.js              # Ground floor slabs, mid-floor pieces, stair steps
     windows.js             # Glass panes (breakable) and wooden window frames
     staticPhysics.js       # Havok static bodies for walls, floors, roofs, ceiling slabs, stairs
-    vegetation.js          # Low-poly trees and rocks (with physics bodies)
+    vegetation.js          # Vegetation placement (grid blocking, groves, exclusions), rocks, grass
+    ezTreeFactory.js       # ez-tree template generation (branches+leaves per variant) + thin-instance spawning
     terrain.js             # Perlin noise terrain heightmap
     boundary.js            # World-edge hex-grid shield effect
     torches.js             # Torch core: mesh creation, materials, world placement, pickup
@@ -82,10 +87,13 @@ src/
     controls.js            # Pointer lock, keyboard, mouse input, pause states
     touch.js               # Mobile touch input (joystick, look, long-press interact)
     hotbar.js              # Hotbar slots, ALT cursor drag-and-drop
-    daynight.js            # Day/night cycle, sky color, fog, star visibility
+    daynight.js            # Day/night cycle, sky color, fog distances (single writer of scene props)
+    weather.js             # CLEAR/OVERCAST/RAIN/STORM FSM publishing modifier object
+    rainFX.js              # Rain streaks + surface kill map + flat ground splash rings
     sleep.js               # Time-skip mechanics when interacting with beds
     hud.js                 # FPS counter, minimap canvas, camera mode label
     npcAI.js               # NPC wandering behavior (idle/walk state machine)
+    audio.js               # Ambient audio loop (ez-tree demo ambience.mp3), pauses with the sim
     projectiles.js         # Stone throwing with Havok dynamic bodies
     menu.js                # Procedural campfire menu scene
     campfire-custom-particles.bak.js  # BACKUP: Custom 4-layer ParticleSystem fire (fire core, flame tips, embers, smoke) with procedural DynamicTextures — saved before switching to ParticleHelper.CreateAsync("fire")
@@ -97,6 +105,7 @@ src/
 
 ### World Generation
 - 80×80 grid, each cell = 2 world units → 160×160 unit outdoor world
+- **Village layout**: `roads.js` carves a main road (through-near-center, both directions) + 2-3 branches as grid-cell polylines that route around lakes; road cells stay walkable and are tracked in `grid.js` (`isRoadCell`/`isNearRoad`). Buildings are seeded FROM road cells (1-2 cell gap) and their primary door is forced onto the road-facing wall. Standing torches line the roads (`CFG.ROAD_*` tunables). Vegetation/rocks/grass exclude road cells.
 - Outdoor ground everywhere, with procedurally placed rectangular stone **buildings**
 - Buildings have walls on perimeter with 1–3 doorways
 - Mix of 1-story and 2-story buildings (~35% chance of 2-story for large buildings)
@@ -206,6 +215,10 @@ All textures downloaded from **Poly Haven** (https://polyhaven.com) under **CC0 
 - `assets/textures/stone_wall.jpg` — from Poly Haven stone wall texture
 - `assets/textures/bark.jpg` — from Poly Haven pine bark texture
 
+Tree bark/leaf textures are embedded in `lib/eztree.bundle.js` from **ez-tree** (https://github.com/dgreenheck/ez-tree, MIT license; its bark textures are sourced from Poly Haven / texturecan per the ez-tree README) — accessed in-game via the `TEXTURE_URIS` export.
+
+Additional assets lifted from the ez-tree DEMO APP (ships inside the npm package, same MIT license): `assets/models/eztree/` (grass.glb blade-clump + flower_white/blue/yellow.glb wildflowers) and `assets/sounds/ambience.mp3` (looping outdoor ambience).
+
 ### Other free model sources for future use
 - **Kenney.nl** (CC0): https://kenney.nl/assets?t=gltf — hundreds of low-poly packs (nature, castle, medieval, furniture). Download zips, self-host.
 - **Quaternius** (CC0): https://quaternius.com/ — 1400+ low-poly models (Medieval Village, Stylized Nature, animated characters). Google Drive downloads.
@@ -227,12 +240,26 @@ A timestamped development journal is maintained in `DEV_JOURNAL.md` at the proje
 
 Keep entries append-only — never edit or remove previous entries.
 
+## Rendering & Performance Rules (hard-won — violating any of these has cost 10-60ms/frame or visible artifacts)
+- **Havok static bodies MUST set `body.disablePreStep = true` AND `body.disableSync = true`** — the plugin otherwise syncs every body's transform per substep (614 statics × substeps was 30-60ms/frame)
+- **Every new mesh MUST set `isPickable = false` unless it's interactable** — camera-collision `multiPickWithRay` pays per TRIANGLE of every pickable mesh (foliage cards being pickable cost 34ms/frame)
+- **Shadow maps render EVERY FRAME on WebGPU** — any throttled RTT (refreshRate 0+re-arm, 2, or 8) intermittently replays stale GPU state (bit-exact old passes; verified Babylon 8.52-9.17). WebGL2 (`?webgl`) keeps the event-driven refresh path, gated on `!isWebGPU()`.
+- **Sun shadow**: fixed `shadowFrustumSize` (auto-fit reframes per render), light follows the player every frame on a FIXED texel lattice (world-stable sampling — no snap jumps), bias LOW (high bias opens lit gaps under roof eaves)
+- **Fog depth pass** (`postfx.js DEPTH_PASS_MESHES` + `addFogDepthMesh`): anything that can silhouette against sky/far geometry MUST write fog depth (ez-tree branch/leaf meshes, doors, mid-floors) or the fog paints ghost silhouettes/transparency over it. Interior-only meshes stay OUT (perf). The list is frustum-culled per frame via getCustomRenderList — Babylon 9 RTT renderLists do NO culling of their own. Thin-instanced meshes MUST call `thinInstanceRefreshBoundingInfo()` or the `isInFrustum` cull uses the template's origin-sized box and drops the whole batch.
+- **Building interiors are fog-free via AABB exclusion** (`setFogInteriorBoxes`): the fog shader subtracts in-building ray segments — do not try fogStart clamps (they fail when looking into rooms from outside)
+- **Hidden proxy meshes** (if ever reintroduced) use layerMask `0x40000000` — `0x20000000` is the 3rd-person player-model bit and cameras INCLUDE it. RTT renderLists ignore camera layer masks: never put hidden proxies into the water-mirror render list. (Vegetation no longer uses proxies — ez-tree meshes are visible geometry that casts its own shadows.)
+- **The first PostProcess's ratio defines the SCENE's render target size** — never set it below 1.0
+- **Torch lights**: clustered lights have NO shadows — their intensity is faded by camera line-of-sight (mask keeps ceilings blocking, glass passes light but blocks the screen-space glow halo). 3 nearest torches get shadow cube slots with near-torch caster subsets rebuilt on slot reassignment.
+- `[PERF]`/`[PERF2]` logs every 5s (per-RTT draw attribution + per-loop-section ms) — use them before guessing about frame cost
+
 ## Known Quirks
-- Babylon.js is pre-bundled into `lib/babylon.bundle.js` (~8MB); game source stays unbundled ES modules
-- WebGPU engine with automatic WebGL2 fallback; `engine.compatibilityMode = false` for full WebGPU optimizations
+- Babylon.js is pre-bundled into `lib/babylon.bundle.js` (~10MB); game source stays unbundled ES modules
+- WebGPU engine with automatic WebGL2 fallback; `engine.compatibilityMode = false` for full WebGPU optimizations (`?compat` forces the slow path for GPU-state debugging)
 - Pointer lock requires HTTPS or localhost
 - The blocker overlay handles click-to-play (not the canvas)
-- PointLight shadows are expensive (cube maps = 6 passes each). Max 2 shadow-casting torches via shadow slot system
+- Pause (`isWorldFrozen`): ANY desktop state with a free pointer freezes the sim, skeletal animations (`scene.animationsEnabled`), and particles (updateSpeed save/restore). `window._noFreeze = true` bypasses it for automated testing (pointer lock can't be acquired without a user gesture).
+- `_dbg.tp(x, z)` teleports via the Havok plugin's `HP_Body_SetQTransform` on `wrapper.havokBody._pluginData.hpBodyId` — node-position writes alone never move the capsule under manual stepping
+- Automated testing: `page.reload()` can serve stale ES modules — refresh via `fetch(url, {cache:'reload'})` over performance resource entries first
 - `scene.useRightHandedSystem = true` to match original Three.js coordinate conventions used throughout the codebase
 - WebGPU workarounds: strip unused UV channels (uv2-uv6) from GLTF models; skip LensFlareSystem on WebGPU; defer menu scene cleanup instead of explicit dispose
 - Menu fire particles fetched from Babylon.js CDN (`ParticleHelper.CreateAsync("fire")`) — requires internet on first load

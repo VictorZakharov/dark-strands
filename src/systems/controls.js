@@ -29,11 +29,27 @@ let gameStarted = false;
 
 // simPause = Tab pause — pointer lock stays active, virtual cursor shown
 let simPause = false;
+const _lookHist = []; // (t, yaw, pitch) ring — unlock-jerk rewind buffer
 let timeStopped = false; // Used for completely freezing game logic without showing the ESC-Pause UI
 let simCursorEl = null;
 let simCursorX = 0, simCursorY = 0;
 
 export function setSimPause(p) { simPause = p; }
+export function isSimPaused() { return simPause; }
+/**
+ * True whenever the world should freeze: Tab-pause, or ANY desktop state
+ * where the pointer is free ("Click to resume" ESC overlay included — the
+ * original spec kept the game running there, which just reads as broken
+ * pause). Mobile has no pointer lock and uses its own active flag.
+ */
+export function isWorldFrozen() {
+  // Debug/automation escape hatch — pointer lock can't be acquired without
+  // a user gesture, which would freeze every automated test session
+  if (typeof window !== 'undefined' && window._noFreeze) return false;
+  if (simPause) return true;
+  if (isMobileGameActive()) return false;
+  return gameStarted && !pointerLocked;
+}
 export function isTimeStopped() { return timeStopped; }
 export function setTimeStopped(s) { timeStopped = s; }
 
@@ -276,6 +292,22 @@ export function initControls() {
 
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === renderer.domElement;
+    if (!pointerLocked) {
+      // Native ESC unlock: Chrome exits the lock itself (often without even
+      // delivering an ESC keydown) and sprays junk mouse deltas before this
+      // event fires — no pre-filter can reliably catch them. Instead, REWIND
+      // the camera to where it was 150ms before the unlock; any legit look
+      // input inside that window is imperceptible.
+      const cutoff = performance.now() - 150;
+      for (let i = 0; i < _lookHist.length; i++) {
+        if (_lookHist[i].t >= cutoff) {
+          player.yaw = _lookHist[i].yaw;
+          player.pitch = _lookHist[i].pitch;
+          break;
+        }
+      }
+      _lookHist.length = 0;
+    }
     if (pointerLocked) {
       // Lock acquired — enter/resume game
       pendingLockEl = null;
@@ -327,6 +359,12 @@ export function initControls() {
   document.addEventListener('mousemove', (e) => {
     // Skip junk deltas during lock/unlock transitions
     if (performance.now() < moveIgnoreUntil) return;
+    // Pointer-lock EXIT can deliver junk deltas BEFORE the pointerlockchange
+    // event fires — a single huge one (discarded here) and/or several
+    // moderate ones (suppressed by arming the ignore window on the ESC/Tab
+    // KEYDOWN itself, below). Both paths are needed: the keydown arm alone
+    // misses OS-initiated unlocks, the size filter alone misses medium spikes.
+    if (Math.abs(e.movementX) > 200 || Math.abs(e.movementY) > 200) return;
 
     // simPause — pointer lock active, drive virtual cursor with movementX/Y
     if (simPause && simCursorEl) {
@@ -339,6 +377,10 @@ export function initControls() {
         moveCursor(e.movementX, e.movementY);
         return;
       }
+      // History for the unlock rewind (see pointerlockchange): record BEFORE
+      // applying this event's delta
+      _lookHist.push({ t: performance.now(), yaw: player.yaw, pitch: player.pitch });
+      if (_lookHist.length > 32) _lookHist.shift();
       player.yaw -= e.movementX * 0.002;
       player.pitch -= e.movementY * 0.002;
       player.pitch = Math.max(-1.55, Math.min(1.55, player.pitch));
@@ -347,6 +389,13 @@ export function initControls() {
 
   document.addEventListener('keydown', (e) => {
     keys[e.code] = true;
+
+    // Arm the mousemove ignore window the instant a pause/unlock key goes
+    // down — pointer-lock exit junk deltas arrive BEFORE pointerlockchange,
+    // so arming only in that handler is too late (camera jerked on pause)
+    if (e.code === 'Escape' || e.code === 'Tab' || e.code === 'Pause') {
+      ignoreMovesFor(300);
+    }
 
     if (e.key === '?' && e.shiftKey) {
       toggleHelp();

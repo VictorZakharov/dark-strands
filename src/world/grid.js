@@ -26,6 +26,7 @@ export function initGrid() {
   windowCells.clear();
   stairCells.clear();
   treeCells.clear();
+  roadCells.clear();
 }
 
 export function setCell(gx, gz, value) {
@@ -82,6 +83,7 @@ const doorCells = new Map();
 const windowCells = new Set();
 const stairCells = new Set();
 const treeCells = new Set();
+const roadCells = new Set();   // dirt road cells — stay walkable, tracked for visuals/placement
 
 export function addDoor(gx, gz, data) {
   doorCells.set(`${gx},${gz}`, data);
@@ -140,6 +142,24 @@ export function getStairSurfaceY(wx, wz, margin = 0) {
     }
   }
   return null;
+}
+
+export function markRoadCell(gx, gz) {
+  roadCells.add(`${gx},${gz}`);
+}
+
+export function isRoadCell(gx, gz) {
+  return roadCells.has(`${gx},${gz}`);
+}
+
+/** True if any road cell lies within `margin` cells (Chebyshev) of (gx,gz) */
+export function isNearRoad(gx, gz, margin = 1) {
+  for (let dx = -margin; dx <= margin; dx++) {
+    for (let dz = -margin; dz <= margin; dz++) {
+      if (roadCells.has(`${gx + dx},${gz + dz}`)) return true;
+    }
+  }
+  return false;
 }
 
 export function markTreeCell(gx, gz) {

@@ -1,26 +1,29 @@
 # Dark Strands
 
-A 3D first/third-person survival roguelite prototype built with Babylon.js (WebGPU/WebGL2). Explore a procedurally generated world of stone buildings, rolling hills, and wandering NPCs.
+A 3D first/third-person survival roguelite prototype built with Babylon.js 9 (WebGPU/WebGL2). Explore a procedurally generated village of stone buildings connected by dirt roads, rolling hills, forests, and wandering NPCs — with a full volumetric-fog/weather/water visual pipeline.
 
 ## Features
 
 ### World
-- **Procedural generation** — Stone buildings (1- and 2-story) with doorways, glass windows of varied shapes/sizes, and flat/gable roofs
-- **Terrain** — Gentle rolling hills with automatic flat zones under buildings
-- **Ocean** — Gerstner wave animated ocean with custom ShaderMaterial (Fresnel reflection, Blinn-Phong specular, subsurface scattering, fog)
-- **Stairs** — Climbable 8-step wood staircases in 2-story buildings, flush against walls, with proper collision
-- **2nd floors** — Thick floor slabs with full wall-to-wall coverage and stairwell gaps
-- **Beds** — Procedurally generated inside buildings; sleep to advance time to morning
-- **Vegetation** — Randomized fir/pine trees, boulders, and flowers; small rocks are jumpable, large rocks are climbable
-- **Wood house floors** — Ground floors use wood plank texture, wall-to-wall coverage sealing all light paths
+- **Procedural village** — A main dirt road with branches winds past the spawn; stone buildings (1- and 2-story) line the roads with their doors facing them; standing torches light the roadsides at night
+- **Procedural buildings** — Doorways, glass windows of varied shapes/sizes, flat/gable roofs, climbable stairs, 2nd floors, beds (sleep to morning)
+- **Terrain** — Gentle rolling hills with automatic flat zones under buildings; roads conform to the terrain
+- **Ocean & lakes** — Gerstner wave animated water with planar reflections, shoreline foam, rain ripples, Fresnel/specular/subsurface shading
+- **Forests** — Procedurally generated trees via [ez-tree](https://github.com/dgreenheck/ez-tree): oak/ash/aspen deciduous trees, pine groves (conifers cluster in stands), bush thickets — real branching geometry with alpha-tested leaf textures, thin-instanced (2 draw calls per species variant); plus ~7,000 instanced grass tufts in meadow clumps
+
+### Visual Effects (all toggleable from the main menu)
+- **Volumetric height fog + god rays** — analytic exponential fog post-process with screen-space sun shafts; building interiors stay fog-free from any viewpoint (the shader subtracts in-building ray segments)
+- **Procedural sky dome** — atmosphere gradient, domain-warped clouds driven by weather, twinkling stars, moon, sunset scatter
+- **Weather system** — CLEAR/OVERCAST/RAIN/STORM state machine with cross-fades; player-following rain with per-particle roof/ground kill, flat splash rings on impact, rain ripple rings on water, lightning in storms
+- **Water reflections** — half-res planar mirror sampled projectively by the ocean shader, blurred for softness
+- **Post pipeline** — bloom, FXAA, torch GlowLayer (line-of-sight occluded so halos never bleed through walls)
 
 ### Lighting
-- **Clustered lighting** — GPU-tiled `ClusteredLightContainer` manages unlimited torch PointLights efficiently
-- **Interior torches** — Angled wall-mounted torches with billboarded glow halos, teardrop flames, and GPU-driven ember particles
-- **Door torches** — Exterior torches beside every door; off during day, light up at dusk
-- **Shadow-casting torches** — 2 nearest torches get PointLight shadow maps for wall occlusion
-- **Post-processing** — DefaultRenderingPipeline with bloom and ACES tone mapping (menu scene)
-- **Fog** — Distance fog (near=10/far=55 day, near=5/far=30 night)
+- **Clustered lighting** — GPU-tiled `ClusteredLightContainer` manages all torch PointLights; lights fade out when the camera has no line of sight (no light through walls/floors)
+- **Interior torches** — Angled wall-mounted torches with billboarded glow halos, teardrop flames, and ember particles
+- **Door & road torches** — Exterior torches beside doors and along roads; off during day, light up at dusk
+- **Shadow-casting torches** — 3 nearest torches get PointLight shadow cube maps with near-torch caster lists
+- **Sun shadows** — fixed-frustum 2048 PCF map following the player on a texel-stable lattice
 
 ### Snow Biome
 - Toggle from main menu before entering the world
@@ -106,7 +109,7 @@ Open http://localhost:3000 in your browser and click to play.
 | Q (hold) | Fast-forward (3x game speed) |
 | Shift+? | Help overlay (survival guide) |
 | Tab / Pause | Pause (mouse stays trapped, virtual cursor) |
-| ESC | Free cursor (game keeps running, click to re-lock) |
+| ESC | Free cursor + freeze the world (click to resume) |
 
 ### Mobile Touch Controls
 - Left side drag — Virtual joystick for movement
@@ -118,11 +121,12 @@ Open http://localhost:3000 in your browser and click to play.
 
 ## Tech Stack
 
-- **Babylon.js 8.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`
-- **WebGPU** engine with automatic WebGL2 fallback
+- **Babylon.js 9.x** (`@babylonjs/core`, `@babylonjs/loaders`, `@babylonjs/materials`) pre-bundled via esbuild into `lib/babylon.bundle.js`
+- **WebGPU** engine with automatic WebGL2 fallback (`?webgl` URL param forces WebGL2)
 - **Babylon.js Havok** (`@babylonjs/havok`) — Havok WASM physics engine via Babylon.js v2 physics plugin
+- **ez-tree** (`@dgreenheck/ez-tree` + `three` peer dep) pre-bundled via esbuild into `lib/eztree.bundle.js` with bark/leaf textures embedded as data URIs — generates tree/bush geometry at world-gen time; three.js never renders (Babylon consumes the raw vertex arrays)
 - Pure ES modules for game code — `<script type="module" src="src/main.js">`
-- `npm install` required; `npm run bundle:babylon` to rebuild the Babylon.js bundle
+- `npm install` required; `npm run bundle:babylon` / `npm run bundle:eztree` to rebuild the bundles
 
 ## Project Structure
 
@@ -132,17 +136,21 @@ src/
   config.js            Tunable constants (grid size, speeds, snow mode, etc.)
   core/
     scene.js           WebGPU/WebGL2 engine, Scene, FreeCamera setup
-    lighting.js        DirectionalLight (CSM), HemisphericLight, sun glow, stars
+    lighting.js        Sun shadow map (texel-stable fixed frustum), hemi light, sun glow
     physics.js         Havok WASM physics world, body helpers, step, raycast
+    postfx.js          Volumetric fog + god rays, interior fog exclusion, bloom/FXAA, GlowLayer
+    skyDome.js         Procedural sky: atmosphere, weather clouds, stars, moon
   world/
-    grid.js            2D collision grid, floor height, stair zones, walkability
-    generator.js       Procedural building placement with stairs, doors, windows
+    grid.js            2D collision grid, floor height, stair/road cells, walkability
+    generator.js       Building placement along roads, road-facing doors, stairs, windows
+    roads.js           Village road network, dirt ribbon mesh, roadside torches
     terrainMeshes.js   Ground plane (displaced mesh) and Gerstner wave ocean shader
     walls.js           Building walls (VertexData, triplanar UV) and roofs
     floors.js          Ground floor slabs, mid-floor pieces, stair steps
     windows.js         Glass panes (breakable) and wooden window frames
     staticPhysics.js   Havok static bodies for walls, floors, roofs, stairs
-    vegetation.js      Low-poly trees and rocks with physics bodies
+    vegetation.js      Tree/bush/rock/grass placement (grid, groves, exclusions), rocks, grass
+    ezTreeFactory.js   ez-tree template generation + thin-instance spawning of trees/bushes
     terrain.js         Perlin noise terrain heightmap
     boundary.js        World-edge hex-grid shield effect
     torches.js         Torch core: mesh creation, materials, world placement, pickup
@@ -161,9 +169,11 @@ src/
     controls.js        Pointer lock, keyboard, mouse input, pause states
     touch.js           Mobile touch input (joystick, look, long-press interact)
     hotbar.js          Hotbar slots, ALT cursor drag-and-drop
-    daynight.js        Day/night cycle, sky color, fog, star visibility
+    daynight.js        Day/night cycle, sky color, fog distances, star visibility
+    weather.js         CLEAR/OVERCAST/RAIN/STORM state machine + modifiers
+    rainFX.js          Rain streaks, surface kill map, flat splash rings
     sleep.js           Time-skip mechanics when interacting with beds
-    hud.js             FPS counter, minimap canvas, camera mode label
+    hud.js             FPS counter, minimap canvas (cached base layer), camera mode label
     npcAI.js           NPC wandering behavior, soldier dialogue (100 lines)
     projectiles.js     Stone throwing with Havok dynamic bodies
     menu.js            Procedural campfire menu scene with ParticleHelper fire
@@ -182,6 +192,7 @@ assets/
 
 **Textures**
 - grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg — [Poly Haven](https://polyhaven.com) (CC0)
+- Tree bark/leaf textures — embedded in `lib/eztree.bundle.js` from [ez-tree](https://github.com/dgreenheck/ez-tree) (MIT; bark textures sourced from Poly Haven / texturecan per the ez-tree README)
 
 ## License
 

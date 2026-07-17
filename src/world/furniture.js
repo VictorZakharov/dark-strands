@@ -421,6 +421,38 @@ function mergeAndAddToScene(parent, tempMeshes, scene) {
     return finalMeshes;
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+ * Stairwell opening in the mid-floor slab, in world coords. Must match
+ * the gap left between the mid-floor pieces in floors.js (P1–P4):
+ * X from the stair column's west edge to the east wall inner face,
+ * Z from the north wall inner face to the last stair cell's south edge.
+ * ─────────────────────────────────────────────────────────────────── */
+function getStairOpeningRect(b) {
+    if (b.stories !== 2 || !b.stair) return null;
+    const s = b.stair;
+    return {
+        xMin: g2w(s.gx, 0).x - CFG.CELL / 2,
+        xMax: g2w(b.x + b.w - 1, 0).x - CFG.WALL_T / 2,
+        zMin: g2w(0, b.z).z + CFG.WALL_T / 2,
+        zMax: g2w(0, s.gzEnd).z + CFG.CELL / 2,
+    };
+}
+
+// True if furniture centered on cell (gx, gz) of an upper floor would sit
+// over (or within `margin` of) the stairwell opening. Furniture like beds
+// extends past its cell, so the cell rect is expanded by a half-cell margin
+// — otherwise a piece can overhang the stair hole and show its underside
+// from the floor below.
+function overlapsStairOpening(b, floor, gx, gz, margin = CFG.CELL / 2) {
+    if (floor !== 2) return false;
+    const rect = getStairOpeningRect(b);
+    if (!rect) return false;
+    const p = g2w(gx, gz);
+    const half = CFG.CELL / 2 + margin;
+    return p.x + half > rect.xMin && p.x - half < rect.xMax &&
+           p.z + half > rect.zMin && p.z - half < rect.zMax;
+}
+
 export function placeFurniture(scene) {
     loadTextures(scene);
 
@@ -443,6 +475,7 @@ export function placeFurniture(scene) {
                 const midX = Math.floor(b.x + b.w / 2);
                 for (let x = midX - 1; x <= midX + 1; x++) {
                     if (x <= b.x || x >= b.x + b.w - 1) continue;
+                    if (overlapsStairOpening(b, bedFloor, x, backZ)) continue;
                     const hasWin = b.windows.some(w => w.floor === 2 && w.wall === (isStairFront ? 'north' : 'south') && w.gx === x);
                     const hasDoor = b.doors.some(d => Math.abs(d.gx - x) <= 2 && Math.abs(d.gz - backZ) <= 2);
                     if (!hasWin && !hasDoor) {
@@ -480,7 +513,7 @@ export function placeFurniture(scene) {
                 }
 
                 const hasWestWin = b.windows.some(w => w.floor === bedFloor && w.wall === 'west' && w.gz === z);
-                if (!hasWestWin && !nearDoor) {
+                if (!hasWestWin && !nearDoor && !overlapsStairOpening(b, bedFloor, b.x + 1, z)) {
                     chosenBedCell = { gx: b.x + 1, gz: z, isWest: true, isNorth: false, isSouth: false, isEast: false };
                     break;
                 }
@@ -491,7 +524,7 @@ export function placeFurniture(scene) {
                 }
 
                 const hasEastWin = b.windows.some(w => w.floor === bedFloor && w.wall === 'east' && w.gz === z);
-                if (!hasEastWin && !nearDoor) {
+                if (!hasEastWin && !nearDoor && !overlapsStairOpening(b, bedFloor, b.x + b.w - 2, z)) {
                     chosenBedCell = { gx: b.x + b.w - 2, gz: z, isEast: true, isNorth: false, isSouth: false, isWest: false };
                     break;
                 }

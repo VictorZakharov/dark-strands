@@ -11,6 +11,11 @@ const importmapPlugin = {
     build.onResolve({ filter: /^babylonjs$/ }, () => ({
       path: path.resolve(__dirname, 'lib/babylon-entry.js'),
     }));
+    // 'eztree' → the ez-tree entry (tree/bush generation + embedded textures);
+    // its jpg/png asset imports need the dataurl loaders below
+    build.onResolve({ filter: /^eztree$/ }, () => ({
+      path: path.resolve(__dirname, 'lib/eztree-entry.js'),
+    }));
     // '@babylonjs/havok' stays external — loaded via importmap (WASM needs correct relative path)
     build.onResolve({ filter: /^@babylonjs\/havok$/ }, () => ({ path: '@babylonjs/havok', external: true }));
   },
@@ -65,6 +70,7 @@ async function build() {
     format: 'esm',
     outfile: 'dist/_main.js',
     plugins: [importmapPlugin],
+    loader: { '.jpg': 'dataurl', '.png': 'dataurl' }, // ez-tree bark/leaf textures
   });
 
   // Hash and rename JS

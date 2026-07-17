@@ -5,6 +5,7 @@ import { registerFlower, setFlowerTemplate } from '../world/flowers.js';
 import { registerSoldier, registerFox } from '../systems/npcAI.js';
 import { getTerrainHeight } from '../world/terrain.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
+import { addFogDepthMesh } from '../core/postfx.js';
 
 // In Babylon.js, AnimationGroups are updated automatically by the scene.
 // We still expose animMixers array for compatibility — each entry has an update(dt) method
@@ -62,6 +63,9 @@ function enableShadows(rootNode, sunShadow = true) {
   for (const mesh of rootNode.getChildMeshes()) {
     if (sunShadow) addShadowCaster(mesh);
     enableShadowReceiving(mesh);
+    // Fog depth pass: without this, a model silhouetted against the sky
+    // reads as sky depth and gets fully fog-colored at any distance
+    addFogDepthMesh(mesh);
   }
 }
 

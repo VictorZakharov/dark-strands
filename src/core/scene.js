@@ -27,8 +27,9 @@ export async function initScene() {
   canvas.id = 'game';
   document.body.prepend(canvas);
 
-  // Try WebGPU first, fall back to WebGL2
-  if (navigator.gpu) {
+  // Try WebGPU first, fall back to WebGL2 (?webgl forces the fallback for testing)
+  const forceWebGL = new URLSearchParams(location.search).has('webgl');
+  if (navigator.gpu && !forceWebGL) {
     try {
       engine = new WebGPUEngine(canvas, {
         antialias: true,
@@ -38,7 +39,9 @@ export async function initScene() {
         powerPreference: 'high-performance',
       });
       await engine.initAsync();
-      engine.compatibilityMode = false;
+      // ?compat forces the slow submission path for debugging GPU-state bugs
+      engine.compatibilityMode =
+        new URLSearchParams(location.search).has('compat');
       _useWebGPU = true;
       console.log('Using WebGPU');
     } catch (e) {
