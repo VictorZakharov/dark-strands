@@ -1,5 +1,9 @@
 node_modules/
 dist/
+
+# Local, machine-specific dev config (not for the public repo)
+.claude/settings.local.json
+
 lib/babylon.bundle.js
 lib/babylon.bundle.js.map
 lib/eztree.bundle.js
