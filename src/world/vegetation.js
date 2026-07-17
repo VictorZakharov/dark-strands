@@ -327,11 +327,14 @@ export function placeBushes(scene) {
  * so coverage reads as patches instead of uniform noise. No physics, no
  * shadow casting; normals point up so blades shade like the ground.
  */
-/** Loads a GLB from assets/models/eztree/, returns a single unparented mesh
- *  (multi-mesh files get merged, materials preserved) with transforms baked,
- *  plus its bounding height — ready to be a thin-instance template. */
-async function loadEzTemplate(scene, file) {
-  const res = await SceneLoader.ImportMeshAsync('', './assets/models/eztree/', file, scene);
+/** Loads a GLB (FULL literal './assets/...' path — the production build
+ *  content-hashes asset filenames and rewrites full path literals in the
+ *  bundle, so never build these URLs by concatenation), returns a single
+ *  unparented mesh (multi-mesh files get merged, materials preserved) with
+ *  transforms baked, plus its bounding height — a thin-instance template. */
+async function loadEzTemplate(scene, url) {
+  const cut = url.lastIndexOf('/') + 1;
+  const res = await SceneLoader.ImportMeshAsync('', url.slice(0, cut), url.slice(cut), scene);
   const real = res.meshes.filter(m => m.getTotalVertices() > 0);
   let tmpl;
   if (real.length > 1) {
@@ -353,7 +356,7 @@ export async function placeGrass(scene) {
 
   // Grass clump model from the ez-tree demo app (MIT) — real blade geometry,
   // not alpha cards, so no cutout/mip issues. One thin-instanced draw call.
-  const { tmpl: tuft, height: rawH } = await loadEzTemplate(scene, 'grass.glb');
+  const { tmpl: tuft, height: rawH } = await loadEzTemplate(scene, './assets/models/eztree/grass.glb');
   tuft.name = 'grassTufts';
   const norm = 0.58 / rawH; // world-unit clump height before per-instance jitter
 
@@ -445,9 +448,9 @@ export async function placeGrass(scene) {
  *  clusters thin-instanced across grassy cells — 1 draw call per color. */
 async function placeFlowers(scene, grid, buildings, inBuilding) {
   const kinds = [
-    ['flower_white.glb', 'flowersWhite', 55],
-    ['flower_yellow.glb', 'flowersYellow', 50],
-    ['flower_blue.glb', 'flowersBlue', 35],
+    ['./assets/models/eztree/flower_white.glb', 'flowersWhite', 55],
+    ['./assets/models/eztree/flower_yellow.glb', 'flowersYellow', 50],
+    ['./assets/models/eztree/flower_blue.glb', 'flowersBlue', 35],
   ];
   const m = new Matrix();
   const q = Quaternion.Identity();
