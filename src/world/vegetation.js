@@ -10,6 +10,7 @@ import { getCamera } from '../core/scene.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 import { createStaticSphere, createStaticCylinder, hasLineOfSight, ROCK_COLLISION_GROUP } from '../core/physics.js';
 import { spawnEz, finalizeEz } from './ezTreeFactory.js';
+import { attachWindSway } from './windSway.js';
 
 let rockTex;
 
@@ -381,6 +382,10 @@ export async function placeGrass(scene) {
   // back-winding blades (near-black tufts). Culling off + up normals is
   // exactly the old tuft recipe — both sides take the ground's lighting.
   tuft.material = mat;
+  // Wind sway weighted by local height (base y=0, tip y=rawH). NOT by uv —
+  // grass.glb's uv.v is INVERTED (v=1 at the base), which would wave the roots
+  attachWindSway(mat, { weight: 'height', heightMax: rawH,
+                        amp: CFG.WIND.AMP_GRASS, freq: CFG.WIND.FREQ_GRASS });
 
   const grid = getGrid();
   const buildings = getBuildings();
@@ -459,6 +464,14 @@ async function placeFlowers(scene, grid, buildings, inBuilding) {
   for (const [file, name, count] of kinds) {
     const { tmpl, height: rawH } = await loadEzTemplate(scene, file);
     tmpl.name = name;
+    // Wind sway on every sub-material (merged GLBs keep a MultiMaterial of
+    // loader PBRMaterials — skipping one leaves petals waving over a rigid
+    // stem). Height weight only: the petal-atlas UVs carry no height signal.
+    const flowerMats = tmpl.material?.subMaterials ?? [tmpl.material];
+    for (const fm of flowerMats) {
+      attachWindSway(fm, { weight: 'height', heightMax: rawH,
+                           amp: CFG.WIND.AMP_FLOWER, freq: CFG.WIND.FREQ_FLOWER });
+    }
     const norm = 0.32 / rawH;
     const matrices = [];
     for (let i = 0; i < count * 12 && matrices.length / 16 < count; i++) {

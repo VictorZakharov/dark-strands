@@ -5,6 +5,7 @@ import { getEngine } from './scene.js';
 import { getSunLight, getSunGroup } from './lighting.js';
 import { getSunH, getSkyColor } from '../systems/daynight.js';
 import { getWeatherModifiers } from '../systems/weather.js';
+import { setWindSwayEnabled } from '../world/windSway.js';
 
 // Post-processing stack. Attach order (= execution order) matters:
 //   1. SSAO2 pipeline (prepass MRT)          — AO composited on scene color (off by default)
@@ -430,6 +431,7 @@ export function initPostFX(scene, camera) {
       grain: (on) => { if (_drp) _drp.grainEnabled = !!on; },
       sharpen: (on) => { if (_drp) _drp.sharpenEnabled = !!on; },
       glow: (v) => { _glowMul = v; }, // multiplier — updatePostFX owns the base intensity
+      wind: (on) => { setWindSwayEnabled(on); }, // vegetation sway (recompiles materials)
       // Bisect helper: force the sun shadow map back to every-frame rendering
       // (disables the event-driven refresh optimization entirely)
       shadowEveryFrame: () => {

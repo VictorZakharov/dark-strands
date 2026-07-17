@@ -284,7 +284,8 @@ function pushQuad(out, pts, n, uvs) {
  * both stone faces (exterior + interior), from the base-course line up to
  * the wall top, with the same door/window cutouts as the wall itself.
  * The stone wall 0.015u behind keeps handling picking, physics, fog
- * depth, torch shadows and water reflections — the skin is visual only.
+ * depth and torch shadows — the skin is visual only, but it IS in the
+ * water-mirror render list (else plaster houses reflect as bare stone).
  * ─────────────────────────────────────────────────────────────────── */
 function emitPlasterSkin(rec, SW, out) {
     const halfT = CFG.WALL_T / 2;
