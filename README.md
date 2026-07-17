@@ -8,6 +8,8 @@ Dark Strands is an interactive technical showcase — not a game you win. There 
 
 > **Status:** Feature-complete — this is essentially its final form. Maintained for bug fixes only; not actively developing new features.
 
+<img width="1516" height="848" alt="image" src="https://github.com/user-attachments/assets/de888345-3f54-49a1-bf01-903501038ce8" />
+
 ## Features
 
 ### World
