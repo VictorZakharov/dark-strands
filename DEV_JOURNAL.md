@@ -878,3 +878,7 @@
 ## 2026-07-17 (round 19 — drop .idea IDE config)
 
 - Removed the tracked `.idea/` JetBrains project files from the repo (`git rm -r .idea`) and added `.idea/` to `.gitignore` — no longer using Rider. Not a code change; repo hygiene only.
+
+## 2026-07-17 (round 20 — self-host README screenshot)
+
+- Replaced the README hero image's `github.com/user-attachments/...` URL (session-gated, wouldn't render off-GitHub) with a committed `docs/screenshot.jpg`. Downloaded the original 2 MB PNG and re-encoded to JPEG q85 (1516×848, ~196 KB) via .NET System.Drawing; README `<img>` now uses the relative `docs/screenshot.jpg` with descriptive alt text.
