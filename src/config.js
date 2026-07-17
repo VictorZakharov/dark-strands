@@ -104,6 +104,29 @@ export const CFG = {
         { c: [1.3, 1.05, 0.5],   w: 1 },   // yellowing shrub
       ],
     },
+    // Snow-biome palettes (used instead of TINTS when SNOW_MODE). Same
+    // multiply-the-green-texture mechanics, so "frosted" means desaturating:
+    // lift red+blue relative to green, then push toward white for rime.
+    // Snow picks get a tighter 0.9-1.05 jitter — bloom blows out near-white
+    // tints that the autumn palette's 1.1 top end tolerates.
+    TINTS_SNOW: {
+      pine: [
+        { c: [1, 1, 1],          w: 1 },   // a few stay deep green for contrast
+        { c: [0.8, 0.95, 1.18],  w: 2 },   // cold blue-green
+        { c: [1.5, 1.45, 1.8],   w: 2 },   // frosted pale (red≈green whitens, not limes)
+        { c: [1.85, 1.8, 2.3],   w: 1.5 }, // heavy rime
+      ],
+      // Bush presets carry warm material-level tints UNDER the instance color,
+      // so frosting needs red damped relative to blue or it reads yellow
+      bush: [
+        { c: [0.95, 1.05, 1.35], w: 2 },   // cold dull green
+        { c: [1.45, 1.6, 2.0],   w: 2 },   // frosted
+        { c: [1.9, 2.05, 2.5],   w: 1 },   // rimed white-blue
+      ],
+      leafy: [
+        { c: [1.2, 1.05, 1.15],  w: 1 },   // cold pale (snow forces pine today — future-proofing)
+      ],
+    },
     // { preset (ez-tree name), category, h: [minH, maxH] world-unit target
     //   height range, weight: rng pick weight within its category }
     VARIANTS: [
@@ -118,6 +141,21 @@ export const CFG = {
       { id: 'bush2',       preset: 'Bush 2',       category: 'bush',  h: [1.0, 1.6], weight: 2 },
       { id: 'bush3',       preset: 'Bush 3',       category: 'bush',  h: [0.9, 1.4], weight: 1 },
     ],
+  },
+
+  // Wind sway (windSway.js material plugin on vegetation). AMP_* = world-unit
+  // displacement at full sway weight × full wind strength. Leaves/bushes are
+  // in the fog depth pass whose silhouette does NOT sway — keep tree amps
+  // ≤~0.3 or windward canopy edges grow fog-colored fringes in storms.
+  WIND: {
+    AMP_LEAFY: 0.25,
+    AMP_PINE: 0.12,      // needles barely flex
+    AMP_BUSH: 0.16,
+    AMP_GRASS: 0.45,     // not in the fog depth pass — free to be lively
+    AMP_FLOWER: 0.18,
+    FREQ_TREE: 1.0,      // per-material multiplier on the global wind clock
+    FREQ_GRASS: 1.7,     // light plants flutter faster
+    FREQ_FLOWER: 1.5,
   },
 
   // Stone pickup & throwing
@@ -191,5 +229,6 @@ export const CFG = {
     SKY_DOME: true,        // procedural atmosphere/cloud/star dome
     WEATHER: true,         // weather state machine + rain/snow/lightning
     WATER_REFLECTION: true,// planar mirror reflections on the ocean
+    WIND_SWAY: true,       // vegetation vertex sway (CFG.WIND tunables)
   },
 };

@@ -18,6 +18,7 @@ import { CFG } from '../config.js';
 import { rng, rngInt } from '../utils/helpers.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 import { addFogDepthMesh } from '../core/postfx.js';
+import { attachWindSway } from './windSway.js';
 
 // id -> { def, branches, leaves, unitScale, matrices: number[] }
 const _variants = new Map();
@@ -110,10 +111,20 @@ export async function initEzTreeFactory(scene) {
     leafMat.useAlphaFromDiffuseTexture = false; // alpha TEST, not blend
     leafMat.backFaceCulling = false;
     leafMat.twoSidedLighting = true;
-    leafMat.emissiveColor = new Color3(0.06, 0.1, 0.04);
+    // Snow: cool blue-grey ambient glow instead of the warm green one — the
+    // instance tints only MULTIPLY the green-leaning leaf texture (they can't
+    // add blue that isn't there), so the icy cast has to come in additively
+    leafMat.emissiveColor = CFG.SNOW_MODE
+      ? new Color3(0.09, 0.12, 0.18) : new Color3(0.06, 0.1, 0.04);
     leafMat.specularColor = new Color3(0, 0, 0);
     leafMat.diffuseColor = colorFromInt(leafOpts.tint); // preset tint multiply
     leaves.material = leafMat;
+    // Wind sway: ez-tree bakes uv.y=0 at each leaf quad's branch attachment
+    // and 1 at its tip — the only per-vertex base/tip signal (positions are
+    // pre-baked to tree-local space). Bark stays rigid.
+    const swayAmp = { leafy: CFG.WIND.AMP_LEAFY, pine: CFG.WIND.AMP_PINE,
+                      bush: CFG.WIND.AMP_BUSH }[def.category];
+    attachWindSway(leafMat, { weight: 'uv', amp: swayAmp, freq: CFG.WIND.FREQ_TREE });
 
     // Normalize by the branch structure's height (trunk base is at origin)
     const pos = tree.branchesMesh.geometry.getAttribute('position').array;
@@ -167,8 +178,11 @@ export function spawnEz(category, x, y, z) {
   _m.copyToArray(variant.matrices, base);
 
   // Per-instance leaf tint (thin-instance 'color' buffer): weighted pick from
-  // the category palette + brightness jitter so same-tint neighbors differ
-  const tints = CFG.EZTREE.TINTS[category];
+  // the category palette + brightness jitter so same-tint neighbors differ.
+  // Snow swaps in the frosted palettes (branch at read — mutating TINTS in
+  // place would leak snow tints into a later non-snow world)
+  const snow = CFG.SNOW_MODE;
+  const tints = (snow ? CFG.EZTREE.TINTS_SNOW : CFG.EZTREE.TINTS)[category];
   let cr = 1, cg = 1, cb = 1;
   if (tints) {
     let tTotal = 0;
@@ -179,7 +193,7 @@ export function spawnEz(category, x, y, z) {
       tRoll -= t.w;
       if (tRoll <= 0) { pick = t; break; }
     }
-    const b = rng(0.85, 1.1);
+    const b = snow ? rng(0.9, 1.05) : rng(0.85, 1.1);
     cr = pick.c[0] * b; cg = pick.c[1] * b; cb = pick.c[2] * b;
   }
   variant.colors.push(cr, cg, cb, 1);

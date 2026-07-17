@@ -35,6 +35,7 @@ import { initBoundaryShield, updateBoundaryShield } from './world/boundary.js';
 import { initPostFX, updatePostFX, setDepthRenderList, setFogInteriorBoxes, getGlowLayer } from './core/postfx.js';
 import { initSkyDome, updateSkyDome } from './core/skyDome.js';
 import { initWeather, updateWeather, getWeatherModifiers } from './systems/weather.js';
+import { updateWindSway } from './world/windSway.js';
 import { initRainFX, updateRainFX, prewarmRainFX, resetRainFX, pauseRainFX } from './systems/rainFX.js';
 import { setSunGlowFade } from './core/lighting.js';
 
@@ -336,6 +337,7 @@ function gameLoop(time) {
     _lp.phys += performance.now() - _tp0;
     const _te0 = performance.now();
     updateWeather(gdt); // before daynight — it consumes the weather modifiers
+    updateWindSway(gdt, getWeatherModifiers()); // vegetation sway clock/strength
     updateDayNight(gdt, scene);
     updatePostFX();
     updateRainFX(gdt, player, speed);

@@ -362,7 +362,12 @@ function setupWaterReflection(scene, mat) {
     // layer masks, so proxies would show in the mirror as solid blobs that
     // don't exist in the world. ez-tree vegetation (thin-instanced, visible
     // geometry) is picked up by its 'ezTree_' name prefix.
-    const names = ['ground', 'walls', 'flatRoofs', 'slantRoofs', 'mergedRocks'];
+    // wallsPlaster/wallTrims: plaster skins float 0.015u off the stone face
+    // and timber trim sits proud of it — without them plaster/timber houses
+    // reflect as bare stone. Both may be absent (no such buildings) —
+    // filter(Boolean) tolerates that.
+    const names = ['ground', 'walls', 'wallsPlaster', 'wallTrims',
+                   'flatRoofs', 'slantRoofs', 'mergedRocks'];
     mirror.renderList = names.map(n => scene.getMeshByName(n)).filter(Boolean);
     // Bushes excluded: 0.9-1.6u ground-hugging shrubs are invisible in the
     // half-res blurred mirror (the old card system never reflected them),
