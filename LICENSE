@@ -19,15 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-The MIT license above covers the original source code of this project (the
-`src/`, `lib/*-entry.js`, `scripts/`, `tools/`, and build/config files authored
-for Dark Strands).
-
-It does NOT relicense the third-party libraries and art assets that the project
-depends on or redistributes. Those retain their own licenses — Apache-2.0, MIT,
-CC0-1.0, and CC-BY-4.0 — and their required notices and attributions are
-collected in THIRD-PARTY-NOTICES.md. In particular, the fox model is licensed
-CC-BY-4.0 and its attribution must be preserved.

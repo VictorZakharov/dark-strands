@@ -882,3 +882,7 @@
 ## 2026-07-17 (round 20 — self-host README screenshot)
 
 - Replaced the README hero image's `github.com/user-attachments/...` URL (session-gated, wouldn't render off-GitHub) with a committed `docs/screenshot.jpg`. Downloaded the original 2 MB PNG and re-encoded to JPEG q85 (1516×848, ~196 KB) via .NET System.Drawing; README `<img>` now uses the relative `docs/screenshot.jpg` with descriptive alt text.
+
+## 2026-07-17 (round 21 — fix GitHub MIT license detection)
+
+- Trimmed `LICENSE` down to the pure, standard MIT template text. The previous version appended an explanatory "MIT covers the code, not the third-party deps/assets" note after the license body; GitHub's `licensee` classifier compares the whole file to known templates, and the extra prose dropped the match below its confidence threshold, so the repo's About panel showed a generic "View license" instead of "MIT License". The scope note is unchanged in the README License section and in THIRD-PARTY-NOTICES.md, so no information is lost.
