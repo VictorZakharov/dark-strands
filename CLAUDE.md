@@ -3,7 +3,10 @@
 3D first-person survival roguelite prototype built with Babylon.js. Switchable to third person. Supports desktop (keyboard+mouse) and mobile (touch controls).
 
 ## Workflow Rules
-- **Never commit or push without explicit user approval.** Always present the proposed commit message and wait for confirmation before running `git commit` or `git push`.
+- **Commit and push without asking.** Testing happens on the Netlify PR preview, so a change isn't testable until it's pushed — don't block on approval. Make the change, append a `DEV_JOURNAL.md` entry, commit, push, then say what to check.
+- **Bug-fix PRs: a single squashed commit.** A fix is one logical change — for follow-ups on an already-pushed fix branch use `git commit --amend` + `git push --force-with-lease` rather than stacking commits.
+- **Feature PRs: multiple commits are fine.** When the work splits naturally — staged delivery, or one commit per sub-item — keep them separate. Each commit should stand on its own.
+- **Still confirm first for**: merging a PR, force-pushing `main`, or deleting work.
 
 ## Running
 
