@@ -65,11 +65,12 @@ export const CFG = {
       pine:  { sections: [8, 5, 3, 2], segments: [8, 4, 3, 3], leafMult: 0.8 },
       bush:  { sections: [3, 3, 2, 2], segments: [4, 3, 3, 3], leafMult: 0.8 },
     },
-    SINK: 0.35,            // trunk-base sink below the LOWEST sampled nearby
+    SINK: 0.6,             // trunk-base sink below the LOWEST sampled nearby
                            // ground — ez-tree trunks are open-bottomed tubes,
                            // so a rim above the rendered surface reads as a
-                           // floating notched trunk (0.1 was not enough where
-                           // the coarse ground lattice dips on slopes)
+                           // floating hollow notched trunk. 0.1→0.35 still left
+                           // rims exposed where the coarse ground lattice dips
+                           // hard on slopes; 0.6 buries the open bottom.
     // Placement zoning (see vegetation.js placeTrees): single-species forest
     // stands away from the roads + ornamental roadside trees + lone scatter
     ZONING: {

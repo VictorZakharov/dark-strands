@@ -33,6 +33,24 @@ export function isInsideBuilding(wx, wz) {
   return false;
 }
 
+/**
+ * Check if a world position sits on any building's FULL footprint (the wood
+ * floor slab spans the whole footprint, walls and doorway threshold included).
+ * `margin` expands the test outward to also reject the doorstep just outside.
+ * Use this — not isInsideBuilding (which shrinks to the interior) — to forbid
+ * placing things on a building floor.
+ */
+export function isOnBuildingFloor(wx, wz, margin = 0) {
+  for (const b of buildings) {
+    const x1 = b.x * 2 - CFG.GRID - margin;
+    const z1 = b.z * 2 - CFG.GRID - margin;
+    const x2 = (b.x + b.w) * 2 - CFG.GRID + margin;
+    const z2 = (b.z + b.h) * 2 - CFG.GRID + margin;
+    if (wx >= x1 && wx <= x2 && wz >= z1 && wz <= z2) return true;
+  }
+  return false;
+}
+
 export function generateBuildings() {
   // Flat zone around player spawn
   addFlatZone(-8, -8, 8, 8);

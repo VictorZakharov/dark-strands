@@ -61,7 +61,6 @@ Checked into this repository under `assets/`.
 | File | License | Attribution / Source |
 |------|---------|----------------------|
 | `assets/models/Soldier.glb` | MIT | three.js examples — © three.js authors — https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf |
-| `assets/models/Flower.glb` | MIT | three.js examples — © three.js authors — https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf |
 | `assets/models/Fox.glb` | **CC-BY 4.0** | See required attribution below |
 | `assets/models/eztree/grass.glb` | MIT | ez-tree demo app — © 2024 Daniel Greenheck — https://github.com/dgreenheck/ez-tree |
 | `assets/models/eztree/flower_white.glb` | MIT | ez-tree demo app — © 2024 Daniel Greenheck — https://github.com/dgreenheck/ez-tree |

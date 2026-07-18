@@ -95,8 +95,21 @@ export async function initEzTreeFactory(scene) {
     barkNrm.vScale = barkTex.vScale;
     barkNrm.level = 0.6; // mild — full-strength normals sparkle under the sun
     barkMat.bumpTexture = barkNrm;
-    barkMat.diffuseColor = colorFromInt(barkOpts.tint);
+    // Lift dark presets toward a woody brown so bark reads as textured wood.
+    barkMat.diffuseColor = Color3.Lerp(colorFromInt(barkOpts.tint),
+      new Color3(0.5, 0.42, 0.32), 0.4);
     barkMat.specularColor = new Color3(0.02, 0.02, 0.02);
+    // ez-tree branch tubes render inside-out / hollow with single-sided culling
+    // — the near OUTER wall is dropped and you see the dark INNER wall (why the
+    // trunk read as a near-black hollow). Double-sided + two-sided lighting
+    // shows a correctly-lit outer surface from any angle, the same recipe the
+    // leaves use. Bark is a big triangle cost, but correctness wins here.
+    barkMat.backFaceCulling = false;
+    barkMat.twoSidedLighting = true;
+    // Ambient floor: trunks sit inside their own canopy shadow, so a face the
+    // sun never reaches gets only hemi light — floor it so bark isn't a black
+    // silhouette. (GlowLayer is include-only/torches, so this does NOT bloom.)
+    barkMat.emissiveColor = new Color3(0.1, 0.085, 0.065);
     branches.material = barkMat;
 
     // --- leaves ---------------------------------------------------------

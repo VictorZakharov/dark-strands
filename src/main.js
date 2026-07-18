@@ -24,7 +24,7 @@ import { isTouchDevice, getTouchMove, consumeTouchLook, consumeJump, consumeInte
 import { updateDayNight, setCycleEnabled, setStartTime, getSunOffset, getSunH, isCycleEnabled, getSkyColor } from './systems/daynight.js';
 import { updateFPS, updateCameraMode, updateMinimap, updateInventory } from './systems/hud.js';
 import { initAmbience, updateAmbience } from './systems/audio.js';
-import { updateFlowers, getNearestFlower, initFlowerPreview, updateFlowerPreview } from './world/flowers.js';
+import { getNearestFlower, initFlowerPreview, updateFlowerPreview, prewarmFlowerPreviews, hideFlowerPreview } from './world/flowers.js';
 import { getTerrainHeight } from './world/terrain.js';
 import { initHotbar, getSelectedSlot, getSlotItem, isPlacementMode, isAltMode, selectSlot } from './systems/hotbar.js';
 import { updateProjectiles, initRockPreview, updateRockPreview, getNearestInFlightRock, kickNearbyRock } from './systems/projectiles.js';
@@ -443,13 +443,12 @@ function gameLoop(time) {
     updateDoors(gdt);
     updateDoorTorchPositions();
     updateNpcs(gdt);
-    updateFlowers(gdt, camera);
     updateProjectiles(gdt);
     updateBoundaryShield(gdt);
 
     const slotItem = alt ? null : getSlotItem(getSelectedSlot());
-    const placementActive = !alt && isPlacementMode() && slotItem === 'flower';
-    updateFlowerPreview(camera, placementActive);
+    const placementActive = !alt && isPlacementMode() && typeof slotItem === 'string' && slotItem.startsWith('flower_');
+    updateFlowerPreview(camera, placementActive, slotItem);
 
     const torchActive = !alt && isPlacementMode() && slotItem === 'torch';
     updateHeldTorch(camera, torchActive, getPlayerState());
@@ -628,11 +627,14 @@ async function buildWorld() {
   if (_sunLight) _sunLight.shadowEnabled = true;
 
   await yieldFrame();
-  // Pre-warm held torch so WebGPU compiles the pipeline during loading (not on first equip)
+  // Pre-warm held torch + flower ghosts so WebGPU compiles their pipelines
+  // during loading (not on first equip / first plant-mode toggle)
   const ps = getPlayerState();
   prewarmHeldTorch(ps);
+  prewarmFlowerPreviews();
   scene.render(); // first render — all lights active, WebGPU pipelines compile once
   hideHeldTorch(); // park held torch far away after pipeline is warm
+  hideFlowerPreview(); // park flower ghosts after their pipeline is warm
 
   // Freeze world matrices on static meshes — saves CPU per frame by skipping
   // matrix recalculation and bounding info updates for geometry that never moves.

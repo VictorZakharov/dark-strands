@@ -1,7 +1,6 @@
 import { SceneLoader, Vector3, Color3, Matrix } from 'babylonjs';
 import { MODEL_REGISTRY } from './models.js';
 import { randomWalkablePos } from '../world/grid.js';
-import { registerFlower, setFlowerTemplate } from '../world/flowers.js';
 import { registerSoldier, registerFox } from '../systems/npcAI.js';
 import { getTerrainHeight } from '../world/terrain.js';
 import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
@@ -245,8 +244,7 @@ function placeClone(scene, container, def) {
   const animGroups = instance.animationGroups;
 
   normalizeScale(rootNode, def.targetHeight);
-  // Flowers are tiny — skip shadows entirely to save draw calls
-  enableShadows(rootNode, def.id !== 'flower');
+  enableShadows(rootNode);
 
   if (def.animated && animGroups.length > 0) {
     const mixer = createAnimMixer(animGroups);
@@ -258,8 +256,6 @@ function placeClone(scene, container, def) {
 
   rootNode.position = new Vector3(pos.x, getTerrainHeight(pos.x, pos.z), pos.z);
   rootNode.rotation = new Vector3(0, Math.random() * Math.PI * 2, 0);
-
-  if (def.id === 'flower') registerFlower(rootNode, pos.x, pos.z);
 }
 
 export async function loadAllModels(scene, onModel) {
@@ -277,16 +273,6 @@ export async function loadAllModels(scene, onModel) {
       _containers.set(def.id, container);
 
       const fetchMs = (performance.now() - mt0).toFixed(0);
-
-      // For flower, set the template from the first instance
-      if (def.id === 'flower') {
-        const templateInstance = container.instantiateModelsToScene(
-          name => name + '_flowerTemplate'
-        );
-        const templateRoot = templateInstance.rootNodes[0];
-        normalizeScale(templateRoot, def.targetHeight);
-        setFlowerTemplate(templateRoot);
-      }
 
       for (let i = 0; i < def.count; i++) {
         if (def.id === 'soldier') {
