@@ -128,7 +128,14 @@ function resumeFromPause(blocker) {
   }
 }
 
-function setupHelpTabs(panel) {
+/**
+ * Wire the help panel's tab buttons and pick the right default tab.
+ * MUST be called before the panel is shown, by EVERY path that shows it —
+ * the mobile "?" button included. On touch devices the CSS hides the Controls
+ * tab content outright, so a panel shown without this runs with no .active
+ * content at all and renders completely empty.
+ */
+export function setupHelpTabs(panel) {
   if (panel._tabsReady) return;
   panel._tabsReady = true;
   const tabs = panel.querySelectorAll('.help-tab');
@@ -155,6 +162,8 @@ function toggleHelp() {
   if (!el) return;
   helpVisible = !helpVisible;
   el.style.display = helpVisible ? 'flex' : 'none';
+  // Gates body's touch-action so the guide can scroll on touch — see styles.css
+  document.body.classList.toggle('help-open', helpVisible);
   if (helpVisible) {
     setupHelpTabs(el);
     document.exitPointerLock();
@@ -409,6 +418,7 @@ export function initControls() {
       helpVisible = false;
       const helpEl = document.getElementById('help-overlay');
       if (helpEl) helpEl.style.display = 'none';
+      document.body.classList.remove('help-open');
       pendingLockEl = renderer.domElement;
       return;
     }

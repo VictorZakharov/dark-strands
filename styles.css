@@ -10,6 +10,12 @@ body {
   font-family: 'Courier New', monospace;
 }
 
+/* overflow:hidden does NOT stop Chrome Android pull-to-refresh, and it
+   propagates to the viewport from the ROOT element — so html must be included. */
+html, body {
+  overscroll-behavior: none;
+}
+
 canvas#game {
   display: block;
   width: 100vw;
@@ -913,6 +919,20 @@ canvas#game {
     touch-action: none;
   }
 
+  /* The guide's scroller can never beat an ancestor `none`: WebKit intersects
+     touch-action across the WHOLE ancestor chain (none ∩ pan-y = none), which
+     is why setting pan-y on .help-tab-content alone did nothing on iOS. So
+     relax body, but ONLY while the guide is open — index.html's viewport meta
+     has no user-scalable=no, making this rule the sole pinch-zoom and
+     double-tap-zoom guard during play. pan-y (not auto) keeps zoom dead even
+     while the guide is up. Do NOT try `body > *:not(#help-overlay)`: a
+     multi-touch gesture resolves touch-action at the lowest common ancestor of
+     its touch points, which for two thumbs on different children is body —
+     that variant silently re-enables pinch-zoom mid-game. */
+  body.help-open {
+    touch-action: pan-y;
+  }
+
   /* Hide desktop-only UI */
   #menu-keys {
     display: none !important;
@@ -1076,6 +1096,15 @@ canvas#game {
 
   #help-header {
     padding: 14px 16px 12px;
+    /* Push the tabs and the close button into one right-hand cluster (the
+       margin-left:auto below eats the free space, so space-between has none
+       left to spread), leaving this gap between the tab group and the X. */
+    gap: 12px;
+  }
+
+  #help-tabs {
+    margin-left: auto;
+    flex: 0 0 auto;
   }
 
   #help-title {
@@ -1088,19 +1117,52 @@ canvas#game {
     padding: 4px 10px;
   }
 
+  /* Generous square tap target. flex-shrink:0 is load-bearing: the header is a
+     flex row and on a ~360-390px viewport the title + tabs + X overflow it, so
+     a shrinkable item gets compressed horizontally and the "square" renders as
+     a narrow rectangle. An explicit width does NOT prevent that — only
+     flex-shrink:0 does. The title absorbs the shortfall instead (it wraps). */
   #help-close-mobile {
-    font-size: 11px;
-    padding: 8px 16px;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    font-family: inherit;
+    font-size: 17px;
+    line-height: 1;
+    letter-spacing: 0;
     border-color: rgba(232, 216, 160, 0.25);
     color: rgba(232, 216, 160, 0.7);
+    cursor: pointer;
     -webkit-tap-highlight-color: transparent;
   }
 
-  #help-content,
-  #help-content-mobile {
+  /* Let the title give up the space instead */
+  #help-title {
+    min-width: 0;
+  }
+
+  /* Match the tabs' height exactly so the cluster lines up. inline-flex rather
+     than the button default so the label stays centred at a fixed height. */
+  .help-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    padding: 0 14px;
+  }
+
+  /* The scrollable body of each tab. Was targeting #help-content /
+     #help-content-mobile — neither ID has ever existed in index.html, so this
+     block was dead and mobile padding/scroll never applied. */
+  .help-tab-content {
     padding: 12px 16px 20px;
     gap: 16px;
     touch-action: pan-y;
+    overscroll-behavior: contain;
   }
 
   .help-grid {

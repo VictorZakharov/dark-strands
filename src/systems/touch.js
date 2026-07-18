@@ -1,4 +1,7 @@
 import { toggleCamera } from '../entities/player.js';
+// Circular with controls.js (it imports this module) — safe: only called at
+// runtime from an event handler, never during module evaluation.
+import { setupHelpTabs } from './controls.js';
 
 export const isTouchDevice = 'ontouchstart' in window;
 
@@ -107,6 +110,11 @@ export function initTouch() {
       if (target && target.closest('#touch-buttons')) continue;
       if (target && target.closest('#touch-top-buttons')) continue;
       if (target && target.closest('#blocker')) continue;
+      // The guide sits over the game surface: without this, touches on it fall
+      // through to joystick/look and get preventDefault'd — which kills the tab
+      // buttons (click is synthesized from touch), kills scrolling, and walks
+      // the player around behind the overlay.
+      if (target && target.closest('#help-overlay')) continue;
 
       // Hotbar slot tap
       const slot = target && target.closest('.hotbar-slot');
@@ -259,7 +267,21 @@ export function initTouch() {
     const helpEl = document.getElementById('help-overlay');
     if (!helpEl) return;
     const visible = helpEl.style.display === 'flex';
+    if (!visible) {
+      // Wire tabs + select the Touch tab BEFORE showing. Without this the panel
+      // opens empty on mobile: the CSS hides the Controls tab content (the only
+      // one marked active in the markup) and nothing else ever gets .active.
+      setupHelpTabs(helpEl);
+      // Drop any in-flight drag, same as the pause button — the bypass above
+      // only stops NEW touches, it can't release a joystick already latched.
+      joystickId = -1; lookId = -1;
+      moveX = 0; moveZ = 0;
+      if (lpActive) hideProgress();
+      if (joystickEl) joystickEl.style.display = 'none';
+    }
     helpEl.style.display = visible ? 'none' : 'flex';
+    // Gates body's touch-action so the guide can scroll — see styles.css
+    document.body.classList.toggle('help-open', !visible);
   });
 
   // Mobile help close button
@@ -269,6 +291,7 @@ export function initTouch() {
       e.preventDefault();
       const helpEl = document.getElementById('help-overlay');
       if (helpEl) helpEl.style.display = 'none';
+      document.body.classList.remove('help-open');
     }, { passive: false });
   }
 }
