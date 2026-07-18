@@ -175,6 +175,13 @@ export function initLighting(scene) {
 let _shSnapX = Infinity, _shSnapY = Infinity, _shSnapZ = Infinity;
 const _shLastDir = new Vector3(0, 0, 0);
 let _shFrame = 0;
+// The transform the CURRENT shadow map contents were rendered from. On the
+// throttled path this must be re-asserted every frame: Babylon rebuilds the
+// shadow sampling matrix from sunLight.position in the main pass EVERY frame,
+// so if anything else moves the light between refreshes, the matrix no longer
+// matches the texture and the whole shadow field slides off its casters.
+const _shCommittedPos = new Vector3(0, 0, 0);
+let _shHasCommitted = false;
 
 export function updateSunShadow(px, py, pz) {
   if (!sunLight) return;
@@ -200,7 +207,12 @@ export function updateSunShadow(px, py, pz) {
   if (_throttleSunShadow) {
     const moved = qx !== _shSnapX || qy !== _shSnapY || qz !== _shSnapZ;
     const heartbeat = _shFrame % 8 === 0;
-    if (!moved && !dirChanged && !heartbeat) return;
+    if (!moved && !dirChanged && !heartbeat) {
+      // Skipped frame: the map is NOT re-rendering, so pin the light to the
+      // transform it was last rendered from (see _shCommittedPos above).
+      if (_shHasCommitted) sunLight.position.copyFrom(_shCommittedPos);
+      return;
+    }
     _shSnapX = qx; _shSnapY = qy; _shSnapZ = qz;
   }
   _shLastDir.copyFrom(d);
@@ -238,6 +250,8 @@ export function updateSunShadow(px, py, pz) {
     axy * cx + ayy * cy + fy * (cf - 70),
     axz * cx + ayz * cy + fz * (cf - 70)
   );
+  _shCommittedPos.copyFrom(sunLight.position);
+  _shHasCommitted = true;
   if (_throttleSunShadow) {
     const sm = sunCSM ? sunCSM.getShadowMap() : null;
     if (sm) sm.resetRefreshCounter();
