@@ -8,6 +8,11 @@ import { getSlotItem, ITEM_META } from '../systems/hotbar.js';
 import { getPickableRocks } from '../world/vegetation.js';
 import { getActiveProjectilePositions } from '../systems/projectiles.js';
 import { getTerrainHeight } from '../world/terrain.js';
+import { shadowModeTag } from '../core/scene.js';
+
+// Only shown when ?shadow= is explicitly passed, so the prod HUD stays clean.
+// Read lazily on first use — scene.js resolves the arm during initScene().
+let _armTag = null;
 
 // 5-petal flower icon in the given petal/stroke/centre colors.
 function flowerSVG(petal, stroke, centre) {
@@ -33,8 +38,12 @@ let _waterCells = null; // cached water cell coordinates
 export function updateFPS(time) {
   frameCount++;
   if (time - fpsTime >= 1000) {
+    if (_armTag === null) {
+      _armTag = new URLSearchParams(location.search).has('shadow')
+        ? ' ' + shadowModeTag() : '';
+    }
     const el = document.getElementById('fps-display');
-    if (el) el.textContent = `FPS: ${frameCount}`;
+    if (el) el.textContent = `FPS: ${frameCount}${_armTag}`;
     frameCount = 0;
     fpsTime = time;
   }

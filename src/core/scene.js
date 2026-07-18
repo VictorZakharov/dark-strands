@@ -3,11 +3,20 @@ import { Engine, WebGPUEngine, Scene, FreeCamera, Vector3, Color3, Color4,
 
 let engine, scene, camera;
 let _useWebGPU = false;
+// 'throttle' | 'everyframe'. Default is per-backend (see initScene), overridable
+// with ?shadow=throttle / ?shadow=everyframe so the two can be A/B'd on one build.
+let _shadowMode = 'throttle';
 
 export function getEngine() { return engine; }
 export function getScene() { return scene; }
 export function getCamera() { return camera; }
 export function isWebGPU() { return _useWebGPU; }
+/** Single source of truth for whether shadow maps use the event-driven refresh. */
+export function shadowThrottled() { return _shadowMode === 'throttle'; }
+/** Compact arm label for the HUD, e.g. "GPU/thr" — mobile has no console. */
+export function shadowModeTag() {
+  return `${_useWebGPU ? 'GPU' : 'GL2'}/${_shadowMode === 'throttle' ? 'thr' : 'every'}`;
+}
 
 // Compat shim — old code calls getRenderer().domElement for pointer lock / canvas access
 let _rendererShim = null;
@@ -52,6 +61,14 @@ export async function initScene() {
     engine = new Engine(canvas, true, { stencil: true, preserveDrawingBuffer: false });
     console.log('Using WebGL2');
   }
+
+  // Resolve the shadow arm EAGERLY here — _useWebGPU is only set above, after
+  // await engine.initAsync(), so any module-load-time read would see false.
+  const _sm = (new URLSearchParams(location.search).get('shadow') || '').toLowerCase();
+  _shadowMode = (_sm === 'throttle' || _sm === 'everyframe')
+    ? _sm
+    : (_useWebGPU ? 'everyframe' : 'throttle');
+  console.log(`[SHADOW] backend=${_useWebGPU ? 'WebGPU' : 'WebGL2'} mode=${_shadowMode}`);
 
   // Render at native device resolution for sharp visuals on any DPI.
   // adaptToDeviceRatio:false means canvas is sized in CSS pixels;
