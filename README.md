@@ -198,8 +198,8 @@ src/
   utils/
     helpers.js         Grid/world coordinate conversion, RNG
 assets/
-  models/              Soldier.glb, Fox.glb, Flower.glb
-    eztree/            grass.glb + grass.jpg, flower_white/blue/yellow.glb (ez-tree demo)
+  models/              Soldier.glb, Fox.glb
+    eztree/            grass.glb + grass.jpg, flower_white/blue/yellow.glb (ez-tree demo — pickable wildflowers)
   textures/            grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg, fabric.png
   sounds/              ambience.mp3 (looping outdoor ambience)
 ```
@@ -207,9 +207,9 @@ assets/
 ## Asset Credits
 
 **Models**
-- Soldier.glb, Flower.glb — [Three.js examples](https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf) (MIT)
+- Soldier.glb — [Three.js examples](https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf) (MIT)
 - Fox.glb — [Khronos glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) (CC-BY 4.0)
-- Grass clump + white/blue/yellow wildflowers (`assets/models/eztree/`) — from the [ez-tree](https://github.com/dgreenheck/ez-tree) demo app (MIT)
+- Grass clump + white/blue/yellow wildflowers (`assets/models/eztree/`, the pickable flowers) — from the [ez-tree](https://github.com/dgreenheck/ez-tree) demo app (MIT)
 
 **Textures**
 - grass.jpg, stone_wall.jpg, bark.jpg, wood_planks.jpg, fabric.png — [Poly Haven](https://polyhaven.com) (CC0)

@@ -19,13 +19,7 @@ export const MODEL_REGISTRY = [
     animated: true,
     license: 'CC-BY 4.0 (Khronos glTF-Sample-Assets)',
   },
-  {
-    id: 'flower',
-    name: 'Flower',
-    url: './assets/models/Flower.glb',
-    targetHeight: 0.4,
-    count: 50,
-    animated: false,
-    license: 'MIT (Three.js examples)',
-  },
+  // NOTE: wildflowers are NOT here — they're thin-instanced by
+  // world/vegetation.js (placeFlowers) and made pickable/plantable by
+  // world/flowers.js, so every flower in the field is interactable.
 ];

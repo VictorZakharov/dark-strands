@@ -4,7 +4,7 @@ import { toggleNearestDoor, getNearestDoor } from '../world/doors.js';
 import { talkToNearestSoldier } from '../systems/npcAI.js';
 import { pickNearestFlower, getInventory, plantFlower, isPreviewValid, hideFlowerPreview } from '../world/flowers.js';
 import { pickNearestRock } from '../world/vegetation.js';
-import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacementMode, isAltMode, enterAltMode, exitAltMode, moveCursor, cursorDown, cursorUp, addItemToSlot, clearItemSlot } from '../systems/hotbar.js';
+import { selectSlot, getSelectedSlot, getSlotItem, isPlacementMode, setPlacementMode, isAltMode, enterAltMode, exitAltMode, moveCursor, cursorDown, cursorUp, addItemToSlot, clearItemSlot, ITEM_META } from '../systems/hotbar.js';
 import { spawnProjectile, isRockPreviewValid, placeRockAtPreview, pickNearestInFlightRock } from '../systems/projectiles.js';
 import { pickNearestTorch, hideHeldTorch, isTorchPreviewValid, placeTorchAtPreview } from '../world/torches.js';
 import { isTouchDevice, initTouch, setMobileGameActive, isMobileGameActive } from './touch.js';
@@ -191,7 +191,8 @@ export function doInteract() {
   } else if (source === 'soldier') {
     talkToNearestSoldier(); handled = true;
   } else if (source === 'flower') {
-    if (pickNearestFlower()) { addItemToSlot('flower'); setPlacementMode(false); handled = true; }
+    const picked = pickNearestFlower(); // returns the flower's hotbar item type
+    if (picked) { addItemToSlot(picked); setPlacementMode(false); handled = true; }
   } else if (source === 'rock') {
     if (pickNearestRock(getInventory()) || pickNearestInFlightRock(getInventory())) { addItemToSlot('stone'); setPlacementMode(false); handled = true; }
   } else if (source === 'torch') {
@@ -217,12 +218,13 @@ export function doUseItem() {
   const slot = getSelectedSlot();
   const item = getSlotItem(slot);
   const inv = getInventory();
-  if (item === 'flower') {
-    if (inv.flowers <= 0) return;
+  if (item && item.startsWith('flower_')) {
+    const key = ITEM_META[item].invKey;
+    if (inv[key] <= 0) return;
     if (isPlacementMode()) {
       if (isPreviewValid()) {
-        plantFlower(getScene());
-        if (inv.flowers <= 0) clearItemSlot('flower');
+        plantFlower(getScene(), item);
+        if (inv[key] <= 0) { clearItemSlot(item); setPlacementMode(false); }
       }
     } else {
       setPlacementMode(true);

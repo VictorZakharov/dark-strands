@@ -4,12 +4,21 @@ let placementMode = false;
 // Slot-to-item mapping — starts empty, items assigned on pickup
 const slotItems = [null, null, null, null, null];
 
-// Item metadata for rendering and inventory mapping
+// Item metadata for rendering and inventory mapping. Each flower color is its
+// own item type so different colors land in different hotbar slots.
 export const ITEM_META = {
-  flower: { invKey: 'flowers', icon: '\uD83C\uDF38' },
+  flower_white:  { invKey: 'flowerWhite',  icon: 'svg:flower_white' },
+  flower_yellow: { invKey: 'flowerYellow', icon: 'svg:flower_yellow' },
+  flower_blue:   { invKey: 'flowerBlue',   icon: 'svg:flower_blue' },
   stone:  { invKey: 'stones',  icon: 'svg:rock' },
   torch:  { invKey: 'torches', icon: '\uD83D\uDD25' },
 };
+
+/** Items that toggle a placement/preview mode when their slot is re-selected. */
+export function isPlaceableItem(item) {
+  return item === 'stone' || item === 'torch' ||
+    (typeof item === 'string' && item.startsWith('flower_'));
+}
 
 export function getSelectedSlot() { return selectedSlot; }
 export function getSlotItem(idx) { return slotItems[idx]; }
@@ -21,7 +30,7 @@ export function selectSlot(idx) {
   if (idx < 0 || idx > 4) return;
   if (idx === selectedSlot && placementMode) {
     placementMode = false;
-  } else if (idx === selectedSlot && (slotItems[idx] === 'flower' || slotItems[idx] === 'torch' || slotItems[idx] === 'stone')) {
+  } else if (idx === selectedSlot && isPlaceableItem(slotItems[idx])) {
     placementMode = true;
   } else {
     selectedSlot = idx;
@@ -52,8 +61,19 @@ export function clearItemSlot(itemType) {
 }
 
 // SVG icons for drag placeholder (larger, semi-transparent)
+function dragFlowerSVG(petal, stroke, centre) {
+  return '<svg viewBox="0 0 24 24" width="36" height="36" opacity="0.85">'
+    + '<g fill="' + petal + '" stroke="' + stroke + '" stroke-width="0.6">'
+    + '<circle cx="12" cy="5" r="4"/><circle cx="18.7" cy="9.8" r="4"/>'
+    + '<circle cx="16.1" cy="17.7" r="4"/><circle cx="7.9" cy="17.7" r="4"/>'
+    + '<circle cx="5.3" cy="9.8" r="4"/></g>'
+    + '<circle cx="12" cy="12" r="3.4" fill="' + centre + '"/></svg>';
+}
 const DRAG_SVG = {
   rock: '<svg viewBox="0 0 24 24" width="36" height="36"><polygon points="5,18 2,12 4,7 9,4 15,3 20,6 22,12 19,18 14,20 8,20" fill="#8a7a60" stroke="#5c4e3a" stroke-width="1" opacity="0.85"/><polygon points="7,16 5,11 8,7 13,6 17,8 18,13 15,17 10,17" fill="#a08c6e" opacity="0.85"/><line x1="9" y1="7" x2="14" y2="16" stroke="#6e5e46" stroke-width="0.5"/><line x1="5" y1="12" x2="17" y2="9" stroke="#6e5e46" stroke-width="0.5"/></svg>',
+  flower_white:  dragFlowerSVG('#eef1f6', '#c3cad6', '#f2c94c'),
+  flower_yellow: dragFlowerSVG('#f4d24a', '#d9a72a', '#a86a12'),
+  flower_blue:   dragFlowerSVG('#7ea8e6', '#5b84c4', '#f3e185'),
 };
 
 // --- ALT mode: virtual cursor (pointer lock stays active) ---

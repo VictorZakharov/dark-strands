@@ -9,8 +9,21 @@ import { getPickableRocks } from '../world/vegetation.js';
 import { getActiveProjectilePositions } from '../systems/projectiles.js';
 import { getTerrainHeight } from '../world/terrain.js';
 
+// 5-petal flower icon in the given petal/stroke/centre colors.
+function flowerSVG(petal, stroke, centre) {
+  return '<svg class="slot-icon-svg" viewBox="0 0 24 24" width="26" height="26">'
+    + '<g fill="' + petal + '" stroke="' + stroke + '" stroke-width="0.6">'
+    + '<circle cx="12" cy="5" r="4"/><circle cx="18.7" cy="9.8" r="4"/>'
+    + '<circle cx="16.1" cy="17.7" r="4"/><circle cx="7.9" cy="17.7" r="4"/>'
+    + '<circle cx="5.3" cy="9.8" r="4"/></g>'
+    + '<circle cx="12" cy="12" r="3.4" fill="' + centre + '"/></svg>';
+}
+
 const SVG_ICONS = {
   rock: '<svg class="slot-icon-svg" viewBox="0 0 24 24" width="26" height="26"><polygon points="5,18 2,12 4,7 9,4 15,3 20,6 22,12 19,18 14,20 8,20" fill="#8a7a60" stroke="#5c4e3a" stroke-width="1"/><polygon points="7,16 5,11 8,7 13,6 17,8 18,13 15,17 10,17" fill="#a08c6e"/><line x1="9" y1="7" x2="14" y2="16" stroke="#6e5e46" stroke-width="0.5"/><line x1="5" y1="12" x2="17" y2="9" stroke="#6e5e46" stroke-width="0.5"/></svg>',
+  flower_white:  flowerSVG('#eef1f6', '#c3cad6', '#f2c94c'),
+  flower_yellow: flowerSVG('#f4d24a', '#d9a72a', '#a86a12'),
+  flower_blue:   flowerSVG('#7ea8e6', '#5b84c4', '#f3e185'),
 };
 
 let frameCount = 0;

@@ -138,7 +138,7 @@ src/
 - **Soldier.glb**: Idle, Walk, Run (3 clips only — no jump, attack, death, etc.)
 - **Horse.glb**: Gallop (1 clip)
 - **Fox.glb**: Survey, Walk, Run (3 clips)
-- **Flower.glb**: none (static)
+- **ez-tree wildflowers** (`assets/models/eztree/flower_*.glb`): none (static) — thin-instanced pickable/plantable field, see `world/flowers.js`
 
 To add more animations (attack, jump, die, reload, etc.) use **Mixamo** (https://mixamo.com):
 - Upload any humanoid model, pick animations, download as GLB/FBX
@@ -203,7 +203,7 @@ A simulated mouse cursor rendered as a CSS circle element, used in two contexts:
 Current models were sourced from these free repositories:
 
 - **Three.js examples** (MIT License): https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf
-  - Soldier.glb, Horse.glb, Flower.glb
+  - Soldier.glb, Horse.glb
 - **Khronos glTF-Sample-Assets** (CC-BY 4.0): https://github.com/KhronosGroup/glTF-Sample-Assets
   - Fox.glb
 

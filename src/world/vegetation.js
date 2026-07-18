@@ -11,6 +11,7 @@ import { addShadowCaster, enableShadowReceiving } from '../core/lighting.js';
 import { createStaticSphere, createStaticCylinder, hasLineOfSight, ROCK_COLLISION_GROUP } from '../core/physics.js';
 import { spawnEz, finalizeEz } from './ezTreeFactory.js';
 import { attachWindSway } from './windSway.js';
+import { registerFlowerField } from './flowers.js';
 
 let rockTex;
 
@@ -449,19 +450,26 @@ export async function placeGrass(scene) {
   await placeFlowers(scene, grid, buildings, inBuilding);
 }
 
-/** Wildflowers from the ez-tree demo app (MIT): white/blue/yellow GLB
- *  clusters thin-instanced across grassy cells — 1 draw call per color. */
+/** Wildflowers from the ez-tree demo app (MIT): white/blue/yellow GLB clusters
+ *  thin-instanced across grassy cells — 1 draw call per color. These ARE the
+ *  pickable/plantable flowers: flowers.js drives pick/plant/respawn by editing
+ *  the instance matrices, with PLANT_HEADROOM hidden slots reserved for
+ *  planting. Each field is registered with flowers.js after it's built. */
 async function placeFlowers(scene, grid, buildings, inBuilding) {
   const kinds = [
-    ['./assets/models/eztree/flower_white.glb', 'flowersWhite', 55],
-    ['./assets/models/eztree/flower_yellow.glb', 'flowersYellow', 50],
-    ['./assets/models/eztree/flower_blue.glb', 'flowersBlue', 35],
+    // file, mesh name, hotbar item type, inventory key, initial count
+    ['./assets/models/eztree/flower_white.glb',  'flowersWhite',  'flower_white',  'flowerWhite',  55],
+    ['./assets/models/eztree/flower_yellow.glb', 'flowersYellow', 'flower_yellow', 'flowerYellow', 50],
+    ['./assets/models/eztree/flower_blue.glb',   'flowersBlue',   'flower_blue',   'flowerBlue',   35],
   ];
+  const PLANT_HEADROOM = 45; // reserved hidden instances per color for planting
+  const hidden = Matrix.Scaling(0.00001, 0.00001, 0.00001);
+  hidden.setTranslation(new Vector3(0, -2000, 0));
   const m = new Matrix();
   const q = Quaternion.Identity();
   const scl = new Vector3();
   const pos = new Vector3();
-  for (const [file, name, count] of kinds) {
+  for (const [file, name, itemType, invKey, count] of kinds) {
     const { tmpl, height: rawH } = await loadEzTemplate(scene, file);
     tmpl.name = name;
     // Wind sway on every sub-material (merged GLBs keep a MultiMaterial of
@@ -473,8 +481,15 @@ async function placeFlowers(scene, grid, buildings, inBuilding) {
                            amp: CFG.WIND.AMP_FLOWER, freq: CFG.WIND.FREQ_FLOWER });
     }
     const norm = 0.32 / rawH;
+
+    // Single-mesh clone taken BEFORE thin-instancing — flowers.js reskins it as
+    // the translucent placement ghost.
+    const previewBase = tmpl.clone(name + '_previewBase');
+    previewBase.setEnabled(false);
+
     const matrices = [];
-    for (let i = 0; i < count * 12 && matrices.length / 16 < count; i++) {
+    const records = [];
+    for (let i = 0; i < count * 12 && records.length < count; i++) {
       const gx = rngInt(1, CFG.GRID - 2);
       const gz = rngInt(1, CFG.GRID - 2);
       if (!grid[gx][gz]) continue;
@@ -493,12 +508,24 @@ async function placeFlowers(scene, grid, buildings, inBuilding) {
       const base = matrices.length;
       matrices.length += 16;
       m.copyToArray(matrices, base);
+      records.push({ active: true, wx, wz });
     }
-    if (matrices.length === 0) { tmpl.dispose(); continue; }
-    tmpl.thinInstanceSetBuffer('matrix', new Float32Array(matrices), 16, true);
+    if (records.length === 0) { tmpl.dispose(); previewBase.dispose(); continue; }
+    // Reserved hidden headroom for planting (parked far below the world). A free
+    // slot is any inactive record; picking a flower frees its slot into this
+    // pool, so planting never runs dry.
+    for (let h = 0; h < PLANT_HEADROOM; h++) {
+      const base = matrices.length;
+      matrices.length += 16;
+      hidden.copyToArray(matrices, base);
+      records.push({ active: false, wx: 0, wz: 0 });
+    }
+    // Dynamic buffer (staticBuffer=false): pick/plant/respawn rewrite matrices.
+    tmpl.thinInstanceSetBuffer('matrix', new Float32Array(matrices), 16, false);
     tmpl.alwaysSelectAsActiveMesh = true; // tiny meshes, 1 draw call each
     tmpl.isPickable = false;
     tmpl.freezeWorldMatrix();
+    registerFlowerField({ itemType, invKey, mesh: tmpl, records, norm, previewBase });
   }
 }
 
