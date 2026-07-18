@@ -329,7 +329,7 @@ function gameLoop(time) {
     const _tp3 = performance.now();
     kickNearbyRock(scene);
     const _tp4 = performance.now();
-    updatePlayer(gdt, camera, getSunLight(), activeKeys);
+    updatePlayer(gdt, camera, activeKeys);
     _lp.pm += _tp1 - _tp0;
     _lp.step += _tp2 - _tp1;
     _lp.sync += _tp3 - _tp2;
