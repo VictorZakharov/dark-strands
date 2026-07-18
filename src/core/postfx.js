@@ -432,15 +432,11 @@ export function initPostFX(scene, camera) {
       sharpen: (on) => { if (_drp) _drp.sharpenEnabled = !!on; },
       glow: (v) => { _glowMul = v; }, // multiplier — updatePostFX owns the base intensity
       wind: (on) => { setWindSwayEnabled(on); }, // vegetation sway (recompiles materials)
-      // Bisect helper: force the sun shadow map back to every-frame rendering
-      // (disables the event-driven refresh optimization entirely)
-      shadowEveryFrame: () => {
-        const sun = getSunLight();
-        const sg = sun && sun.getShadowGenerator && sun.getShadowGenerator();
-        const sm = sg && sg.getShadowMap();
-        if (sm) { sm.refreshRate = 1; return 'sun shadow: every frame'; }
-        return 'no shadow map';
-      },
+      // Retired in favour of ?shadow=everyframe. This only set refreshRate on
+      // the SUN map: _throttleSunShadow stayed set (so SNAP=2 and the committed
+      // -position pin stayed active) and all 18 torch cube passes were missed —
+      // a half-state that reads like a working toggle and isn't.
+      shadowEveryFrame: () => 'use ?shadow=everyframe (reload)',
       pipeline: () => ({ ssao: !!_ssao, fog: !!_fogPP, drp: !!_drp, glow: !!_glow }),
     };
   }

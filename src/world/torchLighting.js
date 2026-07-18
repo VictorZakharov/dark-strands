@@ -2,7 +2,7 @@ import {
   PointLight, ShadowGenerator, Color3, Vector3,
   ClusteredLightContainer
 } from 'babylonjs';
-import { isWebGPU } from '../core/scene.js';
+import { shadowThrottled } from '../core/scene.js';
 
 // 3 slots: with near-torch caster subsets a cube costs ~70 draws/frame, and
 // two slots left the 3rd-nearest torch (e.g. mounted under a ceiling in a
@@ -84,7 +84,7 @@ export function initTorchLightPool(scene) {
     // moves + a staggered heartbeat). On WebGPU any throttled shadow map
     // intermittently re-renders from stale GPU state — see the sun shadow
     // comment in core/lighting.js — so the cubes render every frame there.
-    if (!isWebGPU()) {
+    if (shadowThrottled()) {
       const sm = sg.getShadowMap();
       if (sm) sm.refreshRate = 0;
     }

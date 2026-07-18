@@ -2,7 +2,7 @@ import { HemisphericLight, DirectionalLight, Vector3,
          Color3, MeshBuilder, ShaderMaterial, Effect,
          TransformNode, LensFlareSystem, LensFlare,
          ShadowGenerator, CascadedShadowGenerator } from 'babylonjs';
-import { isWebGPU } from './scene.js';
+import { isWebGPU, shadowThrottled } from './scene.js';
 import { CFG } from '../config.js';
 
 let sunLight, hemiLight, sunCSM;
@@ -126,7 +126,16 @@ export function initLighting(scene) {
     // and without skinned casters (screenshot pixel-diff harness). Until
     // fixed upstream, WebGPU renders the map every frame; the fixed frustum
     // still culls casters, which keeps the pass far cheaper than auto-fit.
-    _throttleSunShadow = !isWebGPU();
+    // NB: every WebGPU throttle trial behind the comment above predates PR #23,
+    // which removed a SECOND, unthrottled writer of sunLight.position in
+    // player.js. On skipped frames that stray write survived and Babylon rebuilt
+    // the sampling matrix from it — producing shadows that alternate at exactly
+    // the refresh cadence, which is verbatim the symptom blamed on stale GPU
+    // state. With a static sun and a stationary player the stray vector was
+    // CONSTANT, so the bad frames were pixel-identical between sessions — which
+    // is what the pixel-diff harness read as a "bit-exact replay". The strobe
+    // may therefore already be fixed. ?shadow=throttle exists to settle it.
+    _throttleSunShadow = shadowThrottled();
     if (_throttleSunShadow) {
       const sm = sunCSM.getShadowMap();
       if (sm) sm.refreshRate = 0; // REFRESHRATE_RENDER_ONCE; resetRefreshCounter() re-arms
