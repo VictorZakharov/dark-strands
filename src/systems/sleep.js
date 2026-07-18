@@ -1,6 +1,8 @@
 import { getHoursUntilDawn, getDayTime } from './daynight.js';
 import { getRenderer } from '../core/scene.js';
 import { setTimeStopped } from './controls.js';
+// Runtime-only import cycle (touch.js -> controls.js -> ...), safe per CLAUDE.md
+import { releaseTouchDrags } from './touch.js';
 
 let sleepMenuEl = null;
 let sliderEl = null;
@@ -17,9 +19,12 @@ export function openSleepMenu(onConfirm) {
     onSleepConfirm = onConfirm;
 
     setTimeStopped(true); // Freeze world time
+    releaseTouchDrags();  // release the long-press finger that opened this menu
 
-    // Unlock pointer to use UI
-    document.exitPointerLock();
+    // Unlock pointer to use the UI. Guarded: iOS Safari has no Pointer Lock
+    // API, and an unguarded throw HERE freezes world time before the panel is
+    // ever shown (display:flex is below) — a soft-lock no touch fix can undo.
+    if (document.exitPointerLock) document.exitPointerLock();
 
     const maxHours = Math.floor(getHoursUntilDawn());
     // Minimum 1 hour, max whatever is left until dawn, cap at 24 just in case
@@ -39,10 +44,12 @@ export function closeSleepMenu() {
 
     setTimeStopped(false); // Resume world time
 
-    // Re-lock pointer
-    const renderer = getRenderer();
-    const p = renderer.domElement.requestPointerLock();
-    if (p && p.catch) p.catch(() => { });
+    // Re-lock pointer (absent on iOS Safari — see openSleepMenu)
+    const el = getRenderer().domElement;
+    if (el && el.requestPointerLock) {
+        const p = el.requestPointerLock();
+        if (p && p.catch) p.catch(() => { });
+    }
 }
 
 function formatTime(t) {
@@ -75,8 +82,11 @@ function initSleepUI() {
 
     document.getElementById('sleep-btn-confirm').addEventListener('click', () => {
         const hs = parseInt(sliderEl.value);
-        closeSleepMenu();
-        if (onSleepConfirm) onSleepConfirm(hs);
+        // Capture the callback first and run it in `finally`: closeSleepMenu
+        // touches the Pointer Lock API, and a throw there used to swallow the
+        // sleep entirely (the menu closed but time never advanced).
+        const cb = onSleepConfirm;
+        try { closeSleepMenu(); } finally { if (cb) cb(hs); }
     });
 
     document.getElementById('sleep-btn-cancel').addEventListener('click', closeSleepMenu);

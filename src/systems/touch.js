@@ -33,6 +33,7 @@ const ARC_LEN = 2 * Math.PI * 34; // circumference for r=34
 
 // Cached DOM elements (set in initTouch)
 let progressEl, progressArc, progressLabel;
+let joystickEl, knobEl;
 
 function showProgress(text) {
   if (!progressEl) return;
@@ -66,6 +67,27 @@ export function consumeSlotTap() {
   const v = slotTapped; slotTapped = -1; return v;
 }
 export function isMobileGameActive() { return gameActive; }
+
+/**
+ * Drop any in-flight joystick/look drag when a modal takes over the screen.
+ * The #overlay bypasses in touchstart only block NEW touches — they cannot
+ * release a touch that is already latched. This matters most for the sleep
+ * menu, which opens FROM a right-side long press, so lookId is ALWAYS still
+ * latched at that moment.
+ *
+ * Zeroing lookDx/lookDy is the load-bearing part: touchmove is NOT gated on
+ * gameActive and keeps accumulating look delta for a latched lookId, while the
+ * only drain (consumeTouchLook) sits inside main.js's frozen isGameActive()
+ * block. Without this, dragging that same thumb across the panel banks a whole
+ * gesture's worth of yaw and replays it as one camera whip on close.
+ */
+export function releaseTouchDrags() {
+  joystickId = -1; lookId = -1;
+  moveX = 0; moveZ = 0;
+  lookDx = 0; lookDy = 0;
+  hideProgress();
+  if (joystickEl) joystickEl.style.display = 'none';
+}
 export function setMobileGameActive(v) {
   gameActive = v;
   const tc = document.getElementById('touch-controls');
@@ -101,8 +123,8 @@ export function initTouch() {
   progressArc = document.getElementById('progress-arc');
   progressLabel = document.getElementById('progress-label');
 
-  const joystickEl = document.getElementById('touch-joystick');
-  const knobEl = document.getElementById('joystick-knob');
+  joystickEl = document.getElementById('touch-joystick');
+  knobEl = document.getElementById('joystick-knob');
 
   document.addEventListener('touchstart', (e) => {
     for (const t of e.changedTouches) {
@@ -115,6 +137,14 @@ export function initTouch() {
       // buttons (click is synthesized from touch), kills scrolling, and walks
       // the player around behind the overlay.
       if (target && target.closest('#help-overlay')) continue;
+      // Same trap: #sleep-ui is a full-screen fixed overlay (z-index 55) over
+      // the game surface. Without this its touches fall through to
+      // joystick/look and get preventDefault'd — no synthesized click, so the
+      // Sleep/Cancel buttons and the range thumb are all dead. And since it
+      // also covers #touch-controls (z-index 10), even the pause and help
+      // buttons are unreachable — a reload-only soft-lock, because
+      // setTimeStopped(true) is cleared ONLY by closeSleepMenu.
+      if (target && target.closest('#sleep-ui')) continue;
 
       // Hotbar slot tap
       const slot = target && target.closest('.hotbar-slot');
@@ -235,11 +265,7 @@ export function initTouch() {
   bind('touch-pause', () => {
     if (!gameActive) return;
     gameActive = false;
-    // Reset movement
-    joystickId = -1; lookId = -1;
-    moveX = 0; moveZ = 0;
-    if (lpActive) hideProgress();
-    if (joystickEl) joystickEl.style.display = 'none';
+    releaseTouchDrags();
     const tc = document.getElementById('touch-controls');
     if (tc) tc.style.display = 'none';
     const blocker = document.getElementById('blocker');
@@ -272,12 +298,7 @@ export function initTouch() {
       // opens empty on mobile: the CSS hides the Controls tab content (the only
       // one marked active in the markup) and nothing else ever gets .active.
       setupHelpTabs(helpEl);
-      // Drop any in-flight drag, same as the pause button — the bypass above
-      // only stops NEW touches, it can't release a joystick already latched.
-      joystickId = -1; lookId = -1;
-      moveX = 0; moveZ = 0;
-      if (lpActive) hideProgress();
-      if (joystickEl) joystickEl.style.display = 'none';
+      releaseTouchDrags();
     }
     helpEl.style.display = visible ? 'none' : 'flex';
     // Gates body's touch-action so the guide can scroll — see styles.css
